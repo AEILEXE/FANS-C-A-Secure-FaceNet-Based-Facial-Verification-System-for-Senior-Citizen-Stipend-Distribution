@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+{% block title %}{{ action }} Stipend Event{% endblock %}
+{% block nav_admin %}active{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+<div class="col-lg-6">
+
+  <div class="breadcrumb-fans mb-1">
+    <a href="{% url 'beneficiaries:dashboard' %}">Dashboard</a> /
+    <a href="{% url 'verification:stipend_list' %}">Stipend Schedule</a> /
+    {{ action }}
+  </div>
+  <h4 class="fw-bold text-qc-blue mb-4">
+    <i class="bi bi-calendar-plus me-2"></i>{{ action }} Stipend Event
+  </h4>
+
+  {% if messages %}
+    {% for msg in messages %}
+    <div class="alert alert-{% if msg.tags == 'error' %}danger{% else %}{{ msg.tags }}{% endif %} mb-3">
+      {{ msg }}
+    </div>
+    {% endfor %}
+  {% endif %}
+
+  <div class="card">
+    <div class="card-header bg-qc-blue text-white">
+      <i class="bi bi-calendar3 me-2"></i>Event Details
+    </div>
+    <div class="card-body p-4">
+      <form method="POST" novalidate>
+        {% csrf_token %}
+
+        <div class="mb-3">
+          <label class="form-label fw-semibold">Title <span class="text-danger">*</span></label>
+          <input type="text" name="title" class="form-control"
+                 value="{{ event.title|default:'' }}"
+                 placeholder="e.g. March 2026 Monthly Stipend" required>
+        </div>
+
+        <div class="mb-3">
+          <label class="form-label fw-semibold">Distribution Date <span class="text-danger">*</span></label>
+          <input type="date" name="date" class="form-control"
+                 value="{{ event.date|date:'Y-m-d'|default:'' }}" required>
+        </div>
+
+        <div class="mb-4">
+          <label class="form-label fw-semibold">Description <span class="text-muted fw-normal">(optional)</span></label>
+          <textarea name="description" class="form-control" rows="3"
+                    placeholder="Additional notes about this distribution event&hellip;">{{ event.description|default:'' }}</textarea>
+        </div>
+
+        {% if action == 'Edit' %}
+        <div class="mb-4">
+          <div class="form-check">
+            <input class="form-check-input" type="checkbox" name="is_active" id="isActive"
+                   {% if event.is_active %}checked{% endif %}>
+            <label class="form-check-label fw-semibold" for="isActive">Active</label>
+            <div class="form-text">Inactive events are hidden from the dashboard but claims remain linked.</div>
+          </div>
+        </div>
+        {% endif %}
+
+        <div class="d-flex gap-2">
+          <button type="submit" class="btn btn-primary fw-semibold px-4">
+            <i class="bi bi-save me-1"></i> {{ action }} Event
+          </button>
+          <a href="{% url 'verification:stipend_list' %}" class="btn btn-outline-secondary">
+            Cancel
+          </a>
+        </div>
+      </form>
+    </div>
+  </div>
+
+</div>
+</div>
+{% endblock %}

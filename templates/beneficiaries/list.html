@@ -1,0 +1,106 @@
+{% extends "base.html" %}
+{% block title %}Beneficiaries{% endblock %}
+{% block nav_reg %}active{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <div class="breadcrumb-fans mb-1">
+      <a href="{% url 'beneficiaries:dashboard' %}">Dashboard</a> / Beneficiaries
+    </div>
+    <h4 class="fw-bold text-qc-blue mb-0"><i class="bi bi-people me-2"></i>Beneficiaries</h4>
+  </div>
+  <a href="{% url 'beneficiaries:register_step1' %}" class="btn btn-primary">
+    <i class="bi bi-person-plus me-1"></i> Register New
+  </a>
+</div>
+
+<div class="card mb-3">
+  <div class="card-body py-3">
+    <form method="GET" class="row g-2 align-items-end">
+      <div class="col-md-5">
+        <label class="form-label small fw-semibold mb-1">Search</label>
+        <input type="text" name="q" value="{{ query }}" class="form-control"
+               placeholder="Name or beneficiary ID&hellip;">
+      </div>
+      <div class="col-md-3">
+        <label class="form-label small fw-semibold mb-1">Status</label>
+        <select name="status" class="form-select">
+          <option value="">All Statuses</option>
+          <option value="active" {% if status_filter == 'active' %}selected{% endif %}>Active</option>
+          <option value="inactive" {% if status_filter == 'inactive' %}selected{% endif %}>Inactive</option>
+          <option value="deceased" {% if status_filter == 'deceased' %}selected{% endif %}>Deceased</option>
+          <option value="pending" {% if status_filter == 'pending' %}selected{% endif %}>Pending</option>
+        </select>
+      </div>
+      <div class="col-auto">
+        <button type="submit" class="btn btn-primary">
+          <i class="bi bi-search me-1"></i> Search
+        </button>
+        <a href="{% url 'beneficiaries:beneficiary_list' %}" class="btn btn-outline-secondary">Clear</a>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div class="card">
+  <div class="table-responsive">
+    <table class="table table-hover mb-0">
+      <thead>
+        <tr>
+          <th>Beneficiary ID</th>
+          <th>Name</th>
+          <th>Location</th>
+          <th>Status</th>
+          <th>Registered</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for b in beneficiaries %}
+        <tr>
+          <td><span class="font-mono text-muted small">{{ b.beneficiary_id }}</span></td>
+          <td>
+            <div class="fw-semibold">{{ b.full_name }}</div>
+            {% if b.has_representative %}
+              <span class="badge bg-info bg-opacity-10 text-info border border-info small">
+                <i class="bi bi-people me-1"></i>Has Rep.
+              </span>
+            {% endif %}
+          </td>
+          <td class="small text-muted">{{ b.municipality }}, {{ b.province }}</td>
+          <td>
+            <span class="badge
+              {% if b.status == 'active' %}bg-success
+              {% elif b.status == 'inactive' %}bg-secondary
+              {% elif b.status == 'deceased' %}bg-dark
+              {% else %}bg-warning text-dark{% endif %}">
+              {{ b.get_status_display }}
+            </span>
+          </td>
+          <td class="small text-muted">{{ b.created_at|date:"M d, Y" }}</td>
+          <td>
+            <a href="{% url 'beneficiaries:beneficiary_detail' b.pk %}"
+               class="btn btn-sm btn-outline-primary me-1">
+              <i class="bi bi-eye me-1"></i>View
+            </a>
+            <a href="{% url 'verification:verify_start' b.pk %}"
+               class="btn btn-sm btn-success">
+              <i class="bi bi-camera-video me-1"></i>Verify
+            </a>
+          </td>
+        </tr>
+        {% empty %}
+        <tr>
+          <td colspan="6" class="text-center text-muted py-5">
+            <i class="bi bi-people fs-1 d-block mb-2 opacity-25"></i>
+            {% if query %}No beneficiaries found for &ldquo;{{ query }}&rdquo;.
+            {% else %}No beneficiaries registered yet.{% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

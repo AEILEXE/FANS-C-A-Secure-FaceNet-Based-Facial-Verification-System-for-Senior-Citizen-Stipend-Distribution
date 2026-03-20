@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+{% block title %}User Management{% endblock %}
+{% block nav_admin %}active{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <div class="breadcrumb-fans mb-1">
+      <a href="{% url 'beneficiaries:dashboard' %}">Dashboard</a> / User Management
+    </div>
+    <h4 class="fw-bold text-qc-blue mb-0">
+      <i class="bi bi-people me-2"></i>User Management
+    </h4>
+  </div>
+  <a href="{% url 'beneficiaries:user_create' %}" class="btn btn-primary">
+    <i class="bi bi-person-plus me-1"></i> Add User
+  </a>
+</div>
+
+<div class="card">
+  <div class="table-responsive">
+    <table class="table table-hover mb-0">
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Username</th>
+          <th>Role</th>
+          <th>Employee ID</th>
+          <th>Email</th>
+          <th>Status</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for u in users %}
+        <tr {% if not u.is_active %}class="opacity-50"{% endif %}>
+          <td>
+            <div class="fw-semibold">{{ u.get_full_name|default:u.username }}</div>
+            {% if u.phone %}<div class="small text-muted">{{ u.phone }}</div>{% endif %}
+          </td>
+          <td><span class="font-mono small">{{ u.username }}</span></td>
+          <td>
+            <span class="badge {% if u.role == 'admin' %}bg-danger{% else %}bg-primary{% endif %}">
+              {{ u.get_role_display }}
+            </span>
+          </td>
+          <td class="small font-mono text-muted">{{ u.employee_id|default:"&mdash;" }}</td>
+          <td class="small">{{ u.email|default:"&mdash;" }}</td>
+          <td>
+            {% if u.is_active %}
+              <span class="badge bg-success">Active</span>
+            {% else %}
+              <span class="badge bg-secondary">Inactive</span>
+            {% endif %}
+          </td>
+          <td>
+            {% if u.pk != request.user.pk %}
+            <a href="{% url 'beneficiaries:user_edit' u.pk %}"
+               class="btn btn-sm btn-outline-primary">
+              <i class="bi bi-pencil me-1"></i>Edit
+            </a>
+            {% else %}
+            <span class="text-muted small fst-italic">You</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% empty %}
+        <tr>
+          <td colspan="7" class="text-center text-muted py-5">
+            <i class="bi bi-people fs-1 d-block mb-2 opacity-25"></i>
+            No users found.
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

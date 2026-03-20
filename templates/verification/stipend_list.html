@@ -1,0 +1,119 @@
+{% extends "base.html" %}
+{% block title %}Stipend Schedule{% endblock %}
+{% block nav_admin %}active{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <div class="breadcrumb-fans mb-1">
+      <a href="{% url 'beneficiaries:dashboard' %}">Dashboard</a> / Stipend Schedule
+    </div>
+    <h4 class="fw-bold text-qc-blue mb-0">
+      <i class="bi bi-calendar3 me-2"></i>Stipend Distribution Schedule
+    </h4>
+    <p class="text-muted small mb-0">Manage payout periods. Claims are linked to these events for audit purposes.</p>
+  </div>
+  {% if user.is_admin %}
+  <a href="{% url 'verification:stipend_create' %}" class="btn btn-primary">
+    <i class="bi bi-plus-circle me-1"></i> Add Event
+  </a>
+  {% endif %}
+</div>
+
+{% if messages %}
+  {% for msg in messages %}
+  <div class="alert alert-{% if msg.tags == 'error' %}danger{% else %}{{ msg.tags }}{% endif %} mb-3">
+    {{ msg }}
+  </div>
+  {% endfor %}
+{% endif %}
+
+<div class="row g-4">
+  <div class="col-lg-7">
+    <div class="card mb-4">
+      <div class="card-header bg-qc-blue text-white d-flex justify-content-between align-items-center">
+        <span><i class="bi bi-calendar-check me-2"></i>Upcoming Events</span>
+        <span class="badge bg-white text-qc-blue">{{ upcoming.count }}</span>
+      </div>
+      <div class="list-group list-group-flush">
+        {% for event in upcoming %}
+        <div class="list-group-item p-3">
+          <div class="d-flex justify-content-between align-items-start">
+            <div class="flex-grow-1">
+              <div class="fw-semibold">{{ event.title }}</div>
+              <div class="small text-muted">
+                <i class="bi bi-calendar3 me-1"></i>{{ event.date|date:"F d, Y" }}
+                {% if event.date == today %}
+                  <span class="badge bg-success ms-1">Today</span>
+                {% endif %}
+              </div>
+              {% if event.description %}
+              <div class="small text-muted mt-1">{{ event.description }}</div>
+              {% endif %}
+              <div class="small text-muted mt-1">
+                <i class="bi bi-check2-square me-1"></i>
+                {{ event.claims.count }} claim{{ event.claims.count|pluralize }} linked
+              </div>
+            </div>
+            {% if user.is_admin %}
+            <div class="d-flex gap-1 ms-3 flex-shrink-0">
+              <a href="{% url 'verification:stipend_edit' event.pk %}" class="btn btn-sm btn-outline-secondary">
+                <i class="bi bi-pencil"></i>
+              </a>
+              <form method="POST" action="{% url 'verification:stipend_delete' event.pk %}" style="display:inline;"
+                    onsubmit="return confirm('Delete or deactivate this event?')">
+                {% csrf_token %}
+                <button type="submit" class="btn btn-sm btn-outline-danger">
+                  <i class="bi bi-trash"></i>
+                </button>
+              </form>
+            </div>
+            {% endif %}
+          </div>
+        </div>
+        {% empty %}
+        <div class="list-group-item text-center text-muted py-5">
+          <i class="bi bi-calendar-x fs-2 d-block mb-2 opacity-25"></i>
+          No upcoming events scheduled.
+          {% if user.is_admin %}
+          <div class="mt-2">
+            <a href="{% url 'verification:stipend_create' %}" class="btn btn-sm btn-primary">
+              <i class="bi bi-plus me-1"></i> Create First Event
+            </a>
+          </div>
+          {% endif %}
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+
+  <div class="col-lg-5">
+    <div class="card">
+      <div class="card-header bg-qc-blue text-white">
+        <i class="bi bi-clock-history me-2"></i>Past Events
+      </div>
+      <div class="list-group list-group-flush">
+        {% for event in past %}
+        <div class="list-group-item p-3">
+          <div class="d-flex justify-content-between align-items-center">
+            <div>
+              <div class="fw-semibold small {% if not event.is_active %}text-muted{% endif %}">
+                {{ event.title }}
+                {% if not event.is_active %}<span class="badge bg-secondary ms-1">Inactive</span>{% endif %}
+              </div>
+              <div class="text-muted" style="font-size:0.8rem;">{{ event.date|date:"M d, Y" }}</div>
+            </div>
+            <div class="text-muted small">
+              {{ event.claims.count }} claim{{ event.claims.count|pluralize }}
+            </div>
+          </div>
+        </div>
+        {% empty %}
+        <div class="list-group-item text-center text-muted py-4 small">No past events.</div>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

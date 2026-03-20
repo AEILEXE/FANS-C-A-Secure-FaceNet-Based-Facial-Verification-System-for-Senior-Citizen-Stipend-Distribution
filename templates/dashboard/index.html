@@ -1,0 +1,192 @@
+{% extends "base.html" %}
+{% block title %}Dashboard{% endblock %}
+{% block nav_dashboard %}active{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <h2><i class="bi bi-speedometer2 me-2"></i>Dashboard</h2>
+    <p>Quezon City Senior Citizen Stipend Distribution &mdash; Overview</p>
+  </div>
+  <div class="d-flex gap-2 flex-wrap">
+    <a href="{% url 'beneficiaries:register_step1' %}" class="btn btn-primary">
+      <i class="bi bi-person-plus me-1"></i> Register Beneficiary
+    </a>
+    <a href="{% url 'verification:verify_select' %}" class="btn btn-success">
+      <i class="bi bi-camera-video me-1"></i> Verify
+    </a>
+  </div>
+</div>
+
+{% if next_event %}
+<div class="alert d-flex gap-3 align-items-center mb-4" style="background:#f0fdf4; border:1px solid #86efac;">
+  <i class="bi bi-calendar-check-fill text-success flex-shrink-0" style="font-size:1.4rem;"></i>
+  <div class="flex-grow-1">
+    <div class="fw-bold">Next Payout: {{ next_event.title }}</div>
+    <div class="small text-muted">{{ next_event.date|date:"l, F d, Y" }}{% if next_event.description %} &mdash; {{ next_event.description|truncatechars:80 }}{% endif %}</div>
+  </div>
+  <a href="{% url 'verification:stipend_list' %}" class="btn btn-sm btn-outline-success flex-shrink-0">
+    <i class="bi bi-calendar3 me-1"></i> Schedule
+  </a>
+</div>
+{% endif %}
+
+<div class="row g-3 mb-4">
+  <div class="col-6 col-xl-3">
+    <div class="card stat-card h-100">
+      <div class="card-body d-flex align-items-center gap-3 p-3">
+        <div class="stat-icon blue"><i class="bi bi-people-fill"></i></div>
+        <div>
+          <div class="stat-value text-qc-blue">{{ total_beneficiaries }}</div>
+          <div class="stat-label">Total Beneficiaries</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="col-6 col-xl-3">
+    <div class="card stat-card h-100">
+      <div class="card-body d-flex align-items-center gap-3 p-3">
+        <div class="stat-icon green"><i class="bi bi-person-check-fill"></i></div>
+        <div>
+          <div class="stat-value" style="color:#15803d;">{{ active_beneficiaries }}</div>
+          <div class="stat-label">Active</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="col-6 col-xl-3">
+    <div class="card stat-card h-100">
+      <div class="card-body d-flex align-items-center gap-3 p-3">
+        <div class="stat-icon amber"><i class="bi bi-camera-video-fill"></i></div>
+        <div>
+          <div class="stat-value" style="color:#a16207;">{{ verifications_today }}</div>
+          <div class="stat-label">Verifications Today</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="col-6 col-xl-3">
+    <div class="card stat-card h-100">
+      <div class="card-body d-flex align-items-center gap-3 p-3">
+        <div class="stat-icon green"><i class="bi bi-patch-check-fill"></i></div>
+        <div>
+          <div class="stat-value" style="color:#15803d;">{{ verified_today }}</div>
+          <div class="stat-label">Verified Today</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="row g-4">
+  <div class="col-lg-4">
+    <div class="card mb-4">
+      <div class="card-header">
+        <i class="bi bi-lightning-charge-fill me-2 text-qc-gold"></i>Quick Actions
+      </div>
+      <div class="card-body d-flex flex-column gap-2 p-3">
+        <a href="{% url 'beneficiaries:register_step1' %}" class="action-btn">
+          <div class="action-icon" style="background:#dbeafe; color:#1d4ed8;"><i class="bi bi-person-plus-fill"></i></div>
+          <span>Register New Beneficiary</span>
+        </a>
+        <a href="{% url 'verification:verify_select' %}" class="action-btn">
+          <div class="action-icon" style="background:#dcfce7; color:#15803d;"><i class="bi bi-camera-video-fill"></i></div>
+          <span>Verify &amp; Process Claim</span>
+        </a>
+        <a href="{% url 'beneficiaries:beneficiary_list' %}" class="action-btn">
+          <div class="action-icon" style="background:#f1f5f9; color:#475569;"><i class="bi bi-list-ul"></i></div>
+          <span>Beneficiary List</span>
+        </a>
+        <a href="{% url 'verification:stipend_list' %}" class="action-btn">
+          <div class="action-icon" style="background:#fef9c3; color:#a16207;"><i class="bi bi-calendar3"></i></div>
+          <span>Stipend Schedule</span>
+        </a>
+        <a href="{% url 'logs:verification_logs' %}" class="action-btn">
+          <div class="action-icon" style="background:#e0f2fe; color:#0369a1;"><i class="bi bi-journal-text"></i></div>
+          <span>Verification Logs</span>
+        </a>
+        {% if user.is_admin %}
+        <a href="{% url 'verification:manual_review' %}" class="action-btn">
+          <div class="action-icon" style="background:#fce7f3; color:#9d174d;"><i class="bi bi-eye-fill"></i></div>
+          <span>Manual Review Queue</span>
+        </a>
+        <a href="{% url 'beneficiaries:user_list' %}" class="action-btn">
+          <div class="action-icon" style="background:#f1f5f9; color:#374151;"><i class="bi bi-people-fill"></i></div>
+          <span>User Management</span>
+        </a>
+        {% endif %}
+      </div>
+    </div>
+
+    {% if upcoming_events %}
+    <div class="card">
+      <div class="card-header d-flex justify-content-between align-items-center">
+        <span><i class="bi bi-calendar3 me-2 text-qc-blue"></i>Upcoming Payouts</span>
+        <a href="{% url 'verification:stipend_list' %}" class="btn btn-sm btn-outline-primary" style="font-size:0.75rem; padding:0.2rem 0.6rem;">All</a>
+      </div>
+      <div class="list-group list-group-flush">
+        {% for ev in upcoming_events %}
+        <div class="list-group-item py-2 px-3">
+          <div class="fw-semibold small">{{ ev.title }}</div>
+          <div class="text-muted" style="font-size:0.78rem;">
+            <i class="bi bi-calendar3 me-1"></i>{{ ev.date|date:"M d, Y" }}
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+    {% endif %}
+  </div>
+
+  <div class="col-lg-8">
+    <div class="card h-100">
+      <div class="card-header d-flex justify-content-between align-items-center">
+        <span><i class="bi bi-clock-history me-2 text-qc-blue"></i>Recent Activity</span>
+        <a href="{% url 'logs:audit_logs' %}" class="btn btn-sm btn-outline-primary" style="font-size:0.75rem; padding:0.2rem 0.6rem;">View All</a>
+      </div>
+      <div class="card-body p-0">
+        <div class="table-responsive">
+          <table class="table mb-0">
+            <thead>
+              <tr>
+                <th>Time</th>
+                <th>User</th>
+                <th>Action</th>
+                <th>Detail</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for log in recent_logs %}
+              <tr>
+                <td class="text-muted" style="white-space:nowrap;">{{ log.timestamp|date:"M d, H:i" }}</td>
+                <td><span class="font-mono">{{ log.user.username|default:"&mdash;" }}</span></td>
+                <td>
+                  <span class="badge
+                    {% if log.action == 'login' %}bg-success
+                    {% elif log.action == 'logout' %}bg-secondary
+                    {% elif log.action == 'login_failed' %}bg-danger
+                    {% elif log.action == 'verify' %}bg-primary
+                    {% elif log.action == 'register' %}bg-info
+                    {% elif log.action == 'override' %}bg-warning text-dark
+                    {% elif log.action == 'update' %}bg-info text-dark
+                    {% else %}bg-light text-dark{% endif %}">
+                    {{ log.get_action_display }}
+                  </span>
+                </td>
+                <td class="text-muted" style="font-size:0.8rem;">{{ log.target_type }} {{ log.target_id|truncatechars:18 }}</td>
+              </tr>
+              {% empty %}
+              <tr>
+                <td colspan="4" class="text-center text-muted py-5">
+                  <i class="bi bi-inbox fs-2 d-block mb-2"></i>No activity yet.
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,452 @@
+import json
+import base64
+import uuid
+from django.shortcuts import render, redirect, get_object_or_404
+from django.contrib import messages
+from django.contrib.auth.decorators import login_required
+from django.views.decorators.http import require_http_methods, require_POST
+from django.http import JsonResponse
+from django.utils import timezone
+
+from .models import Beneficiary
+from .forms import BeneficiaryInfoForm, BeneficiaryEditForm, RepresentativeForm, ConsentForm
+from verification.models import FaceEmbedding
+from verification.face_utils import process_face_for_registration
+from logs.models import AuditLog
+from accounts.models import CustomUser
+from accounts.forms import UserCreateForm, UserUpdateForm
+
+
+@login_required
+def dashboard(request):
+    total_beneficiaries = Beneficiary.objects.count()
+    active_beneficiaries = Beneficiary.objects.filter(status='active').count()
+    pending_beneficiaries = Beneficiary.objects.filter(status='pending').count()
+
+    from verification.models import VerificationAttempt, StipendEvent
+    today = timezone.now().date()
+    verifications_today = VerificationAttempt.objects.filter(timestamp__date=today).count()
+    verified_today = VerificationAttempt.objects.filter(
+        timestamp__date=today, decision='verified'
+    ).count()
+
+    recent_logs = AuditLog.objects.select_related('user').order_by('-timestamp')[:10]
+
+    # Upcoming stipend events (next 60 days)
+    from datetime import timedelta
+    upcoming_events = StipendEvent.objects.filter(
+        is_active=True, date__gte=today, date__lte=today + timedelta(days=60)
+    ).order_by('date')[:5]
+
+    # Next active event for quick display
+    next_event = upcoming_events.first()
+
+    return render(request, 'dashboard/index.html', {
+        'total_beneficiaries': total_beneficiaries,
+        'active_beneficiaries': active_beneficiaries,
+        'pending_beneficiaries': pending_beneficiaries,
+        'verifications_today': verifications_today,
+        'verified_today': verified_today,
+        'recent_logs': recent_logs,
+        'upcoming_events': upcoming_events,
+        'next_event': next_event,
+    })
+
+
+@login_required
+def beneficiary_list(request):
+    query = request.GET.get('q', '')
+    status_filter = request.GET.get('status', '')
+    beneficiaries = Beneficiary.objects.all()
+    if query:
+        beneficiaries = (
+            beneficiaries.filter(last_name__icontains=query) |
+            beneficiaries.filter(first_name__icontains=query) |
+            beneficiaries.filter(beneficiary_id__icontains=query)
+        )
+    if status_filter:
+        beneficiaries = beneficiaries.filter(status=status_filter)
+    beneficiaries = beneficiaries.order_by('last_name', 'first_name')
+    return render(request, 'beneficiaries/list.html', {
+        'beneficiaries': beneficiaries,
+        'query': query,
+        'status_filter': status_filter,
+    })
+
+
+@login_required
+def beneficiary_detail(request, pk):
+    beneficiary = get_object_or_404(Beneficiary, pk=pk)
+    has_embedding = hasattr(beneficiary, 'face_embedding')
+    from verification.models import VerificationAttempt
+    attempts = VerificationAttempt.objects.filter(beneficiary=beneficiary).order_by('-timestamp')[:15]
+    return render(request, 'beneficiaries/detail.html', {
+        'beneficiary': beneficiary,
+        'has_embedding': has_embedding,
+        'attempts': attempts,
+    })
+
+
+@login_required
+@require_http_methods(['GET', 'POST'])
+def beneficiary_edit(request, pk):
+    beneficiary = get_object_or_404(Beneficiary, pk=pk)
+
+    if request.method == 'POST':
+        form = BeneficiaryEditForm(request.POST, instance=beneficiary)
+        if form.is_valid():
+            changed_fields = [f for f in form.changed_data]
+            form.save()
+            AuditLog.log(
+                action=AuditLog.ACTION_UPDATE,
+                user=request.user,
+                target_type='Beneficiary',
+                target_id=beneficiary.id,
+                details={
+                    'beneficiary_id': beneficiary.beneficiary_id,
+                    'changed_fields': changed_fields,
+                },
+                request=request
+            )
+            messages.success(request, 'Beneficiary record updated successfully.')
+            return redirect('beneficiaries:beneficiary_detail', pk=beneficiary.pk)
+    else:
+        form = BeneficiaryEditForm(instance=beneficiary)
+
+    return render(request, 'beneficiaries/edit.html', {
+        'form': form,
+        'beneficiary': beneficiary,
+    })
+
+
+@login_required
+@require_http_methods(['GET', 'POST'])
+def beneficiary_deactivate(request, pk):
+    """
+    Deactivate or mark a beneficiary as deceased.
+    Does NOT delete — preserves all historical records for audit.
+    Only admins can deactivate.
+    """
+    if not request.user.is_admin:
+        messages.error(request, 'Admin access required to change beneficiary status.')
+        return redirect('beneficiaries:beneficiary_detail', pk=pk)
+
+    beneficiary = get_object_or_404(Beneficiary, pk=pk)
+
+    if request.method == 'POST':
+        new_status = request.POST.get('new_status', Beneficiary.STATUS_INACTIVE)
+        reason = request.POST.get('reason', '').strip()
+
+        if new_status not in (Beneficiary.STATUS_INACTIVE, Beneficiary.STATUS_DECEASED):
+            messages.error(request, 'Invalid status selected.')
+            return redirect('beneficiaries:beneficiary_detail', pk=pk)
+
+        if not reason:
+            messages.error(request, 'A reason is required for deactivation.')
+            return render(request, 'beneficiaries/deactivate.html', {
+                'beneficiary': beneficiary,
+                'error': 'Reason is required.',
+            })
+
+        old_status = beneficiary.status
+        beneficiary.status = new_status
+        beneficiary.deactivated_at = timezone.now()
+        beneficiary.deactivated_by = request.user
+        beneficiary.deactivated_reason = reason
+        beneficiary.save()
+
+        AuditLog.log(
+            action=AuditLog.ACTION_UPDATE,
+            user=request.user,
+            target_type='Beneficiary',
+            target_id=beneficiary.id,
+            details={
+                'beneficiary_id': beneficiary.beneficiary_id,
+                'old_status': old_status,
+                'new_status': new_status,
+                'reason': reason,
+            },
+            request=request
+        )
+        status_label = 'Deceased' if new_status == Beneficiary.STATUS_DECEASED else 'Inactive'
+        messages.success(request, f'{beneficiary.full_name} marked as {status_label}.')
+        return redirect('beneficiaries:beneficiary_detail', pk=pk)
+
+    return render(request, 'beneficiaries/deactivate.html', {'beneficiary': beneficiary})
+
+
+@login_required
+@require_http_methods(['POST'])
+def beneficiary_reactivate(request, pk):
+    """Re-activate a previously deactivated beneficiary (admin only)."""
+    if not request.user.is_admin:
+        messages.error(request, 'Admin access required.')
+        return redirect('beneficiaries:beneficiary_detail', pk=pk)
+
+    beneficiary = get_object_or_404(Beneficiary, pk=pk)
+    old_status = beneficiary.status
+    beneficiary.status = Beneficiary.STATUS_ACTIVE
+    beneficiary.deactivated_at = None
+    beneficiary.deactivated_by = None
+    beneficiary.deactivated_reason = ''
+    beneficiary.save()
+
+    AuditLog.log(
+        action=AuditLog.ACTION_UPDATE,
+        user=request.user,
+        target_type='Beneficiary',
+        target_id=beneficiary.id,
+        details={
+            'beneficiary_id': beneficiary.beneficiary_id,
+            'old_status': old_status,
+            'new_status': 'active',
+            'reason': 'Reactivated by admin',
+        },
+        request=request
+    )
+    messages.success(request, f'{beneficiary.full_name} reactivated to Active status.')
+    return redirect('beneficiaries:beneficiary_detail', pk=pk)
+
+
+# ─── Registration ─────────────────────────────────────────────────────────────
+
+@login_required
+@require_http_methods(['GET', 'POST'])
+def register_step1(request):
+    if request.method == 'POST':
+        form = BeneficiaryInfoForm(request.POST)
+        if form.is_valid():
+            data = form.cleaned_data.copy()
+            data['date_of_birth'] = str(data['date_of_birth'])
+            request.session['reg_step1'] = data
+            return redirect('beneficiaries:register_step2')
+    else:
+        form = BeneficiaryInfoForm()
+    return render(request, 'beneficiaries/register_step1.html', {'form': form})
+
+
+@login_required
+@require_http_methods(['GET', 'POST'])
+def register_step2(request):
+    if 'reg_step1' not in request.session:
+        return redirect('beneficiaries:register_step1')
+
+    if request.method == 'POST':
+        form = RepresentativeForm(request.POST)
+        if form.is_valid():
+            request.session['reg_step2'] = form.cleaned_data
+            return redirect('beneficiaries:register_step3')
+    else:
+        form = RepresentativeForm()
+    return render(request, 'beneficiaries/register_step2.html', {'form': form})
+
+
+@login_required
+@require_http_methods(['GET', 'POST'])
+def register_step3(request):
+    if 'reg_step1' not in request.session:
+        return redirect('beneficiaries:register_step1')
+
+    if request.method == 'POST':
+        form = ConsentForm(request.POST)
+        if form.is_valid():
+            request.session['reg_step3'] = {'consent': True}
+            return redirect('beneficiaries:register_face')
+    else:
+        form = ConsentForm()
+    return render(request, 'beneficiaries/register_step3.html', {'form': form})
+
+
+@login_required
+def register_face(request):
+    if 'reg_step1' not in request.session or 'reg_step3' not in request.session:
+        return redirect('beneficiaries:register_step1')
+    return render(request, 'beneficiaries/register_face.html')
+
+
+@login_required
+@require_POST
+def register_submit_face(request):
+    if 'reg_step1' not in request.session:
+        return JsonResponse({'success': False, 'error': 'Session expired. Please restart registration.'})
+
+    try:
+        data = json.loads(request.body)
+        image_data = data.get('image', '')
+        if not image_data:
+            return JsonResponse({'success': False, 'error': 'No image received.'})
+
+        if ',' in image_data:
+            image_data = image_data.split(',')[1]
+        image_bytes = base64.b64decode(image_data)
+
+        result = process_face_for_registration(image_bytes)
+        if not result['success']:
+            return JsonResponse({'success': False, 'error': result['error']})
+
+        import datetime
+        step1 = request.session['reg_step1']
+        step2 = request.session.get('reg_step2', {})
+
+        dob = datetime.date.fromisoformat(step1['date_of_birth'])
+
+        beneficiary = Beneficiary(
+            first_name=step1['first_name'],
+            middle_name=step1.get('middle_name', ''),
+            last_name=step1['last_name'],
+            date_of_birth=dob,
+            gender=step1['gender'],
+            address=step1['address'],
+            barangay=step1['barangay'],
+            municipality=step1['municipality'],
+            province=step1['province'],
+            contact_number=step1.get('contact_number', ''),
+            senior_citizen_id=step1.get('senior_citizen_id', ''),
+            valid_id_type=step1.get('valid_id_type', ''),
+            valid_id_number=step1.get('valid_id_number', ''),
+            has_representative=step2.get('has_representative', False),
+            rep_first_name=step2.get('rep_first_name', ''),
+            rep_last_name=step2.get('rep_last_name', ''),
+            rep_relationship=step2.get('rep_relationship', ''),
+            rep_contact=step2.get('rep_contact', ''),
+            rep_id_type=step2.get('rep_id_type', ''),
+            rep_id_number=step2.get('rep_id_number', ''),
+            consent_given=True,
+            consent_date=timezone.now(),
+            status=Beneficiary.STATUS_ACTIVE,
+            registered_by=request.user,
+        )
+        beneficiary.save()
+
+        FaceEmbedding.objects.create(
+            beneficiary=beneficiary,
+            embedding_data=result['encrypted_embedding'],
+            created_by=request.user,
+        )
+
+        for key in ['reg_step1', 'reg_step2', 'reg_step3']:
+            request.session.pop(key, None)
+
+        AuditLog.log(
+            action=AuditLog.ACTION_REGISTER,
+            user=request.user,
+            target_type='Beneficiary',
+            target_id=beneficiary.id,
+            details={'beneficiary_id': beneficiary.beneficiary_id, 'name': beneficiary.full_name},
+            request=request
+        )
+
+        quality_msg = ''
+        if result.get('quality') and not result['quality']['ok']:
+            quality_msg = f' Note: {result["quality"]["reason"]}'
+
+        return JsonResponse({
+            'success': True,
+            'message': f'Registration successful! ID: {beneficiary.beneficiary_id}{quality_msg}',
+            'redirect': f'/dashboard/beneficiaries/{beneficiary.id}/'
+        })
+
+    except Exception as e:
+        return JsonResponse({'success': False, 'error': f'Registration failed: {str(e)}'})
+
+
+# ─── Address Data API ─────────────────────────────────────────────────────────
+
+@login_required
+def address_municipalities(request):
+    """Return municipalities/cities for a given province."""
+    province = request.GET.get('province', '')
+    from django.conf import settings as django_settings
+    import os
+
+    data_file = os.path.join(django_settings.BASE_DIR, 'static', 'data', 'ph_addresses.json')
+    try:
+        with open(data_file, 'r', encoding='utf-8') as f:
+            address_data = json.load(f)
+        municipalities = address_data.get('municipalities', {}).get(province, [])
+    except (FileNotFoundError, json.JSONDecodeError):
+        municipalities = []
+
+    return JsonResponse({'municipalities': municipalities})
+
+
+@login_required
+def address_barangays(request):
+    """Return barangays for a given municipality."""
+    municipality = request.GET.get('municipality', '')
+    from django.conf import settings as django_settings
+    import os
+
+    data_file = os.path.join(django_settings.BASE_DIR, 'static', 'data', 'ph_addresses.json')
+    try:
+        with open(data_file, 'r', encoding='utf-8') as f:
+            address_data = json.load(f)
+        barangays = address_data.get('barangays', {}).get(municipality, [])
+    except (FileNotFoundError, json.JSONDecodeError):
+        barangays = []
+
+    return JsonResponse({'barangays': barangays})
+
+
+# ─── User Management (Admin only) ────────────────────────────────────────────
+
+@login_required
+def user_list(request):
+    if not request.user.is_admin:
+        messages.error(request, 'Admin access required.')
+        return redirect('beneficiaries:dashboard')
+    users = CustomUser.objects.all().order_by('last_name', 'first_name')
+    return render(request, 'admin_panel/users.html', {'users': users})
+
+
+@login_required
+@require_http_methods(['GET', 'POST'])
+def user_create(request):
+    if not request.user.is_admin:
+        messages.error(request, 'Admin access required.')
+        return redirect('beneficiaries:dashboard')
+
+    if request.method == 'POST':
+        form = UserCreateForm(request.POST)
+        if form.is_valid():
+            user = form.save()
+            AuditLog.log(
+                action=AuditLog.ACTION_USER_CREATE,
+                user=request.user,
+                target_type='User',
+                target_id=user.id,
+                details={'username': user.username, 'role': user.role},
+                request=request
+            )
+            messages.success(request, f'User {user.username} created successfully.')
+            return redirect('beneficiaries:user_list')
+    else:
+        form = UserCreateForm()
+    return render(request, 'admin_panel/user_form.html', {'form': form, 'action': 'Create'})
+
+
+@login_required
+@require_http_methods(['GET', 'POST'])
+def user_edit(request, pk):
+    if not request.user.is_admin:
+        messages.error(request, 'Admin access required.')
+        return redirect('beneficiaries:dashboard')
+
+    user = get_object_or_404(CustomUser, pk=pk)
+    if request.method == 'POST':
+        form = UserUpdateForm(request.POST, instance=user)
+        if form.is_valid():
+            form.save()
+            AuditLog.log(
+                action=AuditLog.ACTION_USER_UPDATE,
+                user=request.user,
+                target_type='User',
+                target_id=user.id,
+                details={'username': user.username},
+                request=request
+            )
+            messages.success(request, 'User updated successfully.')
+            return redirect('beneficiaries:user_list')
+    else:
+        form = UserUpdateForm(instance=user)
+    return render(request, 'admin_panel/user_form.html', {'form': form, 'action': 'Edit', 'edited_user': user})

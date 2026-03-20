@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+{% block title %}Verify Beneficiary{% endblock %}
+{% block nav_verify %}active{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+<div class="col-lg-7">
+
+  <div class="breadcrumb-fans mb-1">
+    <a href="{% url 'beneficiaries:dashboard' %}">Dashboard</a> / Verify Beneficiary
+  </div>
+  <h4 class="fw-bold text-qc-blue mb-1"><i class="bi bi-camera-video me-2"></i>Verify Beneficiary</h4>
+  <p class="text-muted mb-4">Search for a beneficiary then select who is claiming the stipend.</p>
+
+  <div class="card mb-4">
+    <div class="card-body p-4">
+      <form method="GET">
+        <div class="input-group input-group-lg">
+          <span class="input-group-text bg-white">
+            <i class="bi bi-search text-muted"></i>
+          </span>
+          <input type="text" name="q" value="{{ query }}" class="form-control border-start-0"
+                 placeholder="Name or beneficiary ID&hellip;" autofocus>
+          <button type="submit" class="btn btn-primary px-4">Search</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  {% if query %}
+  <div class="card">
+    <div class="card-header d-flex justify-content-between align-items-center">
+      <span class="fw-semibold"><i class="bi bi-list-ul me-2 text-qc-blue"></i>Results</span>
+      <span class="badge bg-secondary">{{ beneficiaries.count }} found</span>
+    </div>
+    <div class="list-group list-group-flush">
+      {% for b in beneficiaries %}
+      <div class="list-group-item p-3">
+        <div class="d-flex justify-content-between align-items-start">
+          <div class="flex-grow-1">
+            <div class="fw-semibold">{{ b.full_name }}</div>
+            <div class="small text-muted">
+              <span class="font-mono">{{ b.beneficiary_id }}</span>
+              &bull; {{ b.municipality }}, {{ b.province }}
+            </div>
+            {% if b.has_representative %}
+            <div class="small text-info mt-1">
+              <i class="bi bi-people me-1"></i>
+              Rep: {{ b.rep_first_name }} {{ b.rep_last_name }} ({{ b.rep_relationship }})
+            </div>
+            {% endif %}
+          </div>
+          <div class="d-flex gap-2 ms-3 flex-shrink-0">
+            <a href="{% url 'verification:verify_start' b.pk %}?claimant=beneficiary"
+               class="btn btn-success btn-sm px-3">
+              <i class="bi bi-person me-1"></i> Beneficiary
+            </a>
+            {% if b.has_representative %}
+            <a href="{% url 'verification:verify_start' b.pk %}?claimant=representative"
+               class="btn btn-outline-primary btn-sm px-3">
+              <i class="bi bi-people me-1"></i> Representative
+            </a>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+      {% empty %}
+      <div class="list-group-item text-center text-muted py-5">
+        <i class="bi bi-person-x fs-1 d-block mb-2 opacity-25"></i>
+        No active beneficiaries found for &ldquo;{{ query }}&rdquo;.
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
+  <div class="mt-4 p-3 rounded-3 small text-muted" style="background:#f0f4ff; border:1px solid #c7d7fa;">
+    <div class="fw-semibold text-qc-blue mb-1"><i class="bi bi-info-circle me-1"></i>Claim Type Guide</div>
+    <div class="mb-1"><strong>Beneficiary</strong> &mdash; Face scan verifies the senior citizen directly.</div>
+    <div><strong>Representative</strong> &mdash; Proceeds to ID-based verification using the registered rep's credentials.</div>
+  </div>
+
+</div>
+</div>
+{% endblock %}

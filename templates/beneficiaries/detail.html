@@ -1,0 +1,254 @@
+{% extends "base.html" %}
+{% block title %}{{ beneficiary.full_name }}{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <div class="breadcrumb-fans mb-1">
+      <a href="{% url 'beneficiaries:dashboard' %}">Dashboard</a> /
+      <a href="{% url 'beneficiaries:beneficiary_list' %}">Beneficiaries</a> /
+      {{ beneficiary.full_name }}
+    </div>
+    <h4 class="fw-bold text-qc-blue mb-0">{{ beneficiary.full_name }}</h4>
+    <span class="font-mono text-muted small">{{ beneficiary.beneficiary_id }}</span>
+  </div>
+  <div class="d-flex gap-2 flex-wrap">
+    {% if beneficiary.status == 'active' %}
+      {% if has_embedding %}
+      <a href="{% url 'verification:verify_start' beneficiary.pk %}?claimant=beneficiary"
+         class="btn btn-success">
+        <i class="bi bi-camera-video me-1"></i> Verify Beneficiary
+      </a>
+      {% if beneficiary.has_representative %}
+      <a href="{% url 'verification:verify_start' beneficiary.pk %}?claimant=representative"
+         class="btn btn-outline-primary">
+        <i class="bi bi-people me-1"></i> Verify Representative
+      </a>
+      {% endif %}
+      {% else %}
+      <span class="badge bg-warning text-dark p-2 fs-6">
+        <i class="bi bi-exclamation-triangle me-1"></i> No face embedding &mdash; re-registration required
+      </span>
+      {% endif %}
+    {% else %}
+      <span class="badge p-2 fs-6
+        {% if beneficiary.status == 'deceased' %}bg-dark{% else %}bg-secondary{% endif %}">
+        <i class="bi bi-person-x me-1"></i>
+        {{ beneficiary.get_status_display }} &mdash; not eligible for claims
+      </span>
+    {% endif %}
+    <a href="{% url 'beneficiaries:beneficiary_edit' beneficiary.pk %}" class="btn btn-outline-secondary">
+      <i class="bi bi-pencil me-1"></i> Edit
+    </a>
+    {% if user.is_admin %}
+      {% if beneficiary.status == 'active' or beneficiary.status == 'pending' %}
+      <a href="{% url 'beneficiaries:beneficiary_deactivate' beneficiary.pk %}" class="btn btn-outline-danger">
+        <i class="bi bi-person-x me-1"></i> Deactivate
+      </a>
+      {% else %}
+      <form method="POST" action="{% url 'beneficiaries:beneficiary_reactivate' beneficiary.pk %}" style="display:inline;"
+            onsubmit="return confirm('Reactivate {{ beneficiary.full_name }} to Active status?')">
+        {% csrf_token %}
+        <button type="submit" class="btn btn-outline-success">
+          <i class="bi bi-person-check me-1"></i> Reactivate
+        </button>
+      </form>
+      {% endif %}
+    {% endif %}
+  </div>
+</div>
+
+{% if messages %}
+  {% for msg in messages %}
+  <div class="alert alert-{% if msg.tags == 'error' %}danger{% else %}{{ msg.tags }}{% endif %} mb-3">{{ msg }}</div>
+  {% endfor %}
+{% endif %}
+
+{% if beneficiary.status != 'active' %}
+<div class="alert d-flex gap-3 align-items-start mb-4"
+     style="background:#fff7ed; border:1px solid #fdba74;">
+  <i class="bi bi-person-x-fill text-warning flex-shrink-0 mt-1" style="font-size:1.3rem;"></i>
+  <div>
+    <div class="fw-bold mb-1">
+      {% if beneficiary.status == 'deceased' %}Beneficiary is Deceased{% else %}Beneficiary is Inactive{% endif %}
+    </div>
+    {% if beneficiary.deactivated_at %}
+    <div class="small">
+      <strong>Date:</strong> {{ beneficiary.deactivated_at|date:"M d, Y H:i" }}
+      {% if beneficiary.deactivated_by %}&bull; <strong>By:</strong> {{ beneficiary.deactivated_by.get_full_name|default:beneficiary.deactivated_by.username }}{% endif %}
+    </div>
+    {% endif %}
+    {% if beneficiary.deactivated_reason %}
+    <div class="small mt-1"><strong>Reason:</strong> {{ beneficiary.deactivated_reason }}</div>
+    {% endif %}
+  </div>
+</div>
+{% endif %}
+
+<div class="row g-4">
+  <div class="col-lg-5">
+
+    <div class="card mb-4">
+      <div class="card-header bg-qc-blue text-white">
+        <i class="bi bi-person me-2"></i>Personal Information
+      </div>
+      <div class="card-body p-0">
+        <table class="table table-sm table-borderless mb-0">
+          <tbody>
+            <tr><th class="text-muted ps-3" style="width:42%;">Full Name</th><td>{{ beneficiary.full_name }}</td></tr>
+            <tr><th class="text-muted ps-3">Beneficiary ID</th><td><span class="font-mono small">{{ beneficiary.beneficiary_id }}</span></td></tr>
+            <tr><th class="text-muted ps-3">Date of Birth</th><td>{{ beneficiary.date_of_birth|date:"F d, Y" }}</td></tr>
+            <tr><th class="text-muted ps-3">Gender</th><td>{{ beneficiary.get_gender_display }}</td></tr>
+            <tr><th class="text-muted ps-3">Contact</th><td>{{ beneficiary.contact_number|default:"&mdash;" }}</td></tr>
+            <tr><th class="text-muted ps-3">Address</th><td>{{ beneficiary.address }}</td></tr>
+            <tr><th class="text-muted ps-3">Barangay</th><td>{{ beneficiary.barangay }}</td></tr>
+            <tr><th class="text-muted ps-3">Municipality</th><td>{{ beneficiary.municipality }}</td></tr>
+            <tr><th class="text-muted ps-3">Province</th><td>{{ beneficiary.province }}</td></tr>
+            <tr>
+              <th class="text-muted ps-3">Status</th>
+              <td>
+                <span class="badge
+                  {% if beneficiary.status == 'active' %}bg-success
+                  {% elif beneficiary.status == 'deceased' %}bg-dark
+                  {% elif beneficiary.status == 'inactive' %}bg-secondary
+                  {% else %}bg-warning text-dark{% endif %}">
+                  {{ beneficiary.get_status_display }}
+                </span>
+              </td>
+            </tr>
+            <tr>
+              <th class="text-muted ps-3">Consent</th>
+              <td>
+                {% if beneficiary.consent_given %}
+                  <i class="bi bi-check-circle-fill text-success me-1"></i>Yes &mdash; {{ beneficiary.consent_date|date:"M d, Y" }}
+                {% else %}
+                  <i class="bi bi-x-circle-fill text-danger me-1"></i>No
+                {% endif %}
+              </td>
+            </tr>
+            <tr><th class="text-muted ps-3">Registered By</th><td>{{ beneficiary.registered_by|default:"&mdash;" }}</td></tr>
+            <tr><th class="text-muted ps-3">Registered On</th><td class="small">{{ beneficiary.created_at|date:"M d, Y H:i" }}</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    {% if beneficiary.senior_citizen_id or beneficiary.valid_id_type or beneficiary.valid_id_number %}
+    <div class="card mb-4">
+      <div class="card-header bg-qc-blue text-white">
+        <i class="bi bi-card-text me-2"></i>Government ID
+      </div>
+      <div class="card-body p-0">
+        <table class="table table-sm table-borderless mb-0">
+          <tbody>
+            {% if beneficiary.senior_citizen_id %}
+            <tr><th class="text-muted ps-3" style="width:42%;">Senior Citizen ID</th><td class="font-mono small">{{ beneficiary.senior_citizen_id }}</td></tr>
+            {% endif %}
+            {% if beneficiary.valid_id_type %}
+            <tr><th class="text-muted ps-3">Valid ID Type</th><td>{{ beneficiary.valid_id_type }}</td></tr>
+            {% endif %}
+            {% if beneficiary.valid_id_number %}
+            <tr><th class="text-muted ps-3">Valid ID Number</th><td class="font-mono small">{{ beneficiary.valid_id_number }}</td></tr>
+            {% endif %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+    {% endif %}
+
+    {% if beneficiary.has_representative %}
+    <div class="card">
+      <div class="card-header bg-qc-blue text-white">
+        <i class="bi bi-people me-2"></i>Authorized Representative
+      </div>
+      <div class="card-body p-0">
+        <table class="table table-sm table-borderless mb-0">
+          <tbody>
+            <tr><th class="text-muted ps-3" style="width:42%;">Name</th><td>{{ beneficiary.rep_first_name }} {{ beneficiary.rep_last_name }}</td></tr>
+            <tr><th class="text-muted ps-3">Relationship</th><td>{{ beneficiary.rep_relationship }}</td></tr>
+            <tr><th class="text-muted ps-3">Contact</th><td>{{ beneficiary.rep_contact }}</td></tr>
+            <tr><th class="text-muted ps-3">ID Type</th><td>{{ beneficiary.rep_id_type }}</td></tr>
+            <tr><th class="text-muted ps-3">ID Number</th><td class="font-mono small">{{ beneficiary.rep_id_number }}</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+    {% endif %}
+
+  </div>
+
+  <div class="col-lg-7">
+    <div class="card">
+      <div class="card-header bg-qc-blue text-white d-flex justify-content-between align-items-center">
+        <span><i class="bi bi-clock-history me-2"></i>Verification History</span>
+        <a href="{% url 'logs:verification_logs' %}" class="btn btn-sm btn-outline-light"
+           style="font-size:0.75rem; padding:0.2rem 0.6rem;">View All Logs</a>
+      </div>
+      <div class="table-responsive">
+        <table class="table table-hover mb-0">
+          <thead>
+            <tr>
+              <th>Date / Time</th>
+              <th>Claimant</th>
+              <th>Decision</th>
+              <th>Score</th>
+              <th>Liveness</th>
+              <th>Payout Period</th>
+              <th>By</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for a in attempts %}
+            <tr>
+              <td class="small text-muted" style="white-space:nowrap;">{{ a.timestamp|date:"M d, H:i" }}</td>
+              <td>
+                {% if a.claimant_type == 'representative' %}
+                  <span class="badge bg-primary small">Rep.</span>
+                {% else %}
+                  <span class="badge bg-secondary small">Self</span>
+                {% endif %}
+              </td>
+              <td>
+                <span class="badge
+                  {% if a.decision == 'verified' %}bg-success
+                  {% elif a.decision == 'denied' or a.decision == 'not_verified' %}bg-danger
+                  {% elif a.decision == 'manual_review' %}bg-warning text-dark
+                  {% else %}bg-secondary{% endif %}">
+                  {{ a.get_decision_display|default:"&mdash;" }}
+                </span>
+                {% if a.overridden %}
+                  <span class="badge bg-info ms-1">Override</span>
+                {% endif %}
+              </td>
+              <td class="small font-mono">
+                {% if a.similarity_score is not None %}{{ a.similarity_score|floatformat:3 }}
+                {% else %}&mdash;{% endif %}
+              </td>
+              <td class="text-center">
+                {% if a.liveness_passed %}
+                  <i class="bi bi-check-circle-fill text-success"></i>
+                {% elif a.liveness_passed is not None %}
+                  <i class="bi bi-x-circle-fill text-danger"></i>
+                {% else %}&mdash;{% endif %}
+              </td>
+              <td class="small text-muted">
+                {% if a.stipend_event %}{{ a.stipend_event.title|truncatechars:20 }}
+                {% else %}&mdash;{% endif %}
+              </td>
+              <td class="small">{{ a.performed_by.username|default:"&mdash;" }}</td>
+            </tr>
+            {% empty %}
+            <tr>
+              <td colspan="7" class="text-center text-muted py-5">
+                <i class="bi bi-clock-history fs-2 d-block mb-2 opacity-25"></i>
+                No verification history yet.
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

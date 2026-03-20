@@ -1,0 +1,174 @@
+{% extends "base.html" %}
+{% block title %}Verification Result{% endblock %}
+{% block nav_verify %}active{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+<div class="col-lg-7 col-xl-6">
+
+  <div class="breadcrumb-fans mb-3">
+    <a href="{% url 'beneficiaries:dashboard' %}">Dashboard</a> /
+    <a href="{% url 'verification:verify_select' %}">Verify</a> /
+    Result
+  </div>
+
+  <!-- Result Banner -->
+  {% if attempt.decision == 'verified' %}
+  <div class="result-banner verified mb-4">
+    <i class="bi bi-check-circle-fill"></i>
+    <div>
+      <div class="result-label">VERIFIED</div>
+      <div class="result-sub">Identity confirmed &mdash; stipend may be released</div>
+    </div>
+  </div>
+  {% elif attempt.decision == 'denied' %}
+  <div class="result-banner denied mb-4">
+    <i class="bi bi-x-circle-fill"></i>
+    <div>
+      <div class="result-label">NOT VERIFIED</div>
+      <div class="result-sub">Identity could not be confirmed</div>
+    </div>
+  </div>
+  {% elif attempt.decision == 'manual_review' %}
+  <div class="result-banner review mb-4">
+    <i class="bi bi-eye-fill"></i>
+    <div>
+      <div class="result-label">MANUAL REVIEW</div>
+      <div class="result-sub">Requires administrator review before release</div>
+    </div>
+  </div>
+  {% else %}
+  <div class="result-banner denied mb-4">
+    <i class="bi bi-question-circle-fill"></i>
+    <div>
+      <div class="result-label">{{ attempt.get_decision_display|upper }}</div>
+      <div class="result-sub">&mdash;</div>
+    </div>
+  </div>
+  {% endif %}
+
+  <div class="card mb-3">
+    <div class="card-header bg-qc-blue text-white d-flex justify-content-between align-items-center">
+      <span><i class="bi bi-person me-2"></i>Beneficiary</span>
+      <span class="badge {% if attempt.claimant_type == 'beneficiary' %}bg-success{% else %}bg-primary{% endif %}">
+        {% if attempt.claimant_type == 'representative' %}
+          <i class="bi bi-people me-1"></i>Rep. claimed
+        {% else %}
+          <i class="bi bi-person me-1"></i>Self claimed
+        {% endif %}
+      </span>
+    </div>
+    <div class="card-body">
+      <div class="fw-bold fs-5">{{ attempt.beneficiary.full_name }}</div>
+      <div class="font-mono text-muted small">{{ attempt.beneficiary.beneficiary_id }}</div>
+      <div class="text-muted small">{{ attempt.beneficiary.municipality }}, {{ attempt.beneficiary.province }}</div>
+    </div>
+  </div>
+
+  <div class="card mb-3">
+    <div class="card-header bg-qc-blue text-white">
+      <i class="bi bi-bar-chart me-2"></i>Verification Details
+    </div>
+    <div class="card-body">
+      <div class="row g-3">
+        <div class="col-6">
+          <div class="text-muted small fw-semibold mb-1">SIMILARITY SCORE</div>
+          <div class="fs-3 fw-bold font-mono
+            {% if attempt.similarity_score is not None and attempt.similarity_score >= attempt.threshold_used %}
+              text-success
+            {% elif attempt.similarity_score is not None %}
+              text-danger
+            {% else %}text-muted{% endif %}">
+            {% if attempt.similarity_score is not None %}
+              {{ attempt.similarity_score|floatformat:4 }}
+            {% else %}&mdash;{% endif %}
+          </div>
+          <div class="text-muted small">
+            Threshold: <span class="font-mono">{{ attempt.threshold_used }}</span>
+          </div>
+        </div>
+        <div class="col-6">
+          <div class="text-muted small fw-semibold mb-1">LIVENESS CHECK</div>
+          <div class="fs-3 fw-bold {% if attempt.liveness_passed %}text-success{% elif attempt.liveness_passed is not None %}text-danger{% else %}text-muted{% endif %}">
+            {% if attempt.liveness_passed %}PASSED
+            {% elif attempt.liveness_passed is not None %}FAILED
+            {% else %}N/A{% endif %}
+          </div>
+          {% if attempt.liveness_score is not None %}
+          <div class="text-muted small">Score: <span class="font-mono">{{ attempt.liveness_score|floatformat:3 }}</span></div>
+          {% endif %}
+        </div>
+        <div class="col-6">
+          <div class="text-muted small fw-semibold mb-1">VERIFIED BY</div>
+          <div class="fw-semibold small">{{ attempt.performed_by.get_full_name|default:attempt.performed_by.username }}</div>
+        </div>
+        <div class="col-6">
+          <div class="text-muted small fw-semibold mb-1">TIMESTAMP</div>
+          <div class="fw-semibold small">{{ attempt.timestamp|date:"M d, Y H:i:s" }}</div>
+        </div>
+      </div>
+
+      {% if attempt.decision_reason %}
+      <hr class="my-3">
+      <div class="small">
+        <span class="text-muted fw-semibold">DECISION REASON: </span>
+        <span>{{ attempt.decision_reason }}</span>
+      </div>
+      {% endif %}
+    </div>
+  </div>
+
+  {% if attempt.overridden %}
+  <div class="alert d-flex gap-3 align-items-start mb-3"
+       style="background:#e0f2fe; border:1px solid #7dd3fc;">
+    <i class="bi bi-shield-check text-qc-blue flex-shrink-0 mt-1" style="font-size:1.2rem;"></i>
+    <div>
+      <div class="fw-bold text-qc-blue mb-1">Admin Override Applied</div>
+      <div class="small"><strong>By:</strong> {{ attempt.override_by.get_full_name }}</div>
+      <div class="small"><strong>At:</strong> {{ attempt.override_at|date:"M d, Y H:i" }}</div>
+      <div class="small"><strong>Reason:</strong> {{ attempt.override_reason }}</div>
+    </div>
+  </div>
+  {% endif %}
+
+  {% if attempt.fallback_triggered %}
+  <div class="alert d-flex gap-3 align-items-start mb-3"
+       style="background:#fff7ed; border:1px solid #fdba74;">
+    <i class="bi bi-exclamation-triangle-fill text-warning flex-shrink-0 mt-1" style="font-size:1.2rem;"></i>
+    <div>
+      <div class="fw-bold mb-1">Fallback ID Verification Used</div>
+      <div class="small">
+        ID Type: {{ attempt.fallback_id_type|default:"N/A" }} &bull;
+        Result:
+        {% if attempt.fallback_id_verified %}
+          <span class="text-success fw-semibold">Verified</span>
+        {% elif attempt.fallback_id_verified is not None %}
+          <span class="text-danger fw-semibold">Not Verified</span>
+        {% else %}&mdash;{% endif %}
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
+  {% if attempt.notes %}
+  <div class="text-muted small fst-italic mb-3">{{ attempt.notes }}</div>
+  {% endif %}
+
+  <div class="d-flex gap-2 flex-wrap">
+    <a href="{% url 'verification:verify_select' %}" class="btn btn-primary">
+      <i class="bi bi-camera-video me-1"></i> New Verification
+    </a>
+    <a href="{% url 'beneficiaries:beneficiary_detail' attempt.beneficiary.pk %}"
+       class="btn btn-outline-secondary">
+      <i class="bi bi-person me-1"></i> View Beneficiary
+    </a>
+    {% if user.is_admin and attempt.decision == 'manual_review' and not attempt.overridden %}
+    <a href="{% url 'verification:admin_override' attempt.pk %}" class="btn btn-warning">
+      <i class="bi bi-pencil me-1"></i> Override Decision
+    </a>
+    {% endif %}
+  </div>
+
+</div>
+</div>
+{% endblock %}

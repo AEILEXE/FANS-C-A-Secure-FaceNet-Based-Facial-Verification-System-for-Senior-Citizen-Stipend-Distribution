@@ -1,0 +1,179 @@
+{% extends "base.html" %}
+{% block title %}Verify &mdash; {{ beneficiary.full_name }}{% endblock %}
+{% block nav_verify %}active{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+<div class="col-lg-10 col-xl-9">
+
+  <div class="breadcrumb-fans mb-1">
+    <a href="{% url 'beneficiaries:dashboard' %}">Dashboard</a> /
+    <a href="{% url 'verification:verify_select' %}">Verify</a> /
+    {{ beneficiary.full_name }}
+  </div>
+  <div class="d-flex justify-content-between align-items-start mb-4">
+    <div>
+      <h4 class="fw-bold text-qc-blue mb-0">
+        <i class="bi bi-camera-video me-2"></i>{{ beneficiary.full_name }}
+      </h4>
+      <span class="font-mono text-muted small">{{ beneficiary.beneficiary_id }}</span>
+      &nbsp;&bull;&nbsp;
+      <span class="badge {% if claimant_type == 'beneficiary' %}bg-success{% else %}bg-primary{% endif %} ms-1">
+        {% if claimant_type == 'beneficiary' %}
+          <i class="bi bi-person me-1"></i>Beneficiary claiming
+        {% else %}
+          <i class="bi bi-people me-1"></i>Representative claiming
+        {% endif %}
+      </span>
+    </div>
+    <span class="badge bg-secondary font-mono" style="font-size:0.7rem; max-width:130px; overflow:hidden; text-overflow:ellipsis;">
+      {{ session_id|truncatechars:10 }}&hellip;
+    </span>
+  </div>
+
+  {% if active_event %}
+  <div class="alert d-flex gap-2 align-items-center mb-3" style="background:#f0fdf4; border:1px solid #86efac; font-size:0.85rem;">
+    <i class="bi bi-calendar-check-fill text-success flex-shrink-0"></i>
+    <span>Payout period: <strong>{{ active_event.title }}</strong> &mdash; {{ active_event.date|date:"F d, Y" }}</span>
+  </div>
+  {% endif %}
+
+  {% if using_mock %}
+  <div class="alert alert-danger d-flex gap-2 align-items-start mb-3">
+    <i class="bi bi-exclamation-triangle-fill flex-shrink-0 mt-1"></i>
+    <div>
+      <strong>Face recognition model not loaded.</strong>
+      Verification will fail. Install <code>keras-facenet</code> and <code>tensorflow</code> then restart.
+    </div>
+  </div>
+  {% endif %}
+
+  {% if not liveness_required %}
+  <div class="alert d-flex gap-2 align-items-center mb-3" style="background:#f0f4ff; border:1px solid #c7d7fa; font-size:0.85rem;">
+    <i class="bi bi-info-circle-fill text-qc-blue flex-shrink-0"></i>
+    <span><strong>Demo mode:</strong> Liveness check is informational only &mdash; face matching runs regardless.</span>
+  </div>
+  {% endif %}
+
+  <div class="row g-4">
+
+    <!-- Camera Panel -->
+    <div class="col-lg-7">
+      <div class="card h-100">
+        <div class="card-header bg-qc-blue text-white">
+          <i class="bi bi-camera me-2"></i>Live Camera Feed
+        </div>
+        <div class="card-body text-center p-3">
+          <div class="position-relative d-inline-block">
+            <video id="video" autoplay muted playsinline
+                   class="rounded-3"
+                   style="max-width:100%; width:440px; height:330px; object-fit:cover; border:2px solid var(--qc-blue);"></video>
+            <div id="faceBorder" class="position-absolute top-50 start-50 translate-middle"
+                 style="width:185px; height:245px; border:3px dashed rgba(255,255,255,0.75);
+                        border-radius:50%; pointer-events:none; transition:border-color 0.4s;"></div>
+          </div>
+          <canvas id="captureCanvas" style="display:none;"></canvas>
+          <div id="statusPanel"></div>
+          <div id="guidancePanel" style="display:none;" class="mt-2 text-start"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Status Panel -->
+    <div class="col-lg-5">
+      <div class="card mb-3">
+        <div class="card-header bg-qc-blue text-white">
+          <i class="bi bi-shield-check me-2"></i>Liveness Check
+        </div>
+        <div class="card-body p-3">
+
+          <div class="d-flex align-items-center mb-3 gap-3">
+            <div id="step1Icon" style="font-size:1.3rem; min-width:1.5rem; text-align:center;">
+              <i class="bi bi-hourglass-split text-muted"></i>
+            </div>
+            <div>
+              <div class="fw-semibold small">Anti-Spoofing</div>
+              <div id="step1Msg" class="text-muted small">Waiting&hellip;</div>
+            </div>
+          </div>
+
+          <div class="d-flex align-items-center mb-3 gap-3">
+            <div id="step2Icon" style="font-size:1.3rem; min-width:1.5rem; text-align:center;">
+              <i class="bi bi-hourglass-split text-muted"></i>
+            </div>
+            <div>
+              <div class="fw-semibold small">Head Movement</div>
+              <div id="step2Msg" class="text-muted small">Waiting&hellip;</div>
+            </div>
+          </div>
+
+          <div id="challengeBox" class="p-3 rounded-3 text-center mb-3"
+               style="background:#f0f4ff; border:1px solid #c7d7fa; display:none;">
+            <div class="fw-bold small text-qc-blue mb-1">Challenge</div>
+            <div id="challengeText" class="fw-bold fs-5">{{ challenge_display }}</div>
+            <div class="progress mt-2" style="height:5px;">
+              <div id="challengeTimer" class="progress-bar bg-warning" style="width:100%;"></div>
+            </div>
+          </div>
+
+          <div id="livenessScoreBox" style="display:none;">
+            <div class="d-flex justify-content-between small mb-1">
+              <span class="fw-semibold">Liveness Score</span>
+              <span id="livenessScoreVal" class="font-mono">&mdash;</span>
+            </div>
+            <div class="progress" style="height:8px;">
+              <div id="livenessScoreBar" class="progress-bar" style="width:0%;"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div id="livenessResult" class="card mb-3" style="display:none;">
+        <div class="card-body p-3" id="livenessResultBody"></div>
+      </div>
+
+      <div class="small text-muted mb-2 px-1">
+        <i class="bi bi-lightbulb me-1"></i>
+        Tips: Face a light source &bull; 30-50 cm from camera &bull; Remove glare &bull; Hold still
+      </div>
+
+      <div class="d-grid gap-2">
+        <button id="startBtn" class="btn btn-primary fw-semibold" disabled>
+          <i class="bi bi-play-circle me-1"></i> Start Liveness Check
+        </button>
+        <button id="verifyBtn" class="btn btn-success fw-semibold" style="display:none;">
+          <i class="bi bi-shield-check me-1"></i> Process Verification
+        </button>
+        <a href="{% url 'verification:verify_select' %}" class="btn btn-outline-secondary btn-sm">
+          <i class="bi bi-x me-1"></i> Cancel
+        </a>
+      </div>
+    </div>
+
+  </div>
+
+  <div id="processingOverlay" class="text-center mt-4" style="display:none;">
+    <div class="spinner-border text-qc-blue me-2" role="status"></div>
+    <span class="fw-semibold">Processing facial verification&hellip; Please wait.</span>
+  </div>
+
+</div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+{% load static %}
+<script>
+const CHALLENGE = "{{ challenge }}";
+const CHALLENGE_DISPLAY = "{{ challenge_display }}";
+const CHECK_LIVENESS_URL = "{% url 'verification:verify_check_liveness' %}";
+const VERIFY_SUBMIT_URL = "{% url 'verification:verify_submit' %}";
+const CSRF_TOKEN = "{{ csrf_token }}";
+const BENEFICIARY_ID = "{{ beneficiary.pk }}";
+const LIVENESS_REQUIRED = {{ liveness_required|yesno:"true,false" }};
+const DEMO_MODE = {{ demo_mode|yesno:"true,false" }};
+</script>
+<script src="{% static 'js/webcam.js' %}"></script>
+<script src="{% static 'js/liveness.js' %}"></script>
+<script src="{% static 'js/verify.js' %}"></script>
+{% endblock %}

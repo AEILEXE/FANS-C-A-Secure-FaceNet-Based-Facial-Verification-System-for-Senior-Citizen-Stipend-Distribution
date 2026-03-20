@@ -1,0 +1,117 @@
+{% extends "base.html" %}
+{% block title %}Audit Logs{% endblock %}
+{% block nav_logs %}active{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <div class="breadcrumb-fans mb-1">
+      <a href="{% url 'beneficiaries:dashboard' %}">Dashboard</a> / Audit Logs
+    </div>
+    <h4 class="fw-bold text-qc-blue mb-0"><i class="bi bi-journal-text me-2"></i>Audit Logs</h4>
+  </div>
+</div>
+
+<div class="card mb-3">
+  <div class="card-body py-3">
+    <form method="GET" class="row g-2 align-items-end">
+      <div class="col-md-4">
+        <label class="form-label small fw-semibold mb-1">Action Type</label>
+        <select name="action" class="form-select form-select-sm">
+          <option value="">All Actions</option>
+          {% for val, label in action_choices %}
+          <option value="{{ val }}" {% if action_filter == val %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="col-md-4">
+        <label class="form-label small fw-semibold mb-1">Username</label>
+        <input type="text" name="user" value="{{ user_filter }}"
+               class="form-control form-control-sm" placeholder="Filter by username&hellip;">
+      </div>
+      <div class="col-auto">
+        <button type="submit" class="btn btn-primary btn-sm">
+          <i class="bi bi-funnel me-1"></i> Filter
+        </button>
+        <a href="{% url 'logs:audit_logs' %}" class="btn btn-outline-secondary btn-sm">Reset</a>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div class="card">
+  <div class="table-responsive">
+    <table class="table table-hover table-sm mb-0">
+      <thead>
+        <tr>
+          <th>Timestamp</th>
+          <th>User</th>
+          <th>Action</th>
+          <th>Target</th>
+          <th>IP Address</th>
+          <th>Details</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for log in logs %}
+        <tr>
+          <td class="small text-muted" style="white-space:nowrap;">{{ log.timestamp|date:"M d Y, H:i:s" }}</td>
+          <td class="small font-mono">{{ log.user.username|default:"&mdash;" }}</td>
+          <td>
+            <span class="badge small
+              {% if log.action == 'login' %}bg-success
+              {% elif log.action == 'logout' %}bg-secondary
+              {% elif log.action == 'login_failed' %}bg-danger
+              {% elif log.action == 'verify' %}bg-info
+              {% elif log.action == 'register' %}bg-primary
+              {% elif log.action == 'override' %}bg-warning text-dark
+              {% elif log.action == 'fallback' %}bg-warning text-dark
+              {% else %}bg-light text-dark{% endif %}">
+              {{ log.get_action_display }}
+            </span>
+          </td>
+          <td class="small text-muted">{{ log.target_type }} {{ log.target_id|truncatechars:15 }}</td>
+          <td class="small font-mono text-muted">{{ log.ip_address|default:"&mdash;" }}</td>
+          <td class="small text-muted">
+            {% if log.details %}{{ log.details|truncatechars:60 }}{% endif %}
+          </td>
+        </tr>
+        {% empty %}
+        <tr>
+          <td colspan="6" class="text-center text-muted py-5">
+            <i class="bi bi-journal-x fs-1 d-block mb-2 opacity-25"></i>
+            No audit logs found.
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  {% if logs.has_other_pages %}
+  <div class="card-footer bg-transparent">
+    <nav>
+      <ul class="pagination pagination-sm mb-0 justify-content-center">
+        {% if logs.has_previous %}
+        <li class="page-item">
+          <a class="page-link" href="?page={{ logs.previous_page_number }}&action={{ action_filter }}&user={{ user_filter }}">
+            <i class="bi bi-chevron-left"></i> Prev
+          </a>
+        </li>
+        {% endif %}
+        <li class="page-item disabled">
+          <span class="page-link">Page {{ logs.number }} of {{ logs.paginator.num_pages }}</span>
+        </li>
+        {% if logs.has_next %}
+        <li class="page-item">
+          <a class="page-link" href="?page={{ logs.next_page_number }}&action={{ action_filter }}&user={{ user_filter }}">
+            Next <i class="bi bi-chevron-right"></i>
+          </a>
+        </li>
+        {% endif %}
+      </ul>
+    </nav>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

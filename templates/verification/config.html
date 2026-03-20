@@ -1,0 +1,129 @@
+{% extends "base.html" %}
+{% block title %}Threshold Configuration{% endblock %}
+{% block nav_admin %}active{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+<div class="col-lg-6">
+
+  <div class="breadcrumb-fans mb-1">
+    <a href="{% url 'beneficiaries:dashboard' %}">Dashboard</a> / Threshold Configuration
+  </div>
+  <h4 class="fw-bold text-qc-blue mb-4">
+    <i class="bi bi-sliders me-2"></i>Verification Threshold
+  </h4>
+
+  <div class="alert d-flex gap-3 align-items-start mb-4"
+       style="background:#f0f4ff; border:1px solid #c7d7fa;">
+    <i class="bi bi-info-circle-fill text-qc-blue flex-shrink-0 mt-1" style="font-size:1.2rem;"></i>
+    <div>
+      <div class="fw-bold text-qc-blue mb-1">About the Similarity Threshold</div>
+      <p class="small mb-1">The threshold determines how closely a live face must match the registered embedding to be verified.</p>
+      <ul class="small mb-0">
+        <li><strong>Higher</strong> (e.g. 0.85): More strict &mdash; fewer false accepts, more false rejects</li>
+        <li><strong>Lower</strong> (e.g. 0.65): More lenient &mdash; fewer false rejects, more false accepts</li>
+        <li><strong>Recommended:</strong> 0.70 &ndash; 0.80 for senior citizens</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="card mb-4">
+    <div class="card-header bg-qc-blue text-white">
+      <i class="bi bi-sliders me-2"></i>Current Setting
+    </div>
+    <div class="card-body p-4">
+      <div class="text-center mb-4">
+        <div class="text-muted small fw-semibold mb-1">CURRENT THRESHOLD</div>
+        <div class="display-4 fw-bold text-qc-blue font-mono">{{ current_threshold }}</div>
+      </div>
+
+      <form method="POST" novalidate>
+        {% csrf_token %}
+        <div class="mb-3">
+          <label class="form-label fw-semibold">
+            New Threshold Value
+            <span class="text-muted fw-normal">(0.10 &ndash; 1.00)</span>
+          </label>
+          <input type="number" name="threshold" class="form-control form-control-lg text-center font-mono"
+                 value="{{ current_threshold }}" min="0.10" max="1.00" step="0.01" required>
+          <div class="d-flex justify-content-between mt-1">
+            <span class="text-muted small">0.10 &mdash; Lenient</span>
+            <span class="text-muted small">1.00 &mdash; Strict</span>
+          </div>
+        </div>
+        <button type="submit" class="btn btn-primary w-100 py-2">
+          <i class="bi bi-save me-1"></i> Update Threshold
+        </button>
+      </form>
+    </div>
+  </div>
+
+  <div class="card mb-4">
+    <div class="card-header bg-qc-blue text-white">
+      <i class="bi bi-shield-check me-2"></i>Liveness &amp; Anti-Spoofing Settings
+    </div>
+    <div class="card-body p-0">
+      <table class="table table-sm table-borderless mb-0">
+        <tbody>
+          <tr>
+            <th class="text-muted ps-3" style="width:55%;">Liveness Mode</th>
+            <td>
+              {% if liveness_required %}
+                <span class="badge bg-danger">Strict &mdash; blocks verification on failure</span>
+              {% else %}
+                <span class="badge bg-warning text-dark">Dev &mdash; non-blocking (logged only)</span>
+              {% endif %}
+            </td>
+          </tr>
+          <tr>
+            <th class="text-muted ps-3">Anti-Spoof Threshold</th>
+            <td class="font-mono">{{ anti_spoof_threshold }}</td>
+          </tr>
+        </tbody>
+      </table>
+      <div class="px-3 pb-3">
+        <div class="small text-muted mt-1">
+          To change these values, set <code>LIVENESS_REQUIRED</code> and <code>ANTI_SPOOF_THRESHOLD</code>
+          in your <code>.env</code> file and restart the server.
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-header bg-qc-blue text-white">
+      <i class="bi bi-table me-2"></i>Decision Reference Guide
+    </div>
+    <div class="card-body p-0">
+      <table class="table table-sm mb-0">
+        <thead>
+          <tr>
+            <th class="ps-3">Score Range</th>
+            <th>Decision</th>
+            <th>Action</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="ps-3 font-mono">&ge; {{ current_threshold }}</td>
+            <td><span class="badge bg-success">Verified</span></td>
+            <td class="small text-muted">Release stipend</td>
+          </tr>
+          <tr>
+            <td class="ps-3 font-mono">{{ threshold_review_min }} &ndash; {{ threshold_review_max }}</td>
+            <td><span class="badge bg-warning text-dark">Manual Review</span></td>
+            <td class="small text-muted">Admin decision required</td>
+          </tr>
+          <tr>
+            <td class="ps-3 font-mono">&lt; {{ threshold_review_min }}</td>
+            <td><span class="badge bg-danger">Not Verified</span></td>
+            <td class="small text-muted">Deny / fallback ID check</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+</div>
+</div>
+{% endblock %}

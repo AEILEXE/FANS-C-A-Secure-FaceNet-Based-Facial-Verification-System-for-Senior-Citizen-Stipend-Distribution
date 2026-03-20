@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+{% block title %}Manual Review Queue{% endblock %}
+{% block nav_admin %}active{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <div class="breadcrumb-fans mb-1">
+      <a href="{% url 'beneficiaries:dashboard' %}">Dashboard</a> / Manual Review Queue
+    </div>
+    <h4 class="fw-bold text-qc-blue mb-0">
+      <i class="bi bi-eye me-2"></i>Manual Review Queue
+    </h4>
+  </div>
+  <span class="badge bg-warning text-dark" style="font-size:0.9rem; padding:0.5rem 0.9rem;">
+    {{ pending.count }} pending
+  </span>
+</div>
+
+<div class="card">
+  <div class="table-responsive">
+    <table class="table table-hover mb-0">
+      <thead>
+        <tr>
+          <th>Date / Time</th>
+          <th>Beneficiary</th>
+          <th>Similarity Score</th>
+          <th>Threshold</th>
+          <th>Liveness</th>
+          <th>Performed By</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for a in pending %}
+        <tr>
+          <td class="small text-muted" style="white-space:nowrap;">{{ a.timestamp|date:"M d, Y H:i" }}</td>
+          <td>
+            <div class="fw-semibold">{{ a.beneficiary.full_name }}</div>
+            <div class="font-mono text-muted small">{{ a.beneficiary.beneficiary_id }}</div>
+          </td>
+          <td>
+            <span class="badge bg-warning text-dark font-mono">
+              {{ a.similarity_score|floatformat:4|default:"N/A" }}
+            </span>
+          </td>
+          <td class="small font-mono text-muted">{{ a.threshold_used }}</td>
+          <td class="text-center">
+            {% if a.liveness_passed %}
+              <i class="bi bi-check-circle-fill text-success"></i>
+            {% else %}
+              <i class="bi bi-x-circle-fill text-danger"></i>
+            {% endif %}
+          </td>
+          <td class="small">{{ a.performed_by.username }}</td>
+          <td>
+            <a href="{% url 'verification:verify_result' a.pk %}"
+               class="btn btn-sm btn-outline-primary me-1">
+              <i class="bi bi-eye me-1"></i>View
+            </a>
+            <a href="{% url 'verification:admin_override' a.pk %}"
+               class="btn btn-sm btn-warning">
+              <i class="bi bi-pencil me-1"></i>Override
+            </a>
+          </td>
+        </tr>
+        {% empty %}
+        <tr>
+          <td colspan="7" class="text-center text-muted py-5">
+            <i class="bi bi-check-all fs-1 d-block mb-2 text-success opacity-50"></i>
+            No pending manual reviews. Queue is clear.
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

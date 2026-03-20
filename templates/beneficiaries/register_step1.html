@@ -1,0 +1,167 @@
+{% extends "base.html" %}
+{% block title %}Register &mdash; Step 1{% endblock %}
+{% block nav_reg %}active{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+<div class="col-lg-9 col-xl-8">
+
+  <div class="breadcrumb-fans mb-1">
+    <a href="{% url 'beneficiaries:dashboard' %}">Dashboard</a> / Register Beneficiary
+  </div>
+  <h4 class="fw-bold text-qc-blue mb-4"><i class="bi bi-person-plus me-2"></i>Register New Beneficiary</h4>
+
+  <div class="reg-stepper mb-4">
+    <div class="reg-step active">
+      <div class="step-dot">1</div>
+      <div class="step-label">Personal Info</div>
+    </div>
+    <div class="reg-step">
+      <div class="step-dot">2</div>
+      <div class="step-label">Representative</div>
+    </div>
+    <div class="reg-step">
+      <div class="step-dot">3</div>
+      <div class="step-label">Consent</div>
+    </div>
+    <div class="reg-step">
+      <div class="step-dot">4</div>
+      <div class="step-label">Face Capture</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-header bg-qc-blue text-white">
+      <i class="bi bi-person me-2"></i>Step 1 of 4 &mdash; Personal Information
+    </div>
+    <div class="card-body p-4">
+      <form method="POST" novalidate>
+        {% csrf_token %}
+        <div class="row g-3">
+
+          <div class="col-md-4">
+            <label class="form-label">First Name <span class="text-danger">*</span></label>
+            {{ form.first_name }}
+            {% if form.first_name.errors %}
+              <div class="text-danger small mt-1">{{ form.first_name.errors|join:", " }}</div>
+            {% endif %}
+          </div>
+
+          <div class="col-md-4">
+            <label class="form-label">Middle Name</label>
+            {{ form.middle_name }}
+          </div>
+
+          <div class="col-md-4">
+            <label class="form-label">Last Name <span class="text-danger">*</span></label>
+            {{ form.last_name }}
+            {% if form.last_name.errors %}
+              <div class="text-danger small mt-1">{{ form.last_name.errors|join:", " }}</div>
+            {% endif %}
+          </div>
+
+          <div class="col-md-4">
+            <label class="form-label">Date of Birth <span class="text-danger">*</span></label>
+            {{ form.date_of_birth }}
+            {% if form.date_of_birth.errors %}
+              <div class="text-danger small mt-1">{{ form.date_of_birth.errors|join:", " }}</div>
+            {% endif %}
+            <div class="form-text">Must be at least 60 years old.</div>
+          </div>
+
+          <div class="col-md-4">
+            <label class="form-label">Gender <span class="text-danger">*</span></label>
+            {{ form.gender }}
+            {% if form.gender.errors %}
+              <div class="text-danger small mt-1">{{ form.gender.errors|join:", " }}</div>
+            {% endif %}
+          </div>
+
+          <div class="col-md-4">
+            <label class="form-label">Contact Number</label>
+            {{ form.contact_number }}
+          </div>
+
+          <div class="col-12">
+            <label class="form-label">Home Address (Street / House No.) <span class="text-danger">*</span></label>
+            {{ form.address }}
+            {% if form.address.errors %}
+              <div class="text-danger small mt-1">{{ form.address.errors|join:", " }}</div>
+            {% endif %}
+          </div>
+
+          <div class="col-md-4">
+            <label class="form-label">Province <span class="text-danger">*</span></label>
+            {{ form.province }}
+            {% if form.province.errors %}
+              <div class="text-danger small mt-1">{{ form.province.errors|join:", " }}</div>
+            {% endif %}
+          </div>
+
+          <div class="col-md-4">
+            <label class="form-label">Municipality / City <span class="text-danger">*</span></label>
+            <div id="municipality_wrap">{{ form.municipality }}</div>
+            {% if form.municipality.errors %}
+              <div class="text-danger small mt-1">{{ form.municipality.errors|join:", " }}</div>
+            {% endif %}
+          </div>
+
+          <div class="col-md-4">
+            <label class="form-label">Barangay <span class="text-danger">*</span></label>
+            <div id="barangay_wrap">{{ form.barangay }}</div>
+            {% if form.barangay.errors %}
+              <div class="text-danger small mt-1">{{ form.barangay.errors|join:", " }}</div>
+            {% endif %}
+          </div>
+
+        </div>
+
+        <!-- ID Section -->
+        <hr class="my-4">
+        <h6 class="fw-bold text-qc-blue mb-3">
+          <i class="bi bi-card-text me-1"></i> Government ID Information
+        </h6>
+        <div class="row g-3">
+
+          <div class="col-md-4">
+            <label class="form-label">Senior Citizen ID Number</label>
+            {{ form.senior_citizen_id }}
+            <div class="form-text">If available from OSCA.</div>
+          </div>
+
+          <div class="col-md-4">
+            <label class="form-label">Valid ID Type</label>
+            {{ form.valid_id_type }}
+          </div>
+
+          <div class="col-md-4">
+            <label class="form-label">Valid ID Number</label>
+            {{ form.valid_id_number }}
+          </div>
+
+        </div>
+
+        {% if form.non_field_errors %}
+        <div class="alert alert-danger mt-3 d-flex gap-2 align-items-center">
+          <i class="bi bi-exclamation-triangle-fill flex-shrink-0"></i>
+          {{ form.non_field_errors|join:", " }}
+        </div>
+        {% endif %}
+
+        <div class="d-flex justify-content-end mt-4">
+          <button type="submit" class="btn btn-primary px-5">
+            Next <i class="bi bi-arrow-right ms-1"></i>
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+</div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+{% load static %}
+<script src="{% static 'js/address_cascades.js' %}"></script>
+{% endblock %}
