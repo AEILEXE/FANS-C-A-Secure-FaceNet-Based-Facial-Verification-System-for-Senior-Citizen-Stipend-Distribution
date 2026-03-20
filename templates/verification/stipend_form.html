@@ -39,6 +39,21 @@
         </div>
 
         <div class="mb-3">
+          <label class="form-label fw-semibold">Event Type <span class="text-danger">*</span></label>
+          <select name="event_type" class="form-select">
+            <option value="regular" {% if not event or event.event_type == 'regular' %}selected{% endif %}>
+              Regular Monthly Stipend
+            </option>
+            <option value="birthday_bonus" {% if event.event_type == 'birthday_bonus' %}selected{% endif %}>
+              Birthday Bonus
+            </option>
+          </select>
+          <div class="form-text">
+            Birthday Bonus events only allow beneficiaries whose birth month matches the event month to claim.
+          </div>
+        </div>
+
+        <div class="mb-3">
           <label class="form-label fw-semibold">Distribution Date <span class="text-danger">*</span></label>
           <input type="date" name="date" class="form-control"
                  value="{{ event.date|date:'Y-m-d'|default:'' }}" required>

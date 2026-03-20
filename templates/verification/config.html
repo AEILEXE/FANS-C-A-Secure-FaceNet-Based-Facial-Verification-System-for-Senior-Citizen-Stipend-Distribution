@@ -59,6 +59,63 @@
   </div>
 
   <div class="card mb-4">
+    <div class="card-header {% if using_mock %}bg-danger{% else %}bg-success{% endif %} text-white">
+      <i class="bi bi-cpu me-2"></i>Face Recognition Model Status
+    </div>
+    <div class="card-body p-0">
+      <table class="table table-sm table-borderless mb-0">
+        <tbody>
+          <tr>
+            <th class="text-muted ps-3" style="width:40%;">Model</th>
+            <td>
+              {% if using_mock %}
+                <span class="badge bg-danger">MOCK &mdash; not loaded</span>
+              {% else %}
+                <span class="badge bg-success">FaceNet (keras-facenet)</span>
+              {% endif %}
+            </td>
+          </tr>
+          <tr>
+            <th class="text-muted ps-3">Verification Status</th>
+            <td>
+              {% if using_mock %}
+                <span class="text-danger fw-semibold small">Real verification is DISABLED. All scores are random.</span>
+              {% else %}
+                <span class="text-success fw-semibold small">Real face matching is active.</span>
+              {% endif %}
+            </td>
+          </tr>
+          {% if model_load_error %}
+          <tr>
+            <th class="text-muted ps-3">Load Error</th>
+            <td class="font-mono small text-danger">{{ model_load_error }}</td>
+          </tr>
+          {% endif %}
+          <tr>
+            <th class="text-muted ps-3">Demo Mode</th>
+            <td>
+              {% if demo_mode %}
+                <span class="badge bg-warning text-dark">On (threshold: {{ demo_threshold }})</span>
+              {% else %}
+                <span class="badge bg-secondary">Off (threshold: {{ current_threshold }})</span>
+              {% endif %}
+            </td>
+          </tr>
+        </tbody>
+      </table>
+      {% if using_mock %}
+      <div class="px-3 pb-3">
+        <div class="alert alert-warning mb-0 mt-2 small">
+          <strong>To enable real verification:</strong>
+          Install <code>tensorflow-cpu</code> and <code>keras-facenet</code>, then restart the server.
+          See the README Troubleshooting section for Windows-specific instructions.
+        </div>
+      </div>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="card mb-4">
     <div class="card-header bg-qc-blue text-white">
       <i class="bi bi-shield-check me-2"></i>Liveness &amp; Anti-Spoofing Settings
     </div>

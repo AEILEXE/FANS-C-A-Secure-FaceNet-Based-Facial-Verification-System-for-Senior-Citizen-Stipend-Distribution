@@ -40,7 +40,12 @@
         <div class="list-group-item p-3">
           <div class="d-flex justify-content-between align-items-start">
             <div class="flex-grow-1">
-              <div class="fw-semibold">{{ event.title }}</div>
+              <div class="fw-semibold">
+                {{ event.title }}
+                {% if event.event_type == 'birthday_bonus' %}
+                  <span class="badge bg-warning text-dark ms-1"><i class="bi bi-gift me-1"></i>Birthday Bonus</span>
+                {% endif %}
+              </div>
               <div class="small text-muted">
                 <i class="bi bi-calendar3 me-1"></i>{{ event.date|date:"F d, Y" }}
                 {% if event.date == today %}
@@ -53,6 +58,9 @@
               <div class="small text-muted mt-1">
                 <i class="bi bi-check2-square me-1"></i>
                 {{ event.claims.count }} claim{{ event.claims.count|pluralize }} linked
+                {% if event.event_type == 'birthday_bonus' %}
+                  &bull; <i class="bi bi-people me-1"></i>{{ event.get_eligible_beneficiaries.count }} eligible
+                {% endif %}
               </div>
             </div>
             {% if user.is_admin %}
@@ -100,6 +108,9 @@
             <div>
               <div class="fw-semibold small {% if not event.is_active %}text-muted{% endif %}">
                 {{ event.title }}
+                {% if event.event_type == 'birthday_bonus' %}
+                  <span class="badge bg-warning text-dark ms-1" style="font-size:0.65rem;"><i class="bi bi-gift"></i></span>
+                {% endif %}
                 {% if not event.is_active %}<span class="badge bg-secondary ms-1">Inactive</span>{% endif %}
               </div>
               <div class="text-muted" style="font-size:0.8rem;">{{ event.date|date:"M d, Y" }}</div>

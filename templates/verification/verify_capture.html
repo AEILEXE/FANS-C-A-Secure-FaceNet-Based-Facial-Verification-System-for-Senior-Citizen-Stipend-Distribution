@@ -33,8 +33,16 @@
 
   {% if active_event %}
   <div class="alert d-flex gap-2 align-items-center mb-3" style="background:#f0fdf4; border:1px solid #86efac; font-size:0.85rem;">
+    {% if is_birthday_event %}
+    <i class="bi bi-gift-fill text-success flex-shrink-0"></i>
+    <span>
+      <span class="badge bg-warning text-dark me-1"><i class="bi bi-gift me-1"></i>Birthday Bonus</span>
+      <strong>{{ active_event.title }}</strong> &mdash; {{ active_event.date|date:"F d, Y" }}
+    </span>
+    {% else %}
     <i class="bi bi-calendar-check-fill text-success flex-shrink-0"></i>
     <span>Payout period: <strong>{{ active_event.title }}</strong> &mdash; {{ active_event.date|date:"F d, Y" }}</span>
+    {% endif %}
   </div>
   {% endif %}
 
@@ -42,8 +50,12 @@
   <div class="alert alert-danger d-flex gap-2 align-items-start mb-3">
     <i class="bi bi-exclamation-triangle-fill flex-shrink-0 mt-1"></i>
     <div>
-      <strong>Face recognition model not loaded.</strong>
-      Verification will fail. Install <code>keras-facenet</code> and <code>tensorflow</code> then restart.
+      <strong>Face recognition model not loaded &mdash; verification will fail.</strong>
+      {% if model_load_error %}
+      <div class="mt-1 font-mono small text-danger-emphasis">{{ model_load_error }}</div>
+      {% else %}
+      <div class="mt-1 small">Install <code>keras-facenet</code> and <code>tensorflow</code>, then restart the server.</div>
+      {% endif %}
     </div>
   </div>
   {% endif %}

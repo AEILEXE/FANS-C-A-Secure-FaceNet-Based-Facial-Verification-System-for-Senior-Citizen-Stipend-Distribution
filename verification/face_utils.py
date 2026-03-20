@@ -262,24 +262,52 @@ def check_face_quality(face_img: np.ndarray) -> dict:
 
 _facenet_model = None
 _using_mock = False
+_model_load_error = None  # stores actual error message for UI display
 
 
 def get_facenet_model():
-    global _facenet_model, _using_mock
-    if _facenet_model is None:
-        try:
-            from keras_facenet import FaceNet
-            _facenet_model = FaceNet()
-            _using_mock = False
-        except (ImportError, Exception) as e:
-            import warnings
-            warnings.warn(
-                f'keras-facenet not available ({e}). Using MOCK embeddings — '
-                'verification scores will be random. Install keras-facenet.',
-                RuntimeWarning
-            )
-            _facenet_model = _MockFaceNet()
-            _using_mock = True
+    global _facenet_model, _using_mock, _model_load_error
+    if _facenet_model is not None:
+        return _facenet_model
+
+    import warnings
+
+    # Step 1: check TensorFlow separately for a clearer error message
+    try:
+        import tensorflow as tf  # noqa: F401
+    except ImportError as e:
+        _model_load_error = (
+            f'TensorFlow not installed ({e}). '
+            'Run: pip install tensorflow'
+        )
+        warnings.warn(_model_load_error, RuntimeWarning)
+        _facenet_model = _MockFaceNet()
+        _using_mock = True
+        return _facenet_model
+
+    # Step 2: load keras-facenet
+    try:
+        from keras_facenet import FaceNet
+        _facenet_model = FaceNet()
+        _using_mock = False
+        _model_load_error = None
+    except ImportError as e:
+        _model_load_error = (
+            f'keras-facenet not installed ({e}). '
+            'Run: pip install keras-facenet'
+        )
+        warnings.warn(_model_load_error, RuntimeWarning)
+        _facenet_model = _MockFaceNet()
+        _using_mock = True
+    except Exception as e:
+        _model_load_error = (
+            f'Model load failed ({type(e).__name__}: {e}). '
+            'Check TensorFlow version compatibility.'
+        )
+        warnings.warn(_model_load_error, RuntimeWarning)
+        _facenet_model = _MockFaceNet()
+        _using_mock = True
+
     return _facenet_model
 
 
@@ -287,6 +315,12 @@ def is_using_mock_model() -> bool:
     """Returns True if the real FaceNet model is not loaded (embeddings are random)."""
     get_facenet_model()
     return _using_mock
+
+
+def get_model_load_error() -> str:
+    """Returns the error that caused mock fallback, or None if model loaded successfully."""
+    get_facenet_model()
+    return _model_load_error
 
 
 class _MockFaceNet:

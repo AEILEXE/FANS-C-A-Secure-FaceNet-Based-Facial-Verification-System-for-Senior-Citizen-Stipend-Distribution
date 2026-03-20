@@ -283,3 +283,107 @@ DEMO_THRESHOLD=0.60
 ANTI_SPOOF_THRESHOLD=0.15
 MAX_RETRY_ATTEMPTS=1
 ```
+
+---
+
+## Migrations Reference (Updated)
+
+| App | Migration | Description |
+|---|---|---|
+| accounts | 0001 | CustomUser model |
+| accounts | 0002 | is_active field (remove verbose_name from AbstractUser override) |
+| beneficiaries | 0001 | Initial beneficiary model |
+| beneficiaries | 0002 | Senior citizen ID, valid ID fields |
+| beneficiaries | 0003 | Lifecycle: deceased status, deactivated_at/by/reason |
+| logs | 0001 | AuditLog model |
+| logs | 0002 | Add 'update' action choice for record edits |
+| verification | 0001 | FaceEmbedding, VerificationAttempt, SystemConfig |
+| verification | 0002 | claimant_type, decision_reason on VerificationAttempt |
+| verification | 0003 | StipendEvent model, stipend_event FK, face_quality_score |
+| verification | 0004 | StipendEvent.event_type (regular / birthday_bonus) |
+
+---
+
+## Troubleshooting
+
+### TensorFlow Installation Fails on Windows (Long Path Error)
+
+**Symptom:**
+```
+Could not install packages due to an OSError: [Errno 2] No such file or directory: ...memory_allocator_impl.h
+HINT: This error might have been caused by long path support being disabled.
+```
+
+**Root cause:** Windows limits file paths to 260 characters by default. TensorFlow wheels contain source files with deeply nested paths that exceed this limit during extraction.
+
+**Fix 1 — Enable Windows Long Path Support (recommended):**
+
+Run PowerShell as Administrator:
+```powershell
+reg add "HKLM\SYSTEM\CurrentControlSet\Control\FileSystem" /v LongPathsEnabled /t REG_DWORD /d 1 /f
+```
+Then restart your computer. After restart, `pip install` should succeed.
+
+**Fix 2 — Use a shorter project path:**
+
+Move or clone the project to a short path such as `D:\FANS`, then run pip install from there. The shorter path leaves enough room for TensorFlow's internal paths.
+
+```
+D:\FANS\       (works — short root)
+D:\3RD YEAR 2ND SEM\Capstone Project\FANS-C-A-...\   (may fail — too long)
+```
+
+**Fix 3 — Use tensorflow-cpu (already in requirements.txt):**
+
+`requirements.txt` already specifies `tensorflow-cpu==2.13.0` instead of `tensorflow`. This is a CPU-only build — smaller, no CUDA/GPU setup needed, and uses the same code paths. It works correctly for capstone demos.
+
+---
+
+### How to Tell Whether Real Face Verification Is Active
+
+After starting the server, go to **Admin > Threshold Configuration** (`/verification/config/`). The "Face Recognition Model Status" card shows one of:
+
+| Status | Meaning |
+|---|---|
+| **FaceNet (keras-facenet)** — green | Real model loaded. Face matching produces meaningful scores. |
+| **MOCK — not loaded** — red | Model failed to load. All similarity scores are random (~0). Verification always fails or produces nonsense results. |
+
+The card also shows the exact error message (e.g., `TensorFlow not installed`) and a link to this troubleshooting guide.
+
+A red banner also appears on the Verification screen whenever mock mode is active, making it impossible to accidentally proceed without noticing.
+
+---
+
+### Mock Mode vs Demo Mode
+
+These are two separate concepts that are often confused:
+
+| Setting | What it does |
+|---|---|
+| `DEMO_MODE=True` | Uses a lower threshold (0.60) and makes liveness non-blocking. Real face matching still runs. |
+| Mock model active | keras-facenet failed to load. All similarity scores are random. No real face matching happens. |
+
+`DEMO_MODE` is a **threshold and UX setting**. Mock model is a **model loading failure**. You can have demo mode on with a real model (correct for capstone), or demo mode off with a mock model (broken — verification never works).
+
+---
+
+### Verification Scores Are Very Low (e.g., 0.05) Even for the Same Person
+
+If the model is loaded correctly but scores are near zero:
+
+1. **Re-register the beneficiary.** If the encryption key changed between registration and verification (e.g., `EMBEDDING_ENCRYPTION_KEY` was blank and the server restarted), the stored embedding is unreadable. Set a stable key in `.env` first, then re-register.
+2. **Check lighting.** Register and verify under similar lighting. Strong backlight or very dim light degrades the embedding.
+3. **Face too far from camera.** Move to 30-50 cm from the lens. Eye distance must be at least 20px in the captured image.
+4. **Re-registration required.** If conditions were very different at registration time, re-capture the face embedding.
+
+---
+
+### python manage.py migrate reports unapplied migrations
+
+If you see warnings like `Your models in app(s): 'accounts', 'logs' have changes that are not yet reflected in a migration`, simply run:
+
+```
+python manage.py migrate
+```
+
+All migrations including the new `accounts/0002`, `logs/0002`, and `verification/0004` are included in the repository. No `makemigrations` is needed unless you add new fields yourself.

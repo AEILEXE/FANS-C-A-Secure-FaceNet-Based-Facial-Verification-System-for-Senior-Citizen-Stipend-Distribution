@@ -16,6 +16,7 @@ from .face_utils import (
     load_image_from_bytes,
     detect_and_align_face,
     is_using_mock_model,
+    get_model_load_error,
 )
 from .liveness import (
     run_full_liveness_check,
@@ -80,6 +81,20 @@ def verify_start(request, pk):
     today = timezone.now().date()
     active_event = StipendEvent.objects.filter(is_active=True, date=today).first()
 
+    # Birthday bonus eligibility check: if today's event is a birthday bonus,
+    # only beneficiaries whose birth month matches the event month can claim via face scan.
+    if (active_event
+            and active_event.event_type == StipendEvent.EVENT_TYPE_BIRTHDAY
+            and claimant_type == VerificationAttempt.CLAIMANT_BENEFICIARY):
+        if not active_event.is_beneficiary_eligible(beneficiary):
+            from django.contrib import messages
+            messages.error(
+                request,
+                f'{beneficiary.full_name} is not eligible for this Birthday Bonus event. '
+                f'Only beneficiaries born in {active_event.date.strftime("%B")} are eligible.'
+            )
+            return redirect('verification:verify_select')
+
     if claimant_type == VerificationAttempt.CLAIMANT_REPRESENTATIVE:
         if not beneficiary.has_representative:
             from django.contrib import messages
@@ -130,6 +145,10 @@ def verify_start(request, pk):
     liveness_required = getattr(django_settings, 'LIVENESS_REQUIRED', False)
     demo_mode = getattr(django_settings, 'DEMO_MODE', True)
 
+    using_mock = is_using_mock_model()
+    is_birthday_event = (
+        active_event and active_event.event_type == StipendEvent.EVENT_TYPE_BIRTHDAY
+    )
     return render(request, 'verification/verify_capture.html', {
         'beneficiary': beneficiary,
         'session_id': session_id,
@@ -139,7 +158,9 @@ def verify_start(request, pk):
         'liveness_required': liveness_required,
         'demo_mode': demo_mode,
         'active_event': active_event,
-        'using_mock': is_using_mock_model(),
+        'is_birthday_event': is_birthday_event,
+        'using_mock': using_mock,
+        'model_load_error': get_model_load_error() if using_mock else None,
     })
 
 
@@ -599,6 +620,7 @@ def verify_config(request):
 
     threshold_review_min = round(current_threshold * 0.85, 2)
     threshold_review_max = round(current_threshold - 0.01, 2)
+    using_mock = is_using_mock_model()
     return render(request, 'verification/config.html', {
         'current_threshold': current_threshold,
         'threshold_review_min': threshold_review_min,
@@ -607,7 +629,8 @@ def verify_config(request):
         'anti_spoof_threshold': getattr(django_settings, 'ANTI_SPOOF_THRESHOLD', 0.15),
         'demo_mode': demo_mode,
         'demo_threshold': getattr(django_settings, 'DEMO_THRESHOLD', 0.60),
-        'using_mock': is_using_mock_model(),
+        'using_mock': using_mock,
+        'model_load_error': get_model_load_error() if using_mock else None,
     })
 
 
@@ -638,6 +661,9 @@ def stipend_create(request):
         title = request.POST.get('title', '').strip()
         date_str = request.POST.get('date', '')
         description = request.POST.get('description', '').strip()
+        event_type = request.POST.get('event_type', StipendEvent.EVENT_TYPE_REGULAR)
+        if event_type not in (StipendEvent.EVENT_TYPE_REGULAR, StipendEvent.EVENT_TYPE_BIRTHDAY):
+            event_type = StipendEvent.EVENT_TYPE_REGULAR
 
         if not title or not date_str:
             from django.contrib import messages
@@ -655,13 +681,14 @@ def stipend_create(request):
         event = StipendEvent.objects.create(
             title=title,
             date=event_date,
+            event_type=event_type,
             description=description,
             created_by=request.user,
         )
         AuditLog.log(
             action=AuditLog.ACTION_CONFIG_CHANGE,
             user=request.user,
-            details={'stipend_event': title, 'date': str(event_date)},
+            details={'stipend_event': title, 'date': str(event_date), 'event_type': event_type},
             request=request
         )
         from django.contrib import messages
@@ -686,6 +713,9 @@ def stipend_edit(request, event_id):
         date_str = request.POST.get('date', '')
         description = request.POST.get('description', '').strip()
         is_active = request.POST.get('is_active') == 'on'
+        event_type = request.POST.get('event_type', StipendEvent.EVENT_TYPE_REGULAR)
+        if event_type not in (StipendEvent.EVENT_TYPE_REGULAR, StipendEvent.EVENT_TYPE_BIRTHDAY):
+            event_type = StipendEvent.EVENT_TYPE_REGULAR
 
         if not title or not date_str:
             from django.contrib import messages
@@ -701,6 +731,7 @@ def stipend_edit(request, event_id):
             return render(request, 'verification/stipend_form.html', {'action': 'Edit', 'event': event})
 
         event.title = title
+        event.event_type = event_type
         event.description = description
         event.is_active = is_active
         event.save()

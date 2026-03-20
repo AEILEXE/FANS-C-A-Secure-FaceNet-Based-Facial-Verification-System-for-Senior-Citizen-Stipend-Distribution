@@ -9,10 +9,27 @@ class StipendEvent(models.Model):
     Represents a stipend distribution schedule (e.g., monthly payout).
     Claims can be linked to a StipendEvent so logs show which payout period
     is being claimed.
+
+    event_type:
+      REGULAR      — standard monthly stipend; all active beneficiaries are eligible.
+      BIRTHDAY_BONUS — birthday bonus; only beneficiaries whose birth month matches
+                       the event month are eligible.
     """
+    EVENT_TYPE_REGULAR = 'regular'
+    EVENT_TYPE_BIRTHDAY = 'birthday_bonus'
+    EVENT_TYPE_CHOICES = [
+        (EVENT_TYPE_REGULAR, 'Regular Monthly Stipend'),
+        (EVENT_TYPE_BIRTHDAY, 'Birthday Bonus'),
+    ]
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     title = models.CharField(max_length=200)
     date = models.DateField()
+    event_type = models.CharField(
+        max_length=30,
+        choices=EVENT_TYPE_CHOICES,
+        default=EVENT_TYPE_REGULAR,
+    )
     description = models.TextField(blank=True)
     is_active = models.BooleanField(default=True)
     created_by = models.ForeignKey(
@@ -30,6 +47,26 @@ class StipendEvent(models.Model):
 
     def __str__(self):
         return f'{self.title} ({self.date})'
+
+    def is_beneficiary_eligible(self, beneficiary) -> bool:
+        """
+        Returns True if the beneficiary is eligible for this stipend event.
+        For BIRTHDAY_BONUS events, the beneficiary's birth month must match the event month.
+        """
+        if self.event_type == self.EVENT_TYPE_BIRTHDAY:
+            return beneficiary.date_of_birth.month == self.date.month
+        return True
+
+    def get_eligible_beneficiaries(self):
+        """Returns a queryset of active beneficiaries eligible for this event."""
+        from beneficiaries.models import Beneficiary
+        qs = Beneficiary.objects.filter(
+            status=Beneficiary.STATUS_ACTIVE,
+            consent_given=True,
+        )
+        if self.event_type == self.EVENT_TYPE_BIRTHDAY:
+            qs = qs.filter(date_of_birth__month=self.date.month)
+        return qs
 
 
 class FaceEmbedding(models.Model):

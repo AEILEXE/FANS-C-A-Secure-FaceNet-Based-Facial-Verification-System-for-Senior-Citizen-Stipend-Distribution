@@ -2,9 +2,16 @@ Django>=4.2,<5.0
 psycopg2-binary>=2.9.9
 python-dotenv>=1.0.0
 Pillow>=10.0.0
-numpy>=1.24.0
+numpy>=1.24.0,<2.0
 opencv-python>=4.8.0
-tensorflow>=2.13.0
+
+# TensorFlow — CPU-only build avoids CUDA dependency issues on Windows.
+# Use tensorflow-cpu instead of tensorflow for Windows demo environments.
+# Pin to 2.13.x — stable with keras-facenet 0.3.x.
+# IMPORTANT: If installation fails with path-too-long error on Windows,
+# clone the project to a shorter path (e.g. D:\FANS) then re-run pip install.
+tensorflow-cpu==2.13.0
+
 keras-facenet>=0.3.2
 retinaface>=0.0.13
 cryptography>=41.0.0
