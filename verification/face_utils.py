@@ -276,10 +276,21 @@ def get_facenet_model():
     try:
         import tensorflow as tf  # noqa: F401
     except ImportError as e:
-        _model_load_error = (
-            f'TensorFlow not installed ({e}). '
-            'Run: pip install tensorflow'
-        )
+        err_str = str(e)
+        if 'DLL load failed' in err_str or 'DLL' in err_str:
+            _model_load_error = (
+                f'TensorFlow DLL load failed: {e}. '
+                'This almost always means Python version mismatch. '
+                'tensorflow-cpu 2.13.x requires Python 3.10 or 3.11. '
+                'Your Python is likely 3.12 or 3.13. '
+                'Fix: delete .venv, install Python 3.11, recreate .venv, '
+                'then run: pip install -r requirements.txt'
+            )
+        else:
+            _model_load_error = (
+                f'TensorFlow not installed ({e}). '
+                'Run: pip install tensorflow-cpu>=2.13.0,<2.14.0'
+            )
         warnings.warn(_model_load_error, RuntimeWarning)
         _facenet_model = _MockFaceNet()
         _using_mock = True

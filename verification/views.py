@@ -467,7 +467,17 @@ def _log_verify(request, beneficiary, decision, attempt_number,
 @login_required
 def verify_result(request, attempt_id):
     attempt = get_object_or_404(VerificationAttempt, pk=attempt_id)
-    return render(request, 'verification/result.html', {'attempt': attempt})
+    # Detect attempts that were denied because the model was not loaded (mock mode).
+    # Used to show an honest "no real verification occurred" banner on the result page.
+    mock_denial = (
+        attempt.similarity_score is None
+        and 'model not loaded' in (attempt.decision_reason or '').lower()
+    )
+    return render(request, 'verification/result.html', {
+        'attempt': attempt,
+        'mock_denial': mock_denial,
+        'model_load_error': get_model_load_error() if mock_denial else None,
+    })
 
 
 @login_required

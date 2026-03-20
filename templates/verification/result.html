@@ -12,6 +12,24 @@
     Result
   </div>
 
+  {% if mock_denial %}
+  <div class="alert alert-danger d-flex gap-2 align-items-start mb-3">
+    <i class="bi bi-exclamation-octagon-fill flex-shrink-0 mt-1" style="font-size:1.2rem;"></i>
+    <div>
+      <div class="fw-bold mb-1">No real biometric verification was performed.</div>
+      <div class="small">
+        The face recognition model was not loaded when this attempt was recorded.
+        This result does <strong>not</strong> represent a valid identity match.
+        Install <code>keras-facenet</code> and <code>tensorflow-cpu</code> (Python 3.11 required),
+        restart the server, and re-verify the beneficiary before releasing any stipend.
+      </div>
+      {% if model_load_error %}
+      <div class="mt-2 font-mono small text-danger-emphasis">{{ model_load_error }}</div>
+      {% endif %}
+    </div>
+  </div>
+  {% endif %}
+
   <!-- Result Banner -->
   {% if attempt.decision == 'verified' %}
   <div class="result-banner verified mb-4">

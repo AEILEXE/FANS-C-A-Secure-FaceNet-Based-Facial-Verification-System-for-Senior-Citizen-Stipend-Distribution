@@ -1,22 +1,41 @@
+# FANS-C Requirements
+# ====================
+# PYTHON VERSION REQUIREMENT: Python 3.10 or 3.11 ONLY.
+# Python 3.12 and 3.13 are NOT supported by tensorflow-cpu 2.13.x.
+# On Python 3.12/3.13 you will see: DLL load failed while importing _pywrap_tensorflow_lite_metrics_wrapper
+# Check your version: python --version
+# Download Python 3.11: https://www.python.org/downloads/release/python-3119/
+#
+# PATH LENGTH WARNING (Windows):
+# If pip install fails with OSError or "file not found" on TensorFlow packages,
+# your project path is too long. Move or clone to a short path such as D:\FANS
+# and re-run pip install from there.
+
 Django>=4.2,<5.0
-psycopg2-binary>=2.9.9
 python-dotenv>=1.0.0
 Pillow>=10.0.0
 numpy>=1.24.0,<2.0
 opencv-python>=4.8.0
-
-# TensorFlow — CPU-only build avoids CUDA dependency issues on Windows.
-# Use tensorflow-cpu instead of tensorflow for Windows demo environments.
-# Pin to 2.13.x — stable with keras-facenet 0.3.x.
-# IMPORTANT: If installation fails with path-too-long error on Windows,
-# clone the project to a shorter path (e.g. D:\FANS) then re-run pip install.
-tensorflow-cpu==2.13.0
-
-keras-facenet>=0.3.2
-retinaface>=0.0.13
 cryptography>=41.0.0
-mediapipe>=0.10.0
-scikit-learn>=1.3.0
-scipy>=1.11.0
 djangorestframework>=3.14.0
 whitenoise>=6.6.0
+
+# ── Face Recognition ─────────────────────────────────────────────────────────
+# tensorflow-cpu: CPU-only build. No GPU or CUDA required.
+# Version 2.13.x requires Python 3.10 or 3.11. Will NOT work on Python 3.12+.
+# If install fails with a long-path error, see PATH LENGTH WARNING above.
+tensorflow-cpu>=2.13.0,<2.14.0
+
+# keras-facenet: FaceNet embedding model. Downloads ~90MB weights on first use.
+# Requires tensorflow. Install tensorflow-cpu first, then this.
+keras-facenet>=0.3.2
+
+# retinaface: optional landmark-based face detector.
+# The app falls back to OpenCV Haar cascade automatically if this is absent.
+# Comment this line out if pip install fails on Windows — the app still works.
+# retinaface>=0.0.13
+
+# ── Optional ─────────────────────────────────────────────────────────────────
+# psycopg2-binary: PostgreSQL driver. Only needed if USE_SQLITE=False in .env.
+# Safe to leave commented out for SQLite-based capstone demos.
+# psycopg2-binary>=2.9.9
