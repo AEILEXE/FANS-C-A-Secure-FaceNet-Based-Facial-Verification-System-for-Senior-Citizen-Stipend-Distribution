@@ -18,7 +18,25 @@
   </div>
 </div>
 
-{% if next_event %}
+{% if active_event %}
+<div class="alert d-flex gap-3 align-items-center mb-4" style="background:#f0fdf4; border:1px solid #86efac;">
+  {% if active_event.event_type == 'birthday' %}
+  <i class="bi bi-gift-fill text-success flex-shrink-0" style="font-size:1.4rem;"></i>
+  {% else %}
+  <i class="bi bi-calendar-check-fill text-success flex-shrink-0" style="font-size:1.4rem;"></i>
+  {% endif %}
+  <div class="flex-grow-1">
+    <div class="fw-bold">
+      {% if active_event.event_type == 'birthday' %}<span class="badge bg-warning text-dark me-1"><i class="bi bi-gift me-1"></i>Birthday Bonus</span>{% endif %}
+      Active Payout Today: {{ active_event.title }}
+    </div>
+    <div class="small text-muted">{{ active_event.date|date:"l, F d, Y" }}{% if active_event.payout_start_date %} &mdash; Window: {{ active_event.payout_start_date|date:"M d" }} &ndash; {{ active_event.payout_end_date|date:"M d, Y" }}{% endif %}{% if active_event.description %} &mdash; {{ active_event.description|truncatechars:60 }}{% endif %}</div>
+  </div>
+  <a href="{% url 'verification:verify_select' %}" class="btn btn-sm btn-success flex-shrink-0">
+    <i class="bi bi-camera-video me-1"></i> Verify Now
+  </a>
+</div>
+{% elif next_event %}
 <div class="alert d-flex gap-3 align-items-center mb-4" style="background:#f0fdf4; border:1px solid #86efac;">
   <i class="bi bi-calendar-check-fill text-success flex-shrink-0" style="font-size:1.4rem;"></i>
   <div class="flex-grow-1">
@@ -31,8 +49,23 @@
 </div>
 {% endif %}
 
+{% if manual_review_pending and manual_review_pending > 0 %}
+<div class="alert d-flex gap-3 align-items-center mb-4" style="background:#fce7f3; border:1px solid #f9a8d4;">
+  <i class="bi bi-eye-fill flex-shrink-0" style="font-size:1.4rem; color:#9d174d;"></i>
+  <div class="flex-grow-1">
+    <div class="fw-bold" style="color:#9d174d;">{{ manual_review_pending }} Verification{{ manual_review_pending|pluralize }} Pending Manual Review</div>
+    <div class="small text-muted">Administrator action required before stipend release.</div>
+  </div>
+  {% if user.is_admin %}
+  <a href="{% url 'verification:manual_review' %}" class="btn btn-sm btn-outline-danger flex-shrink-0">
+    <i class="bi bi-eye me-1"></i> Review Now
+  </a>
+  {% endif %}
+</div>
+{% endif %}
+
 <div class="row g-3 mb-4">
-  <div class="col-6 col-xl-3">
+  <div class="col-6 col-xl-{% if manual_review_pending is not None %}20p{% else %}3{% endif %}">
     <div class="card stat-card h-100">
       <div class="card-body d-flex align-items-center gap-3 p-3">
         <div class="stat-icon blue"><i class="bi bi-people-fill"></i></div>
@@ -76,6 +109,19 @@
       </div>
     </div>
   </div>
+  {% if manual_review_pending is not None %}
+  <div class="col-6 col-xl-3">
+    <div class="card stat-card h-100">
+      <div class="card-body d-flex align-items-center gap-3 p-3">
+        <div class="stat-icon purple"><i class="bi bi-eye-fill"></i></div>
+        <div>
+          <div class="stat-value" style="color:#7c3aed;">{{ manual_review_pending }}</div>
+          <div class="stat-label">Pending Review</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  {% endif %}
 </div>
 
 <div class="row g-4">
@@ -107,8 +153,13 @@
         </a>
         {% if user.is_admin %}
         <a href="{% url 'verification:manual_review' %}" class="action-btn">
-          <div class="action-icon" style="background:#fce7f3; color:#9d174d;"><i class="bi bi-eye-fill"></i></div>
-          <span>Manual Review Queue</span>
+          <div class="action-icon" style="background:#fce7f3; color:#9d174d;">
+            <i class="bi bi-eye-fill"></i>
+            {% if manual_review_pending and manual_review_pending > 0 %}
+            <span class="position-absolute translate-middle badge rounded-pill bg-danger" style="font-size:0.6rem; top:2px; right:2px;">{{ manual_review_pending }}</span>
+            {% endif %}
+          </div>
+          <span>Manual Review Queue{% if manual_review_pending and manual_review_pending > 0 %} <span class="badge bg-danger ms-1">{{ manual_review_pending }}</span>{% endif %}</span>
         </a>
         <a href="{% url 'beneficiaries:user_list' %}" class="action-btn">
           <div class="action-icon" style="background:#f1f5f9; color:#374151;"><i class="bi bi-people-fill"></i></div>

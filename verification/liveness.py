@@ -3,11 +3,14 @@ Liveness detection module.
 
 Two-layer approach:
 1. Anti-spoofing: texture/frequency analysis to detect printed photos or screens.
-2. Head movement challenge: user performs a random movement verified via MediaPipe.
+2. Head movement challenge: user performs a random movement verified via MediaPipe
+   on the client side. The server receives challenge_completed=True/False from client.
 
 In dev/demo mode (LIVENESS_REQUIRED=False in settings), liveness failure is
 recorded but does NOT block face matching. Set LIVENESS_REQUIRED=True for strict
 production enforcement.
+
+Server-side head movement threshold: 12 degrees (matches liveness.js CHALLENGE_THRESHOLD_DEG).
 """
 import numpy as np
 import cv2
@@ -17,12 +20,18 @@ import cv2
 
 def compute_texture_score(face_img: np.ndarray) -> float:
     """
-    Liveness score based on texture analysis.
-    Uses Laplacian variance (focus measure) and local variance (LBP proxy).
+    Liveness score based on combined texture analysis.
+
+    Uses:
+      - Laplacian variance: real faces have higher focus variance than prints/screens
+      - Local variance (LBP proxy): real faces have more micro-texture
+      - Edge density via Sobel: printed photos tend to have smoother gradients
+
     Returns float in [0, 1] — higher = more likely real.
 
     NOTE: This heuristic is intentionally lenient for webcam/browser captures.
-    For production, replace with a trained CNN (e.g., Silent-Face-Anti-Spoofing).
+    For production deployment, replace with a trained CNN (Silent-Face-Anti-Spoofing
+    or similar) for proper PAD (Presentation Attack Detection).
     """
     if face_img is None or face_img.size == 0:
         return 0.0
@@ -38,12 +47,19 @@ def compute_texture_score(face_img: np.ndarray) -> float:
     local_variance = cv2.filter2D((gray.astype(np.float32) - local_mean) ** 2, -1, kernel)
     lbp_score = local_variance.mean()
 
+    # Edge density via Sobel — real faces have more natural edge distribution
+    sobel_x = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
+    sobel_y = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
+    edge_mag = np.sqrt(sobel_x ** 2 + sobel_y ** 2)
+    edge_density = float(np.mean(edge_mag > 10))  # fraction of "edge" pixels
+
     # Normalize — tuned for typical browser/webcam captures.
     # lap_var for a real webcam face is usually 50-300; normalize against 300.
     lap_normalized = min(lap_var / 300.0, 1.0)
     lbp_normalized = min(lbp_score / 150.0, 1.0)
+    edge_normalized = min(edge_density / 0.25, 1.0)
 
-    score = 0.6 * lap_normalized + 0.4 * lbp_normalized
+    score = 0.50 * lap_normalized + 0.30 * lbp_normalized + 0.20 * edge_normalized
     return float(np.clip(score, 0.0, 1.0))
 
 
@@ -53,6 +69,7 @@ def check_anti_spoofing(face_img: np.ndarray, threshold: float = 0.15) -> dict:
 
     Args:
         threshold: minimum score to pass (0.15 is permissive for webcam captures).
+          Raise to 0.30+ with a trained CNN model in production.
 
     Returns:
         {'passed': bool, 'score': float, 'reason': str}
@@ -62,13 +79,21 @@ def check_anti_spoofing(face_img: np.ndarray, threshold: float = 0.15) -> dict:
     return {
         'passed': passed,
         'score': score,
-        'reason': 'Real face detected.' if passed else f'Low texture score ({score:.3f}); possible spoofing.',
+        'reason': (
+            'Real face detected.'
+            if passed
+            else f'Low texture score ({score:.3f}); possible spoofing or very low quality image.'
+        ),
     }
 
 
 # ─── Head Movement Challenge ──────────────────────────────────────────────────
 
 CHALLENGE_DIRECTIONS = ['left', 'right', 'up', 'down']
+
+# Server-side head pose threshold in degrees.
+# Must match CHALLENGE_THRESHOLD_DEG in static/js/liveness.js (12 degrees).
+SERVER_CHALLENGE_THRESHOLD_DEG = 12.0
 
 
 def get_random_challenge() -> str:
@@ -103,11 +128,12 @@ def validate_movement(
     initial_pose: dict,
     current_pose: dict,
     required_direction: str,
-    threshold_deg: float = 12.0,
+    threshold_deg: float = SERVER_CHALLENGE_THRESHOLD_DEG,
 ) -> dict:
     """
     Check whether the user moved their head in the required direction.
-    threshold_deg lowered to 12 for accessibility (senior citizens).
+    threshold_deg = 12 matches the client-side CHALLENGE_THRESHOLD_DEG in liveness.js.
+    Accessible for senior citizens who may have limited range of motion.
     """
     yaw_delta = current_pose['yaw'] - initial_pose['yaw']
     pitch_delta = current_pose['pitch'] - initial_pose['pitch']
@@ -135,37 +161,48 @@ def run_full_liveness_check(
     anti_spoof_threshold: float = 0.15,
 ) -> dict:
     """
-    Combined liveness check: anti-spoofing + head movement.
+    Combined liveness check: anti-spoofing texture analysis + head movement challenge.
+
+    Design:
+    - Anti-spoofing and head movement are evaluated independently.
+    - A combined liveness_score is computed from both.
+    - 'passed' = True only if BOTH anti-spoofing AND challenge are satisfied.
+    - If anti-spoofing fails but challenge was completed, liveness_score is still
+      returned (not zeroed) so the UI can show partial results clearly.
 
     Returns:
         {
             'passed': bool,
             'anti_spoof_score': float,
-            'liveness_score': float,
+            'challenge_completed': bool,
+            'liveness_score': float,   # combined 0-1 score
             'reason': str,
         }
     """
     spoof_result = check_anti_spoofing(face_img, threshold=anti_spoof_threshold)
+    anti_spoof_score = spoof_result['score']
+    spoof_passed = spoof_result['passed']
 
-    if not spoof_result['passed']:
-        return {
-            'passed': False,
-            'anti_spoof_score': spoof_result['score'],
-            'liveness_score': spoof_result['score'],
-            'reason': f'Anti-spoofing: {spoof_result["reason"]}',
-        }
+    # Combined score: weight anti-spoof more heavily (0.6) than movement (0.4)
+    # challenge_completed is boolean from client; treat True=1.0, False=0.0
+    challenge_score = 1.0 if challenge_completed else 0.0
+    liveness_score = float(0.6 * anti_spoof_score + 0.4 * challenge_score)
 
-    if not challenge_completed:
-        return {
-            'passed': False,
-            'anti_spoof_score': spoof_result['score'],
-            'liveness_score': spoof_result['score'] * 0.6,
-            'reason': 'Head movement challenge not completed.',
-        }
+    overall_passed = spoof_passed and challenge_completed
+
+    if not spoof_passed and not challenge_completed:
+        reason = f'Liveness failed: {spoof_result["reason"]} Head movement challenge not completed.'
+    elif not spoof_passed:
+        reason = f'Anti-spoofing failed: {spoof_result["reason"]}'
+    elif not challenge_completed:
+        reason = 'Head movement challenge not completed.'
+    else:
+        reason = 'Liveness check passed.'
 
     return {
-        'passed': True,
-        'anti_spoof_score': spoof_result['score'],
-        'liveness_score': spoof_result['score'],
-        'reason': 'Liveness check passed.',
+        'passed': overall_passed,
+        'anti_spoof_score': anti_spoof_score,
+        'challenge_completed': challenge_completed,
+        'liveness_score': liveness_score,
+        'reason': reason,
     }

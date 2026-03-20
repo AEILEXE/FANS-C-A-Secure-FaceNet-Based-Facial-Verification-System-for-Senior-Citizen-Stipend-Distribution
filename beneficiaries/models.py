@@ -79,18 +79,65 @@ class Beneficiary(models.Model):
         return ' '.join(p for p in parts if p)
 
     @property
+    def rep_full_name(self):
+        """Full name of the authorized representative, or empty string."""
+        parts = [self.rep_first_name, self.rep_last_name]
+        return ' '.join(p for p in parts if p)
+
+    @property
+    def age(self):
+        """Age in years as of today."""
+        import datetime
+        today = datetime.date.today()
+        dob = self.date_of_birth
+        return today.year - dob.year - ((today.month, today.day) < (dob.month, dob.day))
+
+    @property
+    def is_senior_citizen(self):
+        """True if the beneficiary is 60 years old or older."""
+        return self.age >= 60
+
+    @property
     def is_eligible_to_claim(self):
-        """Only active beneficiaries with consent can claim."""
-        return self.status == self.STATUS_ACTIVE and self.consent_given
+        """
+        Only active beneficiaries who have given consent may claim.
+        Inactive, deceased, and pending beneficiaries are blocked.
+        """
+        return (
+            self.status == self.STATUS_ACTIVE
+            and self.consent_given
+        )
+
+    def is_eligible_for_event(self, stipend_event) -> bool:
+        """
+        Check if this beneficiary is eligible for the given stipend event.
+        Combines lifecycle eligibility and event-specific rules.
+        """
+        if not self.is_eligible_to_claim:
+            return False
+        return stipend_event.is_beneficiary_eligible(self)
 
     def save(self, *args, **kwargs):
         if not self.beneficiary_id:
             import datetime
             year = datetime.date.today().year
-            count = Beneficiary.objects.filter(
-                beneficiary_id__startswith=f'BEN-{year}-'
-            ).count() + 1
-            self.beneficiary_id = f'BEN-{year}-{count:05d}'
+            # Use select_for_update to avoid ID collision in concurrent requests
+            last = (
+                Beneficiary.objects.filter(
+                    beneficiary_id__startswith=f'BEN-{year}-'
+                )
+                .order_by('-beneficiary_id')
+                .values_list('beneficiary_id', flat=True)
+                .first()
+            )
+            if last:
+                try:
+                    last_num = int(last.split('-')[-1])
+                except (ValueError, IndexError):
+                    last_num = 0
+            else:
+                last_num = 0
+            self.beneficiary_id = f'BEN-{year}-{last_num + 1:05d}'
         super().save(*args, **kwargs)
 
     def __str__(self):

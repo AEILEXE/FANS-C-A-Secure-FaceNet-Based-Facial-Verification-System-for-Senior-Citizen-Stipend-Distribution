@@ -10,7 +10,33 @@
     <a href="{% url 'beneficiaries:dashboard' %}">Dashboard</a> / Verify Beneficiary
   </div>
   <h4 class="fw-bold text-qc-blue mb-1"><i class="bi bi-camera-video me-2"></i>Verify Beneficiary</h4>
-  <p class="text-muted mb-4">Search for a beneficiary then select who is claiming the stipend.</p>
+  <p class="text-muted mb-3">Search for a beneficiary then select who is claiming the stipend.</p>
+
+  {% if active_event %}
+  <div class="alert d-flex gap-3 align-items-center mb-4"
+       style="background:#f0fdf4; border:1px solid #86efac;">
+    {% if active_event.event_type == 'birthday' %}
+    <i class="bi bi-gift-fill text-success flex-shrink-0" style="font-size:1.3rem;"></i>
+    <div class="flex-grow-1">
+      <div class="fw-bold"><span class="badge bg-warning text-dark me-1"><i class="bi bi-gift me-1"></i>Birthday Bonus</span>{{ active_event.title }}</div>
+      <div class="small text-muted">{{ active_event.date|date:"l, F d, Y" }}{% if active_event.payout_start_date %} &mdash; Payout window: {{ active_event.payout_start_date|date:"M d" }} &ndash; {{ active_event.payout_end_date|date:"M d, Y" }}{% endif %}</div>
+    </div>
+    {% else %}
+    <i class="bi bi-calendar-check-fill text-success flex-shrink-0" style="font-size:1.3rem;"></i>
+    <div class="flex-grow-1">
+      <div class="fw-bold">Active Payout: {{ active_event.title }}</div>
+      <div class="small text-muted">{{ active_event.date|date:"l, F d, Y" }}{% if active_event.payout_start_date %} &mdash; Payout window: {{ active_event.payout_start_date|date:"M d" }} &ndash; {{ active_event.payout_end_date|date:"M d, Y" }}{% endif %}</div>
+    </div>
+    {% endif %}
+    <span class="event-active-badge flex-shrink-0{% if active_event.event_type == 'birthday' %} birthday{% endif %}">ACTIVE</span>
+  </div>
+  {% else %}
+  <div class="alert d-flex gap-2 align-items-center mb-4"
+       style="background:#fff7ed; border:1px solid #fdba74; font-size:0.85rem;">
+    <i class="bi bi-calendar-x text-warning flex-shrink-0"></i>
+    <span>No payout event is scheduled for today. Verifications will not be linked to a stipend event.</span>
+  </div>
+  {% endif %}
 
   <div class="card mb-4">
     <div class="card-body p-4">
@@ -38,10 +64,16 @@
       <div class="list-group-item p-3">
         <div class="d-flex justify-content-between align-items-start">
           <div class="flex-grow-1">
-            <div class="fw-semibold">{{ b.full_name }}</div>
+            <div class="fw-semibold">
+              {{ b.full_name }}
+              {% if b.is_senior_citizen %}
+              <span class="badge bg-qc-gold text-dark ms-1" style="font-size:0.65rem;">Senior Citizen</span>
+              {% endif %}
+            </div>
             <div class="small text-muted">
               <span class="font-mono">{{ b.beneficiary_id }}</span>
               &bull; {{ b.municipality }}, {{ b.province }}
+              &bull; Age {{ b.age }}
             </div>
             {% if b.has_representative %}
             <div class="small text-info mt-1">
@@ -49,8 +81,15 @@
               Rep: {{ b.rep_first_name }} {{ b.rep_last_name }} ({{ b.rep_relationship }})
             </div>
             {% endif %}
+            {% if b.status != 'active' %}
+            <div class="small text-danger mt-1">
+              <i class="bi bi-exclamation-circle me-1"></i>
+              <strong>{{ b.get_status_display }}</strong> &mdash; not eligible for claims
+            </div>
+            {% endif %}
           </div>
           <div class="d-flex gap-2 ms-3 flex-shrink-0">
+            {% if b.status == 'active' %}
             <a href="{% url 'verification:verify_start' b.pk %}?claimant=beneficiary"
                class="btn btn-success btn-sm px-3">
               <i class="bi bi-person me-1"></i> Beneficiary
@@ -60,6 +99,9 @@
                class="btn btn-outline-primary btn-sm px-3">
               <i class="bi bi-people me-1"></i> Representative
             </a>
+            {% endif %}
+            {% else %}
+            <span class="badge bg-secondary p-2">Ineligible</span>
             {% endif %}
           </div>
         </div>
@@ -77,7 +119,7 @@
   <div class="mt-4 p-3 rounded-3 small text-muted" style="background:#f0f4ff; border:1px solid #c7d7fa;">
     <div class="fw-semibold text-qc-blue mb-1"><i class="bi bi-info-circle me-1"></i>Claim Type Guide</div>
     <div class="mb-1"><strong>Beneficiary</strong> &mdash; Face scan verifies the senior citizen directly.</div>
-    <div><strong>Representative</strong> &mdash; Proceeds to ID-based verification using the registered rep's credentials.</div>
+    <div><strong>Representative</strong> &mdash; Proceeds to ID-based verification using the registered rep&rsquo;s credentials.</div>
   </div>
 
 </div>

@@ -34,37 +34,47 @@
   {% if attempt.decision == 'verified' %}
   <div class="result-banner verified mb-4">
     <i class="bi bi-check-circle-fill"></i>
-    <div>
-      <div class="result-label">VERIFIED</div>
+    <div class="result-text">
+      <div class="result-label">
+        VERIFIED
+        {% if attempt.demo_mode_active %}<span class="demo-mode-badge ms-2">DEMO</span>{% endif %}
+      </div>
       <div class="result-sub">Identity confirmed &mdash; stipend may be released</div>
     </div>
   </div>
   {% elif attempt.decision == 'denied' %}
   <div class="result-banner denied mb-4">
     <i class="bi bi-x-circle-fill"></i>
-    <div>
-      <div class="result-label">NOT VERIFIED</div>
+    <div class="result-text">
+      <div class="result-label">
+        NOT VERIFIED
+        {% if attempt.demo_mode_active %}<span class="demo-mode-badge ms-2">DEMO</span>{% endif %}
+      </div>
       <div class="result-sub">Identity could not be confirmed</div>
     </div>
   </div>
   {% elif attempt.decision == 'manual_review' %}
   <div class="result-banner review mb-4">
     <i class="bi bi-eye-fill"></i>
-    <div>
-      <div class="result-label">MANUAL REVIEW</div>
+    <div class="result-text">
+      <div class="result-label">
+        MANUAL REVIEW
+        {% if attempt.demo_mode_active %}<span class="demo-mode-badge ms-2">DEMO</span>{% endif %}
+      </div>
       <div class="result-sub">Requires administrator review before release</div>
     </div>
   </div>
   {% else %}
   <div class="result-banner denied mb-4">
     <i class="bi bi-question-circle-fill"></i>
-    <div>
+    <div class="result-text">
       <div class="result-label">{{ attempt.get_decision_display|upper }}</div>
       <div class="result-sub">&mdash;</div>
     </div>
   </div>
   {% endif %}
 
+  <!-- Beneficiary card -->
   <div class="card mb-3">
     <div class="card-header bg-qc-blue text-white d-flex justify-content-between align-items-center">
       <span><i class="bi bi-person me-2"></i>Beneficiary</span>
@@ -80,31 +90,62 @@
       <div class="fw-bold fs-5">{{ attempt.beneficiary.full_name }}</div>
       <div class="font-mono text-muted small">{{ attempt.beneficiary.beneficiary_id }}</div>
       <div class="text-muted small">{{ attempt.beneficiary.municipality }}, {{ attempt.beneficiary.province }}</div>
+      {% if attempt.stipend_event %}
+      <div class="mt-2 small">
+        <i class="bi bi-calendar-check text-qc-blue me-1"></i>
+        <strong>Payout:</strong> {{ attempt.stipend_event.title }}
+        &mdash; <span class="text-muted">{{ attempt.stipend_event.date|date:"F d, Y" }}</span>
+      </div>
+      {% endif %}
     </div>
   </div>
 
+  <!-- Verification Details -->
   <div class="card mb-3">
     <div class="card-header bg-qc-blue text-white">
       <i class="bi bi-bar-chart me-2"></i>Verification Details
     </div>
     <div class="card-body">
-      <div class="row g-3">
-        <div class="col-6">
-          <div class="text-muted small fw-semibold mb-1">SIMILARITY SCORE</div>
-          <div class="fs-3 fw-bold font-mono
-            {% if attempt.similarity_score is not None and attempt.similarity_score >= attempt.threshold_used %}
-              text-success
-            {% elif attempt.similarity_score is not None %}
-              text-danger
-            {% else %}text-muted{% endif %}">
-            {% if attempt.similarity_score is not None %}
-              {{ attempt.similarity_score|floatformat:4 }}
-            {% else %}&mdash;{% endif %}
+
+      <!-- Score meter -->
+      {% if attempt.similarity_score is not None and attempt.threshold_used %}
+      <div class="mb-3">
+        <div class="d-flex justify-content-between align-items-end small mb-1">
+          <span class="fw-semibold">Similarity Score</span>
+          <span class="font-mono fw-bold fs-5
+            {% if attempt.similarity_score >= attempt.threshold_used %}text-success{% else %}text-danger{% endif %}">
+            {{ attempt.similarity_score|floatformat:3 }}
+          </span>
+        </div>
+        <div class="position-relative" style="height:14px;">
+          <div class="progress h-100 rounded-3">
+            <div class="progress-bar {% if attempt.similarity_score >= attempt.threshold_used %}bg-success{% else %}bg-danger{% endif %}"
+                 role="progressbar"
+                 style="width:{% widthratio attempt.similarity_score 1 100 %}%;">
+            </div>
           </div>
-          <div class="text-muted small">
-            Threshold: <span class="font-mono">{{ attempt.threshold_used }}</span>
+          <!-- Threshold marker -->
+          <div class="position-absolute top-0 h-100"
+               style="left:{% widthratio attempt.threshold_used 1 100 %}%; width:2px; background:#1d4ed8; z-index:2; border-radius:1px;"
+               title="Threshold: {{ attempt.threshold_used }}">
           </div>
         </div>
+        <div class="d-flex justify-content-between mt-1" style="font-size:0.72rem; color:#94a3b8;">
+          <span>0.0</span>
+          <span class="text-qc-blue fw-semibold">&#9650; Threshold {{ attempt.threshold_used }}</span>
+          <span>1.0</span>
+        </div>
+      </div>
+      {% endif %}
+
+      <div class="row g-3">
+        {% if attempt.similarity_score is None %}
+        <div class="col-6">
+          <div class="text-muted small fw-semibold mb-1">SIMILARITY SCORE</div>
+          <div class="fs-3 fw-bold text-muted">&mdash;</div>
+          <div class="text-muted small">Threshold: <span class="font-mono">{{ attempt.threshold_used }}</span></div>
+        </div>
+        {% endif %}
         <div class="col-6">
           <div class="text-muted small fw-semibold mb-1">LIVENESS CHECK</div>
           <div class="fs-3 fw-bold {% if attempt.liveness_passed %}text-success{% elif attempt.liveness_passed is not None %}text-danger{% else %}text-muted{% endif %}">
@@ -116,6 +157,18 @@
           <div class="text-muted small">Score: <span class="font-mono">{{ attempt.liveness_score|floatformat:3 }}</span></div>
           {% endif %}
         </div>
+        {% if attempt.face_quality_ok is not None %}
+        <div class="col-6">
+          <div class="text-muted small fw-semibold mb-1">FACE QUALITY</div>
+          <div class="fw-semibold {% if attempt.face_quality_ok %}text-success{% else %}text-warning{% endif %}">
+            {% if attempt.face_quality_ok %}
+              <i class="bi bi-check-circle-fill me-1"></i>Acceptable
+            {% else %}
+              <i class="bi bi-exclamation-triangle-fill me-1"></i>Low quality
+            {% endif %}
+          </div>
+        </div>
+        {% endif %}
         <div class="col-6">
           <div class="text-muted small fw-semibold mb-1">VERIFIED BY</div>
           <div class="fw-semibold small">{{ attempt.performed_by.get_full_name|default:attempt.performed_by.username }}</div>
@@ -135,6 +188,109 @@
       {% endif %}
     </div>
   </div>
+
+  <!-- Debug / Accuracy Panel -->
+  {% if attempt.similarity_score is not None %}
+  <div class="card mb-3 border-secondary">
+    <div class="card-header d-flex justify-content-between align-items-center"
+         style="background:#f1f5f9; cursor:pointer;"
+         data-bs-toggle="collapse" data-bs-target="#debugPanel" aria-expanded="false">
+      <span class="small fw-semibold text-secondary">
+        <i class="bi bi-bug me-1"></i>Accuracy Debug Info
+      </span>
+      <i class="bi bi-chevron-down small text-secondary"></i>
+    </div>
+    <div class="collapse" id="debugPanel">
+      <div class="card-body p-3"
+           data-score="{{ attempt.similarity_score }}"
+           data-threshold="{{ attempt.threshold_used }}">
+
+        <div class="row g-2 small mb-3">
+          <!-- Zone -->
+          <div class="col-6 col-sm-3">
+            <div class="text-muted fw-semibold mb-1" style="font-size:0.7rem;">ZONE</div>
+            {% if attempt.decision == 'verified' %}
+            <span class="badge bg-success fs-6">PASS</span>
+            {% elif attempt.decision == 'manual_review' %}
+            <span class="badge bg-warning text-dark fs-6">REVIEW</span>
+            {% else %}
+            <span class="badge bg-danger fs-6">FAIL</span>
+            {% endif %}
+          </div>
+          <!-- Gap -->
+          <div class="col-6 col-sm-3">
+            <div class="text-muted fw-semibold mb-1" style="font-size:0.7rem;">GAP FROM THRESHOLD</div>
+            <div class="font-mono fw-bold" id="scoreGap">&mdash;</div>
+          </div>
+          <!-- Threshold -->
+          <div class="col-6 col-sm-3">
+            <div class="text-muted fw-semibold mb-1" style="font-size:0.7rem;">THRESHOLD USED</div>
+            <div class="font-mono">{{ attempt.threshold_used }}</div>
+          </div>
+          <!-- Score -->
+          <div class="col-6 col-sm-3">
+            <div class="text-muted fw-semibold mb-1" style="font-size:0.7rem;">RAW SCORE</div>
+            <div class="font-mono">{{ attempt.similarity_score|floatformat:4 }}</div>
+          </div>
+        </div>
+
+        <hr class="my-2">
+
+        <div class="row g-2 small">
+          <!-- Matched template -->
+          <div class="col-6">
+            <div class="text-muted fw-semibold mb-1" style="font-size:0.7rem;">MATCHED TEMPLATE</div>
+            <div class="font-mono">
+              {% if attempt.matched_template %}
+                {{ attempt.matched_template }}
+              {% else %}
+                <span class="text-muted">&mdash;</span>
+              {% endif %}
+            </div>
+          </div>
+          <!-- Templates checked -->
+          <div class="col-6">
+            <div class="text-muted fw-semibold mb-1" style="font-size:0.7rem;">TEMPLATES CHECKED</div>
+            <div class="font-mono">{{ attempt.templates_checked }}</div>
+          </div>
+        </div>
+
+        {% if attempt.templates_checked > 1 %}
+        <div class="mt-3">
+          <div class="text-muted fw-semibold mb-1" style="font-size:0.7rem;">ALL TEMPLATE SCORES</div>
+          <div class="small text-muted fst-italic">
+            (See audit log for full per-template breakdown)
+          </div>
+        </div>
+        {% endif %}
+
+        <div class="mt-3 p-2 rounded" style="background:#f8fafc; font-size:0.72rem; color:#64748b;">
+          <strong>Review band:</strong>
+          Scores between <span class="font-mono" id="reviewMin">&mdash;</span>
+          and <span class="font-mono">{{ attempt.threshold_used }}</span>
+          trigger manual review (threshold &times; 0.85).
+        </div>
+      </div>
+    </div>
+  </div>
+  <script>
+  (function () {
+    var panel = document.querySelector('[data-score]');
+    if (!panel) return;
+    var score     = parseFloat(panel.dataset.score);
+    var threshold = parseFloat(panel.dataset.threshold);
+    if (isNaN(score) || isNaN(threshold)) return;
+    var gap = score - threshold;
+    var gapEl = document.getElementById('scoreGap');
+    if (gapEl) {
+      gapEl.textContent = (gap >= 0 ? '+' : '') + gap.toFixed(3);
+      gapEl.style.color = gap >= 0 ? '#16a34a' : '#dc2626';
+    }
+    var revEl = document.getElementById('reviewMin');
+    if (revEl) revEl.textContent = (threshold * 0.85).toFixed(3);
+  })();
+  </script>
+  {% endif %}
 
   {% if attempt.overridden %}
   <div class="alert d-flex gap-3 align-items-start mb-3"

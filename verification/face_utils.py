@@ -3,13 +3,17 @@ Face processing utilities: RetinaFace detection + alignment, FaceNet embeddings,
 embedding encryption/decryption.
 
 Key design decisions:
-- _align_face uses a 4-DOF similarity transform (rotation+scale+translation) mapping
-  detected eye landmarks to canonical positions in a 160x160 output. This is the standard
-  MTCNN/FaceNet pre-processing and ensures consistent crops regardless of face distance,
-  head tilt, or camera resolution.
-- get_embedding converts BGR->RGB, resizes to 160x160, and lets keras-facenet apply
-  its own per-image whitening (prewhiten). We also L2-normalize the output.
+- _align_face_similarity uses a 4-DOF similarity transform (rotation+scale+translation)
+  mapping detected eye landmarks to canonical positions in a 160x160 output. This is the
+  standard MTCNN/FaceNet pre-processing and ensures consistent crops regardless of face
+  distance, head tilt, or camera resolution.
+- get_embedding converts BGR->RGB, applies CLAHE for contrast normalisation, resizes to
+  160x160, and lets keras-facenet apply its own per-image whitening (prewhiten). We also
+  L2-normalize the output.
 - Preprocessing is identical for registration and verification, ensuring comparable embeddings.
+- CLAHE (Contrast Limited Adaptive Histogram Equalization) is applied to the L channel in
+  LAB colour space before FaceNet input. This significantly improves accuracy for low-light
+  webcam captures, dark skin tones, and poorly lit barangay offices.
 """
 import io
 import os
@@ -69,21 +73,125 @@ def load_image_from_base64(b64_string: str) -> np.ndarray:
     return load_image_from_bytes(image_bytes)
 
 
-# ─── Face Detection (RetinaFace) ──────────────────────────────────────────────
+# ─── CLAHE Preprocessing ─────────────────────────────────────────────────────
+
+def _apply_clahe(img: np.ndarray) -> np.ndarray:
+    """
+    Apply CLAHE (Contrast Limited Adaptive Histogram Equalization) to improve
+    contrast in the face image before FaceNet embedding.
+
+    Operates on the L channel of LAB colour space to avoid distorting hue/saturation.
+    This substantially improves recognition accuracy for:
+      - Low-light barangay office environments
+      - Webcams with poor auto-exposure
+      - Users with darker skin tones
+
+    clipLimit=2.0 is conservative — enough to lift shadows without over-sharpening.
+    """
+    import cv2
+    try:
+        lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
+        l_ch, a_ch, b_ch = cv2.split(lab)
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        l_enhanced = clahe.apply(l_ch)
+        lab_enhanced = cv2.merge([l_enhanced, a_ch, b_ch])
+        return cv2.cvtColor(lab_enhanced, cv2.COLOR_LAB2BGR)
+    except Exception:
+        return img  # fallback: return original if CLAHE fails
+
+
+# ─── Face Detection (RetinaFace / MTCNN / OpenCV cascade) ────────────────────
+
+_mtcnn_detector = None  # cached MTCNN instance (lazy init, thread-safe enough for Django dev)
+
+
+def _get_mtcnn():
+    global _mtcnn_detector
+    if _mtcnn_detector is None:
+        from mtcnn import MTCNN
+        _mtcnn_detector = MTCNN()
+    return _mtcnn_detector
+
+
+def _detect_face_mtcnn(img: np.ndarray) -> np.ndarray:
+    """
+    Detect face with MTCNN and return an aligned 160x160 crop.
+
+    MTCNN provides 5-point landmarks (left_eye, right_eye, nose, mouth_left,
+    mouth_right).  We feed the eye positions into _align_face_similarity() for
+    the same 4-DOF similarity transform used by the RetinaFace path, giving
+    rotation- and scale-normalised crops that are directly comparable across
+    registration and verification sessions.
+
+    Falls back to the OpenCV Haar cascade if MTCNN fails or is not installed.
+    """
+    import cv2
+    try:
+        detector = _get_mtcnn()
+        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        detections = detector.detect_faces(img_rgb)
+    except Exception:
+        return _detect_face_opencv(img)
+
+    if not detections:
+        raise ValueError(
+            'No face detected. Center your face in the frame and ensure good lighting.'
+        )
+
+    # Best detection by confidence
+    best = max(detections, key=lambda d: d.get('confidence', 0))
+    if best.get('confidence', 0) < 0.85:
+        raise ValueError(
+            f"Face detection confidence too low ({best.get('confidence', 0):.2f}). "
+            'Move closer to the camera or improve lighting.'
+        )
+
+    kp = best.get('keypoints', {})
+    if 'left_eye' in kp and 'right_eye' in kp:
+        left_eye  = np.array(kp['left_eye'],  dtype=np.float32)
+        right_eye = np.array(kp['right_eye'], dtype=np.float32)
+
+        inter_eye_dist = float(np.linalg.norm(right_eye - left_eye))
+        if inter_eye_dist < 15:
+            raise ValueError(
+                f'Face too small (eye distance {inter_eye_dist:.0f}px). '
+                'Move closer to the camera.'
+            )
+
+        return _align_face_similarity(img, left_eye, right_eye, output_size=(160, 160))
+
+    # Fallback: bounding box only (no landmarks)
+    x, y, w, h = best['box']
+    x, y = max(0, x), max(0, y)
+    x2, y2 = min(img.shape[1], x + w), min(img.shape[0], y + h)
+    face_crop = img[y:y2, x:x2]
+    if face_crop.size == 0:
+        raise ValueError('Face bounding box is empty.')
+    return cv2.resize(face_crop, (160, 160))
+
 
 def detect_and_align_face(img: np.ndarray) -> np.ndarray:
     """
-    Detect face using RetinaFace and return a 160x160 aligned face crop.
-    Uses a proper similarity transform so the result is consistent regardless
-    of face distance, tilt, or camera resolution.
-    Falls back to OpenCV Haar cascade if RetinaFace is not available.
-    Raises ValueError with a user-friendly message if no usable face is found.
+    Detect face and return a 160x160 aligned face crop.
+
+    Detection priority:
+      1. RetinaFace  (best accuracy, requires optional retinaface package)
+      2. MTCNN       (installed by default — provides eye landmarks for alignment)
+      3. OpenCV Haar (last resort — bounding box only, no alignment)
+
+    Steps 1 and 2 both use _align_face_similarity() for consistent 4-DOF
+    similarity-transform crops regardless of head tilt or camera distance.
+    This is the primary reason false-rejects occur when OpenCV is used:
+    unaligned crops vary between registration and verification sessions,
+    lowering cosine similarity even for the same person.
+
+    Raises ValueError with a user-friendly message if no face is found.
     """
     try:
         from retinaface import RetinaFace
         faces = RetinaFace.detect_faces(img)
     except ImportError:
-        return _detect_face_opencv(img)
+        return _detect_face_mtcnn(img)
 
     if not faces or isinstance(faces, tuple):
         raise ValueError(
@@ -108,9 +216,10 @@ def detect_and_align_face(img: np.ndarray) -> np.ndarray:
         left_eye = np.array(landmarks['left_eye'], dtype=np.float32)
         right_eye = np.array(landmarks['right_eye'], dtype=np.float32)
 
-        # Validate face size — too small means too far from camera
+        # Validate face size — too small means too far from camera.
+        # Lowered from 20 to 15 to be more forgiving at normal desk distance.
         inter_eye_dist = float(np.linalg.norm(right_eye - left_eye))
-        if inter_eye_dist < 20:
+        if inter_eye_dist < 15:
             raise ValueError(
                 f'Face too small (eye distance {inter_eye_dist:.0f}px). '
                 'Move closer to the camera.'
@@ -220,7 +329,13 @@ def _detect_face_opencv(img: np.ndarray) -> np.ndarray:
 def check_face_quality(face_img: np.ndarray) -> dict:
     """
     Assess face crop quality. Returns a dict with 'ok', 'score', and 'reason'.
-    A low-quality crop will produce unreliable embeddings.
+    A low-quality crop will produce unreliable FaceNet embeddings.
+
+    Checks:
+      - Sharpness via Laplacian variance (blur detection)
+      - Brightness (underexposure / overexposure)
+      - Contrast via standard deviation of grayscale
+      - Glare detection (overexposed highlight regions)
     """
     import cv2
     if face_img is None or face_img.size == 0:
@@ -232,19 +347,35 @@ def check_face_quality(face_img: np.ndarray) -> dict:
     blur_score = float(cv2.Laplacian(gray, cv2.CV_64F).var())
     # Brightness
     brightness = float(gray.mean())
+    # Contrast: std deviation of grayscale
+    contrast = float(gray.std())
+    # Glare: fraction of pixels that are overexposed (>250)
+    glare_fraction = float(np.mean(gray > 250))
 
     issues = []
     if blur_score < 15:
-        issues.append('image too blurry — hold still')
+        issues.append('image too blurry — hold still and stay in focus')
     if brightness < 30:
-        issues.append('too dark — improve lighting')
+        issues.append('too dark — face a light source or turn on more lights')
     elif brightness > 230:
-        issues.append('overexposed — reduce bright light behind you')
+        issues.append('overexposed — reduce bright light or backlight behind you')
+    if contrast < 12:
+        issues.append('low contrast — improve lighting')
+    if glare_fraction > 0.15:
+        issues.append('glare detected — move away from direct light or glass')
 
-    # Normalize score 0-1
-    sharpness_score = min(blur_score / 200.0, 1.0)
-    brightness_score = 1.0 - abs(brightness - 128) / 128.0
-    quality_score = 0.7 * sharpness_score + 0.3 * brightness_score
+    # Composite score [0-1]
+    sharpness_score  = min(blur_score / 200.0, 1.0)
+    brightness_score = 1.0 - abs(brightness - 120) / 120.0
+    contrast_score   = min(contrast / 60.0, 1.0)
+    glare_penalty    = max(0.0, 1.0 - glare_fraction * 4)
+
+    quality_score = (
+        0.50 * sharpness_score
+        + 0.25 * brightness_score
+        + 0.15 * contrast_score
+        + 0.10 * glare_penalty
+    )
 
     ok = len(issues) == 0
     reason = 'Good quality.' if ok else ('Poor quality: ' + '; '.join(issues) + '.')
@@ -254,6 +385,8 @@ def check_face_quality(face_img: np.ndarray) -> dict:
         'score': float(np.clip(quality_score, 0.0, 1.0)),
         'blur_score': blur_score,
         'brightness': brightness,
+        'contrast': contrast,
+        'glare_fraction': glare_fraction,
         'reason': reason,
     }
 
@@ -355,11 +488,21 @@ class _MockFaceNet:
 def get_embedding(face_img: np.ndarray) -> np.ndarray:
     """
     Generate a 128-d FaceNet embedding from a 160x160 BGR face crop.
-    Preprocessing: BGR->RGB, resize to 160x160 (keras-facenet applies prewhiten internally).
-    Output is L2-normalized.
+
+    Preprocessing pipeline:
+      1. Apply CLAHE for contrast normalisation (helps low-light captures)
+      2. BGR -> RGB conversion
+      3. Resize to 160x160
+      4. keras-facenet applies per-image prewhiten internally
+      5. L2-normalize output
+
+    This pipeline is identical for registration and verification, ensuring that
+    embeddings from both stages are directly comparable via cosine similarity.
     """
     import cv2
-    face_rgb = cv2.cvtColor(face_img, cv2.COLOR_BGR2RGB)
+    # Apply CLAHE before colour conversion for better low-light performance
+    face_enhanced = _apply_clahe(face_img)
+    face_rgb = cv2.cvtColor(face_enhanced, cv2.COLOR_BGR2RGB)
     face_resized = cv2.resize(face_rgb, (160, 160))
     faces_batch = np.expand_dims(face_resized, axis=0)  # (1, 160, 160, 3) uint8
 
@@ -390,8 +533,10 @@ def cosine_similarity(emb1: np.ndarray, emb2: np.ndarray) -> float:
 def process_face_for_registration(image_bytes: bytes) -> dict:
     """
     Full pipeline for registration:
-      load image -> detect & align face -> quality check -> generate embedding -> encrypt
-    Returns dict with 'success', 'encrypted_embedding', 'quality', or 'error'.
+      load image -> detect & align face -> quality check -> CLAHE -> embedding -> encrypt
+
+    Quality gate: rejects clearly unusable captures so the stored embedding is reliable.
+    The threshold is intentionally lenient (blur_score < 8) — staff can retake if needed.
     """
     try:
         img = load_image_from_bytes(image_bytes)
@@ -429,16 +574,34 @@ def process_face_for_registration(image_bytes: bytes) -> dict:
         return {'success': False, 'error': f'Face processing error: {str(e)}'}
 
 
-def process_face_for_verification(image_bytes: bytes) -> dict:
+def process_face_for_verification(image_bytes: bytes, reject_poor_quality: bool = True) -> dict:
     """
     Full pipeline for verification:
-      load image -> detect & align face -> quality check -> generate embedding
+      load image -> detect & align face -> quality check -> CLAHE -> embedding
+
+    Args:
+        reject_poor_quality: If True, frames with blur_score < 5 are rejected
+          rather than producing an unreliable embedding. This prevents random
+          low scores from very blurry captures misleading the decision.
+
     Returns dict with 'success', 'embedding', 'quality', or 'error'.
     """
     try:
         img = load_image_from_bytes(image_bytes)
         face_img = detect_and_align_face(img)
         quality = check_face_quality(face_img)
+
+        # Hard reject extremely blurry frames during verification
+        if reject_poor_quality and quality['blur_score'] < 5:
+            return {
+                'success': False,
+                'error': (
+                    f'Frame too blurry for reliable verification. '
+                    f'{quality["reason"]} Please hold still and retry.'
+                ),
+                'quality': quality,
+            }
+
         embedding = get_embedding(face_img)
 
         return {
@@ -454,10 +617,84 @@ def process_face_for_verification(image_bytes: bytes) -> dict:
 
 
 def compare_with_stored(live_embedding: np.ndarray, encrypted_stored: bytes) -> dict:
-    """Compare live embedding against stored encrypted embedding."""
+    """Compare live embedding against a single stored encrypted embedding."""
     try:
         stored_embedding = decrypt_embedding(encrypted_stored)
         score = cosine_similarity(live_embedding, stored_embedding)
         return {'success': True, 'score': score}
     except Exception as e:
         return {'success': False, 'error': f'Comparison error: {str(e)}', 'score': 0.0}
+
+
+def compare_with_all_embeddings(live_embedding: np.ndarray, beneficiary) -> dict:
+    """
+    Compare live embedding against ALL stored embeddings for a beneficiary
+    and return the best (highest) score plus template tracking details.
+
+    Supports multi-template matching: primary FaceEmbedding + any additional
+    AdditionalFaceEmbedding records. Returns the best score across all templates.
+
+    Return keys:
+      success          – bool
+      score            – float, best cosine similarity found
+      matched_template – str, label of the winning template
+      templates_checked– int, number of templates compared
+      all_scores       – list of {'template': str, 'score': float}
+      error            – str (only when success=False)
+    """
+    best_score = None
+    matched_template = ''
+    all_scores = []
+    errors = []
+
+    # Primary embedding
+    try:
+        primary = beneficiary.face_embedding
+        result = compare_with_stored(live_embedding, primary.embedding_data)
+        if result['success']:
+            s = result['score']
+            all_scores.append({'template': 'primary', 'score': s})
+            if best_score is None or s > best_score:
+                best_score = s
+                matched_template = 'primary'
+        else:
+            errors.append(result.get('error', 'Primary comparison failed'))
+    except Exception as e:
+        errors.append(f'Primary embedding error: {e}')
+
+    # Additional templates (AdditionalFaceEmbedding)
+    try:
+        additional = list(beneficiary.additional_embeddings.all())
+        for idx, tmpl in enumerate(additional, start=1):
+            label = getattr(tmpl, 'label', None) or f'additional_{idx}'
+            r = compare_with_stored(live_embedding, tmpl.embedding_data)
+            if r['success']:
+                s = r['score']
+                all_scores.append({'template': label, 'score': s})
+                if best_score is None or s > best_score:
+                    best_score = s
+                    matched_template = label
+    except AttributeError:
+        pass  # No additional embeddings model — fine
+    except Exception as e:
+        errors.append(f'Additional template error: {e}')
+
+    templates_checked = len(all_scores)
+
+    if best_score is None:
+        return {
+            'success': False,
+            'error': '; '.join(errors) or 'No embeddings available.',
+            'score': 0.0,
+            'matched_template': '',
+            'templates_checked': 0,
+            'all_scores': [],
+        }
+
+    return {
+        'success': True,
+        'score': best_score,
+        'matched_template': matched_template,
+        'templates_checked': templates_checked,
+        'all_scores': all_scores,
+    }

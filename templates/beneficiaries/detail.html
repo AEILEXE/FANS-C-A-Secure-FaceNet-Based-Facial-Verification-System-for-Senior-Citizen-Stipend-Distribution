@@ -40,6 +40,13 @@
     <a href="{% url 'beneficiaries:beneficiary_edit' beneficiary.pk %}" class="btn btn-outline-secondary">
       <i class="bi bi-pencil me-1"></i> Edit
     </a>
+    {% if beneficiary.status == 'active' %}
+    <a href="{% url 'verification:update_face_data' beneficiary.pk %}"
+       class="btn btn-outline-warning"
+       title="Replace or augment the stored face embedding for this beneficiary">
+      <i class="bi bi-camera-video me-1"></i> Update Face Data
+    </a>
+    {% endif %}
     {% if user.is_admin %}
       {% if beneficiary.status == 'active' or beneficiary.status == 'pending' %}
       <a href="{% url 'beneficiaries:beneficiary_deactivate' beneficiary.pk %}" class="btn btn-outline-danger">
@@ -98,6 +105,15 @@
             <tr><th class="text-muted ps-3" style="width:42%;">Full Name</th><td>{{ beneficiary.full_name }}</td></tr>
             <tr><th class="text-muted ps-3">Beneficiary ID</th><td><span class="font-mono small">{{ beneficiary.beneficiary_id }}</span></td></tr>
             <tr><th class="text-muted ps-3">Date of Birth</th><td>{{ beneficiary.date_of_birth|date:"F d, Y" }}</td></tr>
+            <tr>
+              <th class="text-muted ps-3">Age</th>
+              <td>
+                {{ beneficiary.age }}
+                {% if beneficiary.is_senior_citizen %}
+                <span class="badge bg-qc-gold text-dark ms-1" style="font-size:0.65rem;">Senior Citizen</span>
+                {% endif %}
+              </td>
+            </tr>
             <tr><th class="text-muted ps-3">Gender</th><td>{{ beneficiary.get_gender_display }}</td></tr>
             <tr><th class="text-muted ps-3">Contact</th><td>{{ beneficiary.contact_number|default:"&mdash;" }}</td></tr>
             <tr><th class="text-muted ps-3">Address</th><td>{{ beneficiary.address }}</td></tr>
@@ -181,8 +197,18 @@
     <div class="card">
       <div class="card-header bg-qc-blue text-white d-flex justify-content-between align-items-center">
         <span><i class="bi bi-clock-history me-2"></i>Verification History</span>
-        <a href="{% url 'logs:verification_logs' %}" class="btn btn-sm btn-outline-light"
-           style="font-size:0.75rem; padding:0.2rem 0.6rem;">View All Logs</a>
+        <div class="d-flex gap-2">
+          {% if beneficiary.status == 'active' %}
+          <a href="{% url 'verification:update_face_data' beneficiary.pk %}"
+             class="btn btn-sm btn-warning"
+             style="font-size:0.75rem; padding:0.2rem 0.6rem;"
+             title="Update face embedding">
+            <i class="bi bi-camera-video me-1"></i>Update Face
+          </a>
+          {% endif %}
+          <a href="{% url 'logs:verification_logs' %}" class="btn btn-sm btn-outline-light"
+             style="font-size:0.75rem; padding:0.2rem 0.6rem;">View All Logs</a>
+        </div>
       </div>
       <div class="table-responsive">
         <table class="table table-hover mb-0">

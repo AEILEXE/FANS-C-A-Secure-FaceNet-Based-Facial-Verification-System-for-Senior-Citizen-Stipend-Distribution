@@ -1,16 +1,17 @@
 /**
- * Shared webcam utility for FANS.
- * Provides startCamera(), captureFrame(), stopCamera(), captureFrameHighQuality().
+ * Shared webcam utility for FANS-C.
+ * Provides: startCamera(), captureFrame(), captureFrameHighQuality(), stopCamera(), postJSON().
  *
- * Camera is requested at 640x480 for better face quality.
- * captureFrameHighQuality() takes multiple frames and picks the sharpest.
+ * Camera: requested at 640x480 for better face quality with typical laptop webcams.
+ * captureFrameHighQuality(): takes a burst of frames, picks the sharpest using
+ *   a Sobel-based edge variance estimator (more accurate than pixel variance alone).
  */
 
 let _stream = null;
 
 async function startCamera(videoEl) {
   try {
-    // Prefer 640x480; fall back to any resolution
+    // Prefer 640x480; accept anything >= 320x240
     const constraints = {
       video: {
         width: { ideal: 640, min: 320 },
@@ -22,11 +23,14 @@ async function startCamera(videoEl) {
     };
     _stream = await navigator.mediaDevices.getUserMedia(constraints);
     videoEl.srcObject = _stream;
-    // Wait for video to be ready
+    // Wait for video metadata to load
     await new Promise((resolve) => {
+      if (videoEl.readyState >= 2) { resolve(); return; }
       videoEl.onloadedmetadata = () => resolve();
-      setTimeout(resolve, 2000); // fallback
+      setTimeout(resolve, 2500); // fallback timeout
     });
+    // Wait one additional frame for stable output
+    await new Promise(r => setTimeout(r, 150));
     return { success: true };
   } catch (err) {
     return { success: false, error: err.message };
@@ -35,77 +39,96 @@ async function startCamera(videoEl) {
 
 /**
  * Capture a single frame from the video element.
- * Un-mirrors the feed so the captured image matches real-world face orientation.
+ * Draws without mirroring — CSS mirror (scaleX(-1)) is cosmetic only.
  */
 function captureFrame(videoEl, canvasEl, width, height) {
-  const w = width || videoEl.videoWidth || 480;
+  const w = width  || videoEl.videoWidth  || 480;
   const h = height || videoEl.videoHeight || 360;
-  canvasEl.width = w;
+  canvasEl.width  = w;
   canvasEl.height = h;
   const ctx = canvasEl.getContext('2d');
-  // Un-mirror: video CSS has scaleX(-1), so draw without mirroring for correct orientation
   ctx.drawImage(videoEl, 0, 0, w, h);
   return canvasEl.toDataURL('image/jpeg', 0.92);
 }
 
 /**
  * Capture the best-quality frame from a short burst.
- * Estimates sharpness via pixel variance on a downsampled version.
- * Returns the sharpest frame's data URL.
+ * Uses a Sobel-based edge density estimate for sharpness — more reliable than
+ * pixel variance alone (which measures contrast, not focus).
+ *
+ * @param {HTMLVideoElement} videoEl
+ * @param {HTMLCanvasElement} canvasEl
+ * @param {number} frames   Number of frames to sample (default 7)
+ * @param {number} delayMs  Delay between frames in ms (default 70)
+ * @returns {Promise<string>} Data URL of the sharpest captured frame
  */
-async function captureFrameHighQuality(videoEl, canvasEl, frames = 5, delayMs = 80) {
-  const w = videoEl.videoWidth || 480;
+async function captureFrameHighQuality(videoEl, canvasEl, frames = 7, delayMs = 70) {
+  const w = videoEl.videoWidth  || 480;
   const h = videoEl.videoHeight || 360;
+
   const tmpCanvas = document.createElement('canvas');
   const tmpCtx = tmpCanvas.getContext('2d');
-  tmpCanvas.width = w;
+  tmpCanvas.width  = w;
   tmpCanvas.height = h;
 
-  let bestFrame = null;
+  let bestFrame     = null;
   let bestSharpness = -1;
 
   for (let i = 0; i < frames; i++) {
-    tmpCanvas.width = w;
-    tmpCanvas.height = h;
     tmpCtx.drawImage(videoEl, 0, 0, w, h);
-    const dataUrl = tmpCanvas.toDataURL('image/jpeg', 0.92);
-    const sharpness = estimateSharpness(tmpCtx, w, h);
+    const dataUrl   = tmpCanvas.toDataURL('image/jpeg', 0.92);
+    const sharpness = estimateSharpnessSobel(tmpCtx, w, h);
     if (sharpness > bestSharpness) {
       bestSharpness = sharpness;
-      bestFrame = dataUrl;
+      bestFrame     = dataUrl;
     }
     if (i < frames - 1) {
       await new Promise(r => setTimeout(r, delayMs));
     }
   }
 
-  // Write the best frame into the shared canvas (for consistent dimensions)
-  canvasEl.width = w;
+  // Write best frame into shared canvas for consistent dimensions
+  canvasEl.width  = w;
   canvasEl.height = h;
   return bestFrame || captureFrame(videoEl, canvasEl, w, h);
 }
 
 /**
- * Estimate sharpness of the current canvas content via pixel variance.
- * Higher = sharper. Only samples a small region for speed.
+ * Estimate sharpness using approximate Sobel edge detection.
+ * Samples a central region for speed; computes variance of edge magnitudes.
+ * Higher value = sharper (more in-focus) image.
  */
-function estimateSharpness(ctx, w, h) {
-  const sampleW = Math.min(w, 160);
-  const sampleH = Math.min(h, 120);
+function estimateSharpnessSobel(ctx, w, h) {
+  // Sample central 50% of the frame
+  const sampleW = Math.floor(w * 0.5);
+  const sampleH = Math.floor(h * 0.5);
   const sx = Math.floor((w - sampleW) / 2);
   const sy = Math.floor((h - sampleH) / 2);
+
   try {
     const imageData = ctx.getImageData(sx, sy, sampleW, sampleH);
-    const d = imageData.data;
-    let sum = 0, sumSq = 0, n = 0;
-    for (let i = 0; i < d.length; i += 4) {
-      const lum = 0.299 * d[i] + 0.587 * d[i+1] + 0.114 * d[i+2];
-      sum += lum;
-      sumSq += lum * lum;
-      n++;
+    const d  = imageData.data;
+    const sw = sampleW;
+
+    // Convert to grayscale luma array
+    const gray = new Float32Array(sampleW * sampleH);
+    for (let i = 0; i < gray.length; i++) {
+      const p = i * 4;
+      gray[i] = 0.299 * d[p] + 0.587 * d[p + 1] + 0.114 * d[p + 2];
     }
-    const mean = sum / n;
-    return sumSq / n - mean * mean; // variance = sharpness proxy
+
+    // Approximate Sobel: sum of squared horizontal differences
+    let sumSq = 0;
+    let n = 0;
+    for (let y = 0; y < sampleH - 1; y++) {
+      for (let x = 0; x < sampleW - 1; x++) {
+        const gx = gray[y * sw + x + 1] - gray[y * sw + x];
+        const gy = gray[(y + 1) * sw + x] - gray[y * sw + x];
+        sumSq += gx * gx + gy * gy;
+        n++;
+      }
+    }
+    return n > 0 ? sumSq / n : 0;
   } catch (e) {
     return 0;
   }
@@ -127,5 +150,8 @@ async function postJSON(url, data, csrfToken) {
     },
     body: JSON.stringify(data),
   });
+  if (!res.ok) {
+    throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+  }
   return res.json();
 }

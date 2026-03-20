@@ -125,7 +125,7 @@ EMBEDDING_ENCRYPTION_KEY = os.getenv('EMBEDDING_ENCRYPTION_KEY', '')
 DEMO_MODE = _bool_env('DEMO_MODE', default=True)
 VERIFICATION_THRESHOLD = float(os.getenv('VERIFICATION_THRESHOLD', '0.75'))
 DEMO_THRESHOLD = float(os.getenv('DEMO_THRESHOLD', '0.60'))
-MAX_RETRY_ATTEMPTS = int(os.getenv('MAX_RETRY_ATTEMPTS', '1'))
+MAX_RETRY_ATTEMPTS = int(os.getenv('MAX_RETRY_ATTEMPTS', '2'))
 
 # ── Liveness ──────────────────────────────────────────────────────────────────
 # LIVENESS_REQUIRED=False: liveness is logged but never blocks face matching.
@@ -136,6 +136,30 @@ LIVENESS_REQUIRED = _bool_env('LIVENESS_REQUIRED', default=False)
 # 0.15 is permissive enough for webcam/browser captures.
 # Raise to 0.3-0.5 in production with a trained model.
 ANTI_SPOOF_THRESHOLD = float(os.getenv('ANTI_SPOOF_THRESHOLD', '0.15'))
+
+# ── Logging ───────────────────────────────────────────────────────────────────
+# Shows verification scores, thresholds, and decisions in the dev server console.
+# Each line is prefixed [VERIFY] so it's easy to grep from the terminal.
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {
+        'simple': {'format': '%(levelname)s %(name)s: %(message)s'},
+    },
+    'handlers': {
+        'console': {
+            'class': 'logging.StreamHandler',
+            'formatter': 'simple',
+        },
+    },
+    'loggers': {
+        'verification': {
+            'handlers': ['console'],
+            'level': 'INFO',
+            'propagate': False,
+        },
+    },
+}
 
 SESSION_COOKIE_HTTPONLY = True
 SESSION_COOKIE_SECURE = not DEBUG

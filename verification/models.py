@@ -11,9 +11,14 @@ class StipendEvent(models.Model):
     is being claimed.
 
     event_type:
-      REGULAR      — standard monthly stipend; all active beneficiaries are eligible.
+      REGULAR        — standard monthly stipend; all active beneficiaries are eligible.
       BIRTHDAY_BONUS — birthday bonus; only beneficiaries whose birth month matches
                        the event month are eligible.
+
+    Payout window:
+      payout_start_date / payout_end_date define the date range during which
+      beneficiaries may claim for this event. If these are not set, only the exact
+      `date` is matched (single-day event).
     """
     EVENT_TYPE_REGULAR = 'regular'
     EVENT_TYPE_BIRTHDAY = 'birthday_bonus'
@@ -24,7 +29,7 @@ class StipendEvent(models.Model):
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     title = models.CharField(max_length=200)
-    date = models.DateField()
+    date = models.DateField(help_text='Main payout date or start of payout period.')
     event_type = models.CharField(
         max_length=30,
         choices=EVENT_TYPE_CHOICES,
@@ -32,6 +37,17 @@ class StipendEvent(models.Model):
     )
     description = models.TextField(blank=True)
     is_active = models.BooleanField(default=True)
+
+    # Optional payout window — if set, claims are accepted within start..end inclusive
+    payout_start_date = models.DateField(
+        null=True, blank=True,
+        help_text='First day beneficiaries may claim. Defaults to date if not set.',
+    )
+    payout_end_date = models.DateField(
+        null=True, blank=True,
+        help_text='Last day beneficiaries may claim. Defaults to date if not set.',
+    )
+
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,
@@ -47,6 +63,23 @@ class StipendEvent(models.Model):
 
     def __str__(self):
         return f'{self.title} ({self.date})'
+
+    def get_claim_start(self):
+        """First day this event accepts claims."""
+        return self.payout_start_date or self.date
+
+    def get_claim_end(self):
+        """Last day this event accepts claims."""
+        return self.payout_end_date or self.date
+
+    def is_active_on_date(self, check_date) -> bool:
+        """
+        Returns True if check_date falls within the payout window for this event.
+        Also checks is_active flag.
+        """
+        if not self.is_active:
+            return False
+        return self.get_claim_start() <= check_date <= self.get_claim_end()
 
     def is_beneficiary_eligible(self, beneficiary) -> bool:
         """
@@ -68,8 +101,37 @@ class StipendEvent(models.Model):
             qs = qs.filter(date_of_birth__month=self.date.month)
         return qs
 
+    @classmethod
+    def get_active_event_for_date(cls, check_date):
+        """
+        Returns the active StipendEvent whose payout window contains check_date,
+        or None if no such event exists.
+
+        Priority: events whose payout_start_date <= today <= payout_end_date.
+        Falls back to events where date == today (legacy single-day events).
+        """
+        # Events with an explicit payout window containing check_date
+        windowed = cls.objects.filter(
+            is_active=True,
+            payout_start_date__lte=check_date,
+            payout_end_date__gte=check_date,
+        ).order_by('date').first()
+        if windowed:
+            return windowed
+
+        # Fallback: single-day events matching exactly
+        return cls.objects.filter(
+            is_active=True,
+            date=check_date,
+            payout_start_date__isnull=True,
+        ).order_by('date').first()
+
 
 class FaceEmbedding(models.Model):
+    """
+    Primary face embedding for a beneficiary (FaceNet, 128-d, encrypted).
+    One per beneficiary. For additional templates, see the registration re-enroll flow.
+    """
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     beneficiary = models.OneToOneField(
         Beneficiary,
@@ -152,12 +214,23 @@ class VerificationAttempt(models.Model):
     decision = models.CharField(max_length=20, choices=DECISION_CHOICES, null=True, blank=True)
     decision_reason = models.CharField(max_length=500, blank=True)
 
+    # Template debug info (which stored template matched, how many were checked)
+    matched_template = models.CharField(max_length=30, blank=True)
+    templates_checked = models.PositiveSmallIntegerField(default=0)
+
     # Image quality at verification time
     face_quality_score = models.FloatField(null=True, blank=True)
+    face_quality_ok = models.BooleanField(null=True, blank=True)
 
     # Retry tracking
     attempt_number = models.PositiveSmallIntegerField(default=1)
     session_id = models.UUIDField(default=uuid.uuid4)
+
+    # Demo mode flag — clarifies in audit logs whether threshold was relaxed
+    demo_mode_active = models.BooleanField(
+        default=False,
+        help_text='True if DEMO_MODE was enabled at the time of this verification.'
+    )
 
     # Fallback
     fallback_triggered = models.BooleanField(default=False)
@@ -187,6 +260,98 @@ class VerificationAttempt(models.Model):
         return f'{self.beneficiary.full_name} - {self.decision} @ {self.timestamp}'
 
 
+class AdditionalFaceEmbedding(models.Model):
+    """
+    Extra face templates for multi-shot matching.
+    Added via the "Update Face Data" workflow when appearance changes or original
+    registration quality was poor.  compare_with_all_embeddings() picks the BEST
+    score across primary + all additional templates.
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    beneficiary = models.ForeignKey(
+        Beneficiary,
+        on_delete=models.CASCADE,
+        related_name='additional_embeddings',
+    )
+    embedding_data = models.BinaryField()
+    embedding_version = models.CharField(max_length=20, default='facenet-v1')
+    label = models.CharField(
+        max_length=100, blank=True,
+        help_text='Free-text label e.g. "update-2025-03"',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name='created_additional_embeddings',
+    )
+
+    class Meta:
+        db_table = 'fans_additional_face_embeddings'
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f'Extra template for {self.beneficiary.full_name} ({self.created_at.date()})'
+
+
+class FaceUpdateLog(models.Model):
+    """
+    Audit trail for every face re-enrollment event.
+    Captures who triggered it, why, and whether it succeeded.
+    """
+    REASON_REPEATED_FAILURE  = 'repeated_failure'
+    REASON_APPEARANCE_CHANGE = 'appearance_change'
+    REASON_POOR_ORIGINAL     = 'poor_original'
+    REASON_STAFF_DECISION    = 'staff_decision'
+    REASON_CHOICES = [
+        (REASON_REPEATED_FAILURE,  'Repeated Verification Failure'),
+        (REASON_APPEARANCE_CHANGE, 'Major Appearance Change'),
+        (REASON_POOR_ORIGINAL,     'Poor Original Registration'),
+        (REASON_STAFF_DECISION,    'Staff Decision / Other'),
+    ]
+
+    ACTION_REPLACE  = 'replace'   # Replace primary embedding
+    ACTION_AUGMENT  = 'augment'   # Add as additional template only
+    ACTION_CHOICES = [
+        (ACTION_REPLACE, 'Replace Primary Embedding'),
+        (ACTION_AUGMENT, 'Add as Additional Template'),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    beneficiary = models.ForeignKey(
+        Beneficiary,
+        on_delete=models.CASCADE,
+        related_name='face_update_logs',
+    )
+    performed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name='face_updates_performed',
+    )
+    reason = models.CharField(max_length=30, choices=REASON_CHOICES)
+    action = models.CharField(
+        max_length=10,
+        choices=ACTION_CHOICES,
+        default=ACTION_REPLACE,
+    )
+    notes = models.TextField(blank=True)
+    success = models.BooleanField(default=False)
+    timestamp = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'fans_face_update_logs'
+        ordering = ['-timestamp']
+
+    def __str__(self):
+        status = 'OK' if self.success else 'FAILED'
+        return (
+            f'Face update [{status}] for {self.beneficiary.full_name} '
+            f'by {self.performed_by} ({self.timestamp.date()})'
+        )
+
+
 class SystemConfig(models.Model):
     key = models.CharField(max_length=100, unique=True)
     value = models.CharField(max_length=500)
@@ -209,6 +374,7 @@ class SystemConfig(models.Model):
         """
         Returns the active verification threshold.
         In DEMO_MODE, the DB value defaults to DEMO_THRESHOLD if not explicitly set.
+        Production mode defaults to VERIFICATION_THRESHOLD (0.75).
         """
         from django.conf import settings as django_settings
         demo_mode = getattr(django_settings, 'DEMO_MODE', True)

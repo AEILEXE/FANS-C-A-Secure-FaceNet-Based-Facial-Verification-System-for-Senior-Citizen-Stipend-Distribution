@@ -1,5 +1,5 @@
 /* =========================================================
-   FANS — Facial Verification System
+   FANS-C — Secure FaceNet-Based Facial Verification System
    Quezon City Government Portal Theme
    ========================================================= */
 
@@ -210,6 +210,7 @@ a:hover { color: var(--qc-blue-dark); }
 .stat-icon.green  { background: #dcfce7; color: #15803d; }
 .stat-icon.amber  { background: #fef9c3; color: #a16207; }
 .stat-icon.red    { background: var(--qc-red-light); color: var(--qc-red); }
+.stat-icon.purple { background: #f3e8ff; color: #7e22ce; }
 
 .stat-value { font-size: 2rem; font-weight: 800; line-height: 1; }
 .stat-label { font-size: 0.78rem; color: var(--text-muted); font-weight: 500; text-transform: uppercase; letter-spacing: 0.5px; margin-top: 0.15rem; }
@@ -246,7 +247,7 @@ a:hover { color: var(--qc-blue-dark); }
 .btn-primary:focus { background: var(--qc-blue-dark); border-color: var(--qc-blue-dark); box-shadow: 0 0 0 0.2rem rgba(0,61,153,0.3); }
 
 .btn-outline-primary { color: var(--qc-blue); border-color: var(--qc-blue); }
-.btn-outline-primary:hover { background: var(--qc-blue); border-color: var(--qc-blue); }
+.btn-outline-primary:hover { background: var(--qc-blue); border-color: var(--qc-blue); color: white; }
 
 /* ── Forms ─────────────────────────────────────────────── */
 .form-label {
@@ -370,36 +371,133 @@ a:hover { color: var(--qc-blue-dark); }
 .table-hover tbody tr:hover { background: #f8fafc; }
 .table { font-size: 0.875rem; }
 
-/* ── Webcam ────────────────────────────────────────────── */
+/* ── Webcam / Camera ───────────────────────────────────── */
 #video {
   border-radius: var(--radius-lg);
   background: #111827;
   display: block;
+  max-width: 100%;
+  width: 100%;
+  height: auto;
+  aspect-ratio: 4/3;
+  object-fit: cover;
+  /*
+   * Mirror the preview so users see a natural selfie view.
+   * The face-ring guide aligns correctly and head-turn instructions
+   * feel intuitive (turn left = see image turn left).
+   *
+   * IMPORTANT: captureFrame() / captureFrameHighQuality() in webcam.js
+   * draw WITHOUT this mirror (ctx.drawImage has no transform), so the
+   * image sent to the server and to FaceNet is always the un-mirrored,
+   * correct orientation. This transform is display-only.
+   */
+  transform: scaleX(-1);
+}
+
+.video-container {
+  position: relative;
+  width: 100%;
+  max-width: 480px;
+  margin: 0 auto;
 }
 
 .face-ring {
-  border: 3px dashed rgba(255,255,255,0.6);
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 42%;
+  height: 55%;
+  border: 3px dashed rgba(255,255,255,0.65);
   border-radius: 50%;
   pointer-events: none;
-  transition: border-color 0.3s;
+  transition: border-color 0.3s, border-style 0.3s;
 }
 
-.face-ring.detected    { border-color: #22c55e; border-style: solid; }
-.face-ring.not-found   { border-color: #ef4444; }
+.face-ring.detected  { border-color: #22c55e; border-style: solid; }
+.face-ring.not-found { border-color: #ef4444; }
+.face-ring.warning   { border-color: #f59e0b; }
 
 .liveness-checking { animation: pulse 1.2s ease-in-out infinite; }
 @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.35} }
 
-/* ── Result Cards ──────────────────────────────────────── */
+/* ── Quality Indicator ─────────────────────────────────── */
+.quality-dot {
+  width: 10px; height: 10px;
+  border-radius: 50%;
+  display: inline-block;
+  flex-shrink: 0;
+}
+.quality-dot.good    { background: #22c55e; }
+.quality-dot.warning { background: #f59e0b; }
+.quality-dot.bad     { background: #ef4444; }
+
+/* ── Result Cards / Banners ────────────────────────────── */
 .result-banner {
   border-radius: var(--radius-lg) var(--radius-lg) 0 0;
-  padding: 2.5rem;
+  padding: 2rem 2.5rem;
   text-align: center;
+  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 1.25rem;
+}
+
+.result-banner i {
+  font-size: 3rem;
+  flex-shrink: 0;
+}
+
+.result-banner .result-label {
+  font-size: 1.8rem;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  line-height: 1.1;
+  text-shadow: 0 1px 3px rgba(0,0,0,0.2);
+}
+
+.result-banner .result-sub {
+  font-size: 0.9rem;
+  opacity: 0.9;
+  margin-top: 0.25rem;
+  font-weight: 400;
+}
+
+.result-banner .result-text {
+  text-align: left;
 }
 
 .result-banner.verified { background: linear-gradient(135deg, #15803d, #22c55e); }
 .result-banner.denied   { background: linear-gradient(135deg, #991b1b, var(--qc-red)); }
 .result-banner.review   { background: linear-gradient(135deg, #92400e, var(--qc-gold)); }
+.result-banner.fallback { background: linear-gradient(135deg, #374151, #6b7280); }
+
+/* ── Score Meter ───────────────────────────────────────── */
+.score-meter {
+  height: 10px;
+  border-radius: 5px;
+  overflow: hidden;
+  background: #e2e8f0;
+  position: relative;
+}
+.score-fill {
+  height: 100%;
+  border-radius: 5px;
+  transition: width 0.7s ease;
+}
+.score-fill.high   { background: linear-gradient(90deg, #16a34a, #22c55e); }
+.score-fill.medium { background: linear-gradient(90deg, #b45309, var(--qc-gold)); }
+.score-fill.low    { background: linear-gradient(90deg, #991b1b, var(--qc-red)); }
+
+.score-threshold-marker {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: rgba(0,0,0,0.4);
+  border-radius: 1px;
+}
 
 /* ── Login Page ────────────────────────────────────────── */
 .login-bg {
@@ -436,6 +534,42 @@ a:hover { color: var(--qc-blue-dark); }
   margin: 0 auto 1rem;
   font-size: 2rem;
   color: var(--qc-gold);
+}
+
+/* ── Demo Mode Banner ──────────────────────────────────── */
+.demo-mode-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  background: #fef9c3;
+  border: 1px solid #fde047;
+  color: #713f12;
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 0.25rem 0.65rem;
+  border-radius: 20px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* ── Stipend Event Badge ───────────────────────────────── */
+.event-active-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  background: #dcfce7;
+  border: 1px solid #86efac;
+  color: #14532d;
+  font-size: 0.8rem;
+  font-weight: 600;
+  padding: 0.3rem 0.75rem;
+  border-radius: 20px;
+}
+
+.event-active-badge.birthday {
+  background: #fef9c3;
+  border-color: #fde047;
+  color: #713f12;
 }
 
 /* ── Utility ───────────────────────────────────────────── */
@@ -493,16 +627,36 @@ code, .font-mono {
   flex-shrink: 0;
 }
 
-/* ── Score Meter ───────────────────────────────────────── */
-.score-meter { height: 10px; border-radius: 5px; overflow: hidden; background: #e2e8f0; }
-.score-fill  { height: 100%; border-radius: 5px; transition: width 0.6s ease; }
-.score-fill.high   { background: #22c55e; }
-.score-fill.medium { background: var(--qc-gold); }
-.score-fill.low    { background: var(--qc-red); }
+/* ── Verify Tips Panel ─────────────────────────────────── */
+.verify-tips {
+  background: #f8fafc;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  padding: 0.75rem 1rem;
+  font-size: 0.8rem;
+}
+
+.verify-tips .tip {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  padding: 0.25rem 0;
+  color: var(--text-muted);
+}
+
+.verify-tips .tip i { color: var(--qc-blue); flex-shrink: 0; margin-top: 1px; }
 
 /* ── Responsive ────────────────────────────────────────── */
 @media (max-width: 768px) {
   .page-wrapper { padding: 1rem; }
   .page-header  { flex-direction: column; }
   .navbar-fans .nav-link { padding: 0.6rem 0.75rem !important; }
+  .result-banner { flex-direction: column; text-align: center; padding: 1.5rem 1rem; }
+  .result-banner .result-text { text-align: center; }
+  .result-banner i { font-size: 2.5rem; }
+  .result-banner .result-label { font-size: 1.4rem; }
+}
+
+@media (max-width: 576px) {
+  .stat-value { font-size: 1.5rem; }
 }

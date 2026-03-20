@@ -1,7 +1,10 @@
 import json
 import base64
 import uuid
+import logging
 from django.shortcuts import render, redirect, get_object_or_404
+
+logger = logging.getLogger('verification')
 from django.contrib.auth.decorators import login_required
 from django.views.decorators.http import require_http_methods, require_POST
 from django.http import JsonResponse
@@ -9,14 +12,20 @@ from django.utils import timezone
 from django.conf import settings as django_settings
 
 from beneficiaries.models import Beneficiary
-from .models import FaceEmbedding, VerificationAttempt, SystemConfig, StipendEvent
+from .models import (
+    FaceEmbedding, VerificationAttempt, SystemConfig, StipendEvent,
+    AdditionalFaceEmbedding, FaceUpdateLog,
+)
 from .face_utils import (
     process_face_for_verification,
+    process_face_for_registration,
+    compare_with_all_embeddings,
     compare_with_stored,
     load_image_from_bytes,
     detect_and_align_face,
     is_using_mock_model,
     get_model_load_error,
+    encrypt_embedding,
 )
 from .liveness import (
     run_full_liveness_check,
@@ -27,11 +36,19 @@ from logs.models import AuditLog
 
 def _challenge_display(direction: str) -> str:
     return {
-        'left': 'Slowly turn your head to the LEFT',
+        'left':  'Slowly turn your head to the LEFT',
         'right': 'Slowly turn your head to the RIGHT',
-        'up': 'Slowly look UP',
-        'down': 'Slowly look DOWN',
+        'up':    'Slowly look UP',
+        'down':  'Slowly look DOWN',
     }.get(direction, 'Move your head')
+
+
+def _get_demo_mode():
+    return getattr(django_settings, 'DEMO_MODE', True)
+
+
+def _get_liveness_required():
+    return getattr(django_settings, 'LIVENESS_REQUIRED', False)
 
 
 # ─── Verification Selection ───────────────────────────────────────────────────
@@ -45,10 +62,12 @@ def verify_select(request):
             Beneficiary.objects.filter(status=Beneficiary.STATUS_ACTIVE, last_name__icontains=query) |
             Beneficiary.objects.filter(status=Beneficiary.STATUS_ACTIVE, first_name__icontains=query) |
             Beneficiary.objects.filter(status=Beneficiary.STATUS_ACTIVE, beneficiary_id__icontains=query)
-        ).distinct()
+        ).distinct().order_by('last_name', 'first_name')
 
-    # Show upcoming stipend events for context
     today = timezone.now().date()
+    active_event = StipendEvent.get_active_event_for_date(today)
+
+    # Show upcoming events for context in the sidebar
     from datetime import timedelta
     upcoming_events = StipendEvent.objects.filter(
         is_active=True, date__gte=today, date__lte=today + timedelta(days=30)
@@ -57,7 +76,9 @@ def verify_select(request):
     return render(request, 'verification/verify_select.html', {
         'beneficiaries': beneficiaries,
         'query': query,
+        'active_event': active_event,
         'upcoming_events': upcoming_events,
+        'today': today,
     })
 
 
@@ -65,24 +86,28 @@ def verify_select(request):
 
 @login_required
 def verify_start(request, pk):
-    beneficiary = get_object_or_404(Beneficiary, pk=pk, status=Beneficiary.STATUS_ACTIVE)
+    beneficiary = get_object_or_404(Beneficiary, pk=pk)
 
-    # Guard: inactive/deceased beneficiaries cannot claim
+    # Guard: only active beneficiaries can claim
     if not beneficiary.is_eligible_to_claim:
         from django.contrib import messages
-        messages.error(request, f'{beneficiary.full_name} is not eligible to claim (status: {beneficiary.get_status_display()}).')
+        messages.error(
+            request,
+            f'{beneficiary.full_name} is not eligible to claim '
+            f'(status: {beneficiary.get_status_display()}). '
+            'Inactive, deceased, or pending beneficiaries cannot claim a stipend.'
+        )
         return redirect('verification:verify_select')
 
     claimant_type = request.GET.get('claimant', VerificationAttempt.CLAIMANT_BENEFICIARY)
     if claimant_type not in (VerificationAttempt.CLAIMANT_BENEFICIARY, VerificationAttempt.CLAIMANT_REPRESENTATIVE):
         claimant_type = VerificationAttempt.CLAIMANT_BENEFICIARY
 
-    # Detect active stipend event
+    # Detect active stipend event using payout window
     today = timezone.now().date()
-    active_event = StipendEvent.objects.filter(is_active=True, date=today).first()
+    active_event = StipendEvent.get_active_event_for_date(today)
 
-    # Birthday bonus eligibility check: if today's event is a birthday bonus,
-    # only beneficiaries whose birth month matches the event month can claim via face scan.
+    # Birthday bonus eligibility check
     if (active_event
             and active_event.event_type == StipendEvent.EVENT_TYPE_BIRTHDAY
             and claimant_type == VerificationAttempt.CLAIMANT_BENEFICIARY):
@@ -95,6 +120,7 @@ def verify_start(request, pk):
             )
             return redirect('verification:verify_select')
 
+    # Representative claim → fallback ID verification
     if claimant_type == VerificationAttempt.CLAIMANT_REPRESENTATIVE:
         if not beneficiary.has_representative:
             from django.contrib import messages
@@ -110,17 +136,25 @@ def verify_start(request, pk):
             fallback_triggered=True,
             threshold_used=SystemConfig.get_threshold(),
             session_id=session_id,
+            # Representative claims go directly to ID verification
+            # Use DECISION_NOT_VERIFIED as the initial placeholder;
+            # the fallback view will update this to verified/denied after ID check.
             decision=VerificationAttempt.DECISION_NOT_VERIFIED,
-            decision_reason='Representative claim — ID verification required.',
-            notes='Sent to fallback: representative claimant.',
+            decision_reason='Representative claim — ID verification required (pending).',
+            notes='Representative claimant: redirected to ID verification.',
             stipend_event=active_event,
+            demo_mode_active=_get_demo_mode(),
         )
         AuditLog.log(
             action=AuditLog.ACTION_VERIFY,
             user=request.user,
             target_type='Beneficiary',
             target_id=beneficiary.id,
-            details={'claimant_type': 'representative', 'reason': 'Redirected to fallback ID check'},
+            details={
+                'claimant_type': 'representative',
+                'reason': 'Redirected to fallback ID check',
+                'rep_name': f'{beneficiary.rep_first_name} {beneficiary.rep_last_name}'.strip(),
+            },
             request=request
         )
         return redirect('verification:verify_fallback', attempt_id=attempt.id)
@@ -128,7 +162,7 @@ def verify_start(request, pk):
     # Beneficiary face scan — requires an embedding
     if not hasattr(beneficiary, 'face_embedding'):
         from django.contrib import messages
-        messages.error(request, 'No face embedding found for this beneficiary. Please re-register.')
+        messages.error(request, 'No face embedding found for this beneficiary. Please complete face registration first.')
         return redirect('verification:verify_select')
 
     session_id = str(uuid.uuid4())
@@ -142,8 +176,8 @@ def verify_start(request, pk):
         'stipend_event_id': str(active_event.id) if active_event else None,
     }
 
-    liveness_required = getattr(django_settings, 'LIVENESS_REQUIRED', False)
-    demo_mode = getattr(django_settings, 'DEMO_MODE', True)
+    liveness_required = _get_liveness_required()
+    demo_mode = _get_demo_mode()
 
     using_mock = is_using_mock_model()
     is_birthday_event = (
@@ -169,7 +203,7 @@ def verify_start(request, pk):
 @login_required
 @require_POST
 def verify_check_liveness(request):
-    """Server-side anti-spoofing check. Does NOT gate verification."""
+    """Server-side anti-spoofing + liveness check. Does NOT gate verification."""
     try:
         data = json.loads(request.body)
         image_data = data.get('image', '')
@@ -203,7 +237,6 @@ def verify_check_liveness(request):
             anti_spoof_threshold=anti_spoof_threshold,
         )
 
-        # Also check face quality for user guidance
         from .face_utils import check_face_quality
         quality = check_face_quality(face_img)
 
@@ -215,7 +248,7 @@ def verify_check_liveness(request):
             'liveness_score': liveness_result['liveness_score'],
             'reason': liveness_result['reason'],
             'face_quality_ok': quality['ok'],
-            'face_quality_score': quality['score'],
+            'face_quality_score': round(quality['score'], 3),
             'face_quality_reason': quality['reason'],
         })
 
@@ -236,10 +269,10 @@ def verify_submit(request):
         data = json.loads(request.body)
         image_data = data.get('image', '')
         challenge_completed = data.get('challenge_completed', False)
-        liveness_score = data.get('liveness_score', 0.0)
-        anti_spoof_score = data.get('anti_spoof_score', 0.0)
-        liveness_passed_client = data.get('liveness_passed', False)
-        face_detected_client = data.get('face_detected', True)
+        liveness_score = float(data.get('liveness_score', 0.0))
+        anti_spoof_score = float(data.get('anti_spoof_score', 0.0))
+        liveness_passed_client = bool(data.get('liveness_passed', False))
+        face_detected_client = bool(data.get('face_detected', True))
 
         if not image_data:
             return JsonResponse({'success': False, 'error': 'No image provided.'})
@@ -252,7 +285,8 @@ def verify_submit(request):
 
         beneficiary = get_object_or_404(Beneficiary, pk=beneficiary_id)
         threshold = SystemConfig.get_threshold()
-        liveness_required = getattr(django_settings, 'LIVENESS_REQUIRED', False)
+        liveness_required = _get_liveness_required()
+        demo_mode = _get_demo_mode()
 
         if ',' in image_data:
             image_data = image_data.split(',')[1]
@@ -279,17 +313,21 @@ def verify_submit(request):
             attempt_number=attempt_number,
             session_id=session_id,
             stipend_event=stipend_event,
+            demo_mode_active=demo_mode,
         )
 
         # ── Strict mode: deny if liveness failed ──────────────────────────────
         if liveness_required and not liveness_passed_client:
             attempt.decision = VerificationAttempt.DECISION_DENIED
-            attempt.decision_reason = 'Liveness check failed (strict mode).'
-            attempt.notes = attempt.decision_reason
+            attempt.decision_reason = (
+                f'Denied: liveness check failed (strict mode). '
+                f'Liveness score: {liveness_score:.3f}.'
+            )
+            attempt.notes = 'Liveness required and not passed.'
             attempt.save()
             _log_verify(request, beneficiary, 'denied', attempt_number,
                         liveness_passed_client, None, threshold, claimant_type,
-                        'Liveness failed')
+                        'Liveness failed (strict mode)', stipend_event)
             request.session.pop('verification_session', None)
             return JsonResponse({
                 'success': True,
@@ -303,7 +341,11 @@ def verify_submit(request):
 
         if not face_result['success']:
             attempt.decision = VerificationAttempt.DECISION_DENIED
-            attempt.decision_reason = f'Face not detected: {face_result["error"]}'
+            attempt.decision_reason = f'Denied: {face_result["error"]}'
+            if face_result.get('quality'):
+                q = face_result['quality']
+                attempt.face_quality_score = q.get('score')
+                attempt.face_quality_ok = q.get('ok')
             attempt.notes = attempt.decision_reason
             attempt.save()
             return JsonResponse({
@@ -316,13 +358,15 @@ def verify_submit(request):
 
         # Store face quality
         if face_result.get('quality'):
-            attempt.face_quality_score = face_result['quality'].get('score')
+            q = face_result['quality']
+            attempt.face_quality_score = q.get('score')
+            attempt.face_quality_ok = q.get('ok')
 
-        # Warn if mock model
+        # Deny if model not loaded (mock mode)
         if face_result.get('using_mock'):
             attempt.decision = VerificationAttempt.DECISION_DENIED
             attempt.decision_reason = (
-                'Face recognition model not loaded. '
+                'Denied: face recognition model not loaded. '
                 'Verification requires keras-facenet — see README for setup.'
             )
             attempt.save()
@@ -334,52 +378,86 @@ def verify_submit(request):
             })
 
         live_embedding = face_result['embedding']
-        stored_encrypted = beneficiary.face_embedding.embedding_data
-        comparison = compare_with_stored(live_embedding, stored_encrypted)
+
+        # Use multi-template comparison (best score across all stored templates)
+        comparison = compare_with_all_embeddings(live_embedding, beneficiary)
 
         if not comparison['success']:
             attempt.decision = VerificationAttempt.DECISION_DENIED
-            attempt.decision_reason = f'Comparison error: {comparison["error"]}'
+            attempt.decision_reason = f'Comparison error: {comparison.get("error", "unknown")}'
             attempt.notes = attempt.decision_reason
             attempt.save()
-            return JsonResponse({'success': False, 'error': comparison['error']})
+            return JsonResponse({'success': False, 'error': comparison.get('error', 'Comparison failed')})
 
         score = comparison['score']
         attempt.similarity_score = score
+        attempt.matched_template = comparison.get('matched_template', '')
+        attempt.templates_checked = comparison.get('templates_checked', 0)
+
+        logger.info(
+            '[VERIFY] beneficiary=%s score=%.4f threshold=%.4f gap=%+.4f '
+            'matched=%s checked=%d demo=%s',
+            beneficiary.beneficiary_id,
+            score,
+            threshold,
+            score - threshold,
+            comparison.get('matched_template', '?'),
+            comparison.get('templates_checked', 0),
+            demo_mode,
+        )
 
         # ── Decision logic ────────────────────────────────────────────────────
+        # Review band: scores just below threshold trigger manual review
         review_band = threshold * 0.85
+        gap = score - threshold  # positive = above threshold, negative = below
+
+        tmpl_info = f'template={comparison.get("matched_template", "?")}, checked={comparison.get("templates_checked", 0)}'
+
+        liveness_warning = ''
+        if not liveness_passed_client and not liveness_required:
+            liveness_warning = ' [Liveness warning — demo mode]'
 
         if score >= threshold:
             decision = VerificationAttempt.DECISION_VERIFIED
-            reason = f'Score {score:.4f} >= threshold {threshold:.2f}.'
-            if not liveness_passed_client and not liveness_required:
-                reason += ' Liveness warning (non-blocking in demo mode).'
+            reason = (
+                f'Verified: score {score:.3f} >= threshold {threshold:.2f} '
+                f'(+{gap:.3f}). {tmpl_info}.'
+                + liveness_warning
+            )
         elif score >= review_band:
             decision = VerificationAttempt.DECISION_MANUAL_REVIEW
-            reason = f'Score {score:.4f} in review band ({review_band:.2f}-{threshold:.2f}).'
+            reason = (
+                f'Manual review: score {score:.3f} in review band '
+                f'({review_band:.2f}–{threshold:.2f}), gap {gap:.3f}. '
+                f'{tmpl_info}. Administrator action required.'
+            )
         else:
             decision = VerificationAttempt.DECISION_NOT_VERIFIED
-            reason = f'Score {score:.4f} below threshold {threshold:.2f}.'
+            reason = (
+                f'Not verified: score {score:.3f} < threshold {threshold:.2f} '
+                f'(gap {gap:.3f}). {tmpl_info}.'
+            )
 
-        # Append quality note
+        # Append quality note if applicable
         if face_result.get('quality') and not face_result['quality']['ok']:
-            reason += f' Image: {face_result["quality"]["reason"]}'
+            reason += f' Note: {face_result["quality"]["reason"]}'
 
         attempt.decision = decision
         attempt.decision_reason = reason
         attempt.save()
 
-        max_retries = getattr(django_settings, 'MAX_RETRY_ATTEMPTS', 1)
+        max_retries = getattr(django_settings, 'MAX_RETRY_ATTEMPTS', 2)
         _log_verify(request, beneficiary, decision, attempt_number,
-                    liveness_passed_client, score, threshold, claimant_type, reason)
+                    liveness_passed_client, score, threshold, claimant_type,
+                    reason, stipend_event,
+                    all_scores=comparison.get('all_scores', []))
 
         if decision == VerificationAttempt.DECISION_VERIFIED:
             request.session.pop('verification_session', None)
             return JsonResponse({
                 'success': True,
                 'decision': 'verified',
-                'score': score,
+                'score': round(score, 3),
                 'threshold': threshold,
                 'reason': reason,
                 'redirect': f'/verification/result/{attempt.id}/',
@@ -390,30 +468,34 @@ def verify_submit(request):
             return JsonResponse({
                 'success': True,
                 'decision': 'manual_review',
-                'score': score,
+                'score': round(score, 3),
                 'threshold': threshold,
                 'reason': reason,
                 'redirect': f'/verification/result/{attempt.id}/',
             })
 
         elif attempt_number <= max_retries:
+            new_challenge = get_random_challenge()
             session_data['attempt_number'] = attempt_number + 1
-            session_data['challenge'] = get_random_challenge()
+            session_data['challenge'] = new_challenge
             request.session['verification_session'] = session_data
             request.session.modified = True
             return JsonResponse({
                 'success': True,
                 'decision': 'retry',
-                'score': score,
+                'score': round(score, 3),
                 'threshold': threshold,
                 'reason': reason,
                 'message': (
-                    f'Score {score:.4f} is below threshold {threshold:.2f}. '
-                    f'Ensure good lighting, center your face, and hold still.'
+                    f'Score {score:.3f} is below threshold {threshold:.2f}. '
+                    f'Attempt {attempt_number} of {max_retries + 1}. '
+                    'Ensure good lighting, center your face, and hold still.'
                 ),
-                'new_challenge': session_data['challenge'],
-                'new_challenge_display': _challenge_display(session_data['challenge']),
+                'new_challenge': new_challenge,
+                'new_challenge_display': _challenge_display(new_challenge),
                 'attempt_id': str(attempt.id),
+                'attempt_number': attempt_number,
+                'max_retries': max_retries,
             })
 
         else:
@@ -425,16 +507,23 @@ def verify_submit(request):
                 user=request.user,
                 target_type='Beneficiary',
                 target_id=beneficiary.id,
-                details={'score': score, 'reason': 'Max retries reached — fallback triggered'},
+                details={
+                    'score': round(score, 3),
+                    'reason': f'Max retries ({max_retries}) reached — fallback triggered',
+                    'threshold': threshold,
+                },
                 request=request
             )
             return JsonResponse({
                 'success': True,
                 'decision': 'fallback',
-                'score': score,
+                'score': round(score, 3),
                 'threshold': threshold,
                 'reason': reason,
-                'message': 'Facial verification failed after retry. Proceeding to ID verification.',
+                'message': (
+                    f'Facial verification failed after {max_retries + 1} attempts. '
+                    'Proceeding to ID verification.'
+                ),
                 'redirect': f'/verification/fallback/{attempt.id}/',
             })
 
@@ -443,7 +532,8 @@ def verify_submit(request):
 
 
 def _log_verify(request, beneficiary, decision, attempt_number,
-                liveness_passed, score, threshold, claimant_type, reason):
+                liveness_passed, score, threshold, claimant_type, reason,
+                stipend_event=None, all_scores=None):
     AuditLog.log(
         action=AuditLog.ACTION_VERIFY,
         user=request.user,
@@ -452,11 +542,18 @@ def _log_verify(request, beneficiary, decision, attempt_number,
         details={
             'decision': decision,
             'claimant_type': claimant_type,
-            'score': round(score, 4) if score is not None else None,
+            'score': round(score, 3) if score is not None else None,
             'threshold': threshold,
             'liveness_passed': liveness_passed,
             'attempt_number': attempt_number,
             'reason': reason,
+            'stipend_event': str(stipend_event.id) if stipend_event else None,
+            'stipend_event_title': stipend_event.title if stipend_event else None,
+            'demo_mode': getattr(django_settings, 'DEMO_MODE', True),
+            'all_template_scores': [
+                {'template': s['template'], 'score': round(s['score'], 3)}
+                for s in (all_scores or [])
+            ],
         },
         request=request
     )
@@ -467,8 +564,6 @@ def _log_verify(request, beneficiary, decision, attempt_number,
 @login_required
 def verify_result(request, attempt_id):
     attempt = get_object_or_404(VerificationAttempt, pk=attempt_id)
-    # Detect attempts that were denied because the model was not loaded (mock mode).
-    # Used to show an honest "no real verification occurred" banner on the result page.
     mock_denial = (
         attempt.similarity_score is None
         and 'model not loaded' in (attempt.decision_reason or '').lower()
@@ -486,9 +581,9 @@ def verify_fallback(request, attempt_id):
     attempt = get_object_or_404(VerificationAttempt, pk=attempt_id)
 
     if request.method == 'POST':
-        id_type = request.POST.get('id_type', '')
+        id_type = request.POST.get('id_type', '').strip()
         id_verified = request.POST.get('id_verified') == 'true'
-        notes = request.POST.get('notes', '')
+        notes = request.POST.get('notes', '').strip()
 
         attempt.fallback_id_verified = id_verified
         attempt.fallback_id_type = id_type
@@ -498,7 +593,8 @@ def verify_fallback(request, attempt_id):
             else VerificationAttempt.DECISION_DENIED
         )
         attempt.decision_reason = (
-            f'ID verification: {id_type} {"accepted" if id_verified else "rejected"}.'
+            f'ID verification: {id_type} {"accepted" if id_verified else "rejected"}. '
+            f'Fallback used by {request.user.get_full_name() or request.user.username}.'
         )
         attempt.save()
 
@@ -512,6 +608,7 @@ def verify_fallback(request, attempt_id):
                 'id_verified': id_verified,
                 'decision': attempt.decision,
                 'claimant_type': attempt.claimant_type,
+                'beneficiary_id': attempt.beneficiary.beneficiary_id,
             },
             request=request
         )
@@ -519,14 +616,17 @@ def verify_fallback(request, attempt_id):
 
     rep_id_type = ''
     rep_id_number = ''
+    rep_name = ''
     if attempt.claimant_type == VerificationAttempt.CLAIMANT_REPRESENTATIVE:
         rep_id_type = attempt.beneficiary.rep_id_type
         rep_id_number = attempt.beneficiary.rep_id_number
+        rep_name = f'{attempt.beneficiary.rep_first_name} {attempt.beneficiary.rep_last_name}'.strip()
 
     return render(request, 'verification/fallback.html', {
         'attempt': attempt,
         'rep_id_type': rep_id_type,
         'rep_id_number': rep_id_number,
+        'rep_name': rep_name,
     })
 
 
@@ -544,6 +644,15 @@ def admin_override(request, attempt_id):
         decision = request.POST.get('decision', '')
         reason = request.POST.get('reason', '').strip()
 
+        if decision not in (
+            VerificationAttempt.DECISION_VERIFIED,
+            VerificationAttempt.DECISION_DENIED,
+            VerificationAttempt.DECISION_NOT_VERIFIED,
+        ):
+            from django.contrib import messages
+            messages.error(request, 'Invalid decision selected.')
+            return render(request, 'verification/override.html', {'attempt': attempt})
+
         if len(reason) < 20:
             from django.contrib import messages
             messages.error(request, 'Override reason must be at least 20 characters.')
@@ -554,7 +663,10 @@ def admin_override(request, attempt_id):
         attempt.override_reason = reason
         attempt.override_at = timezone.now()
         attempt.decision = decision
-        attempt.decision_reason = f'Admin override by {request.user.username}: {reason[:120]}'
+        attempt.decision_reason = (
+            f'Admin override by {request.user.get_full_name() or request.user.username}: '
+            f'{reason[:200]}'
+        )
         attempt.save()
 
         AuditLog.log(
@@ -566,6 +678,8 @@ def admin_override(request, attempt_id):
                 'decision': decision,
                 'reason': reason,
                 'beneficiary': str(attempt.beneficiary.id),
+                'beneficiary_id': attempt.beneficiary.beneficiary_id,
+                'original_score': attempt.similarity_score,
             },
             request=request
         )
@@ -584,7 +698,7 @@ def manual_review_list(request):
     pending = VerificationAttempt.objects.filter(
         decision=VerificationAttempt.DECISION_MANUAL_REVIEW,
         overridden=False,
-    ).select_related('beneficiary', 'performed_by').order_by('-timestamp')
+    ).select_related('beneficiary', 'performed_by', 'stipend_event').order_by('-timestamp')
 
     return render(request, 'verification/manual_review.html', {'pending': pending})
 
@@ -599,7 +713,7 @@ def verify_config(request):
         return redirect('beneficiaries:dashboard')
 
     current_threshold = SystemConfig.get_threshold()
-    demo_mode = getattr(django_settings, 'DEMO_MODE', True)
+    demo_mode = _get_demo_mode()
 
     if request.method == 'POST':
         try:
@@ -609,8 +723,9 @@ def verify_config(request):
 
             config, _ = SystemConfig.objects.get_or_create(
                 key='verification_threshold',
-                defaults={'description': 'Cosine similarity threshold for face matching'}
+                defaults={'description': 'Cosine similarity threshold for FaceNet face matching'}
             )
+            old_value = config.value
             config.value = str(new_threshold)
             config.updated_by = request.user
             config.save()
@@ -618,27 +733,33 @@ def verify_config(request):
             AuditLog.log(
                 action=AuditLog.ACTION_CONFIG_CHANGE,
                 user=request.user,
-                details={'key': 'verification_threshold', 'new_value': new_threshold},
+                details={
+                    'key': 'verification_threshold',
+                    'old_value': old_value,
+                    'new_value': new_threshold,
+                },
                 request=request
             )
             from django.contrib import messages
-            messages.success(request, f'Threshold updated to {new_threshold}')
+            messages.success(request, f'Threshold updated to {new_threshold:.2f}')
             current_threshold = new_threshold
         except ValueError as e:
             from django.contrib import messages
             messages.error(request, str(e))
 
-    threshold_review_min = round(current_threshold * 0.85, 2)
-    threshold_review_max = round(current_threshold - 0.01, 2)
+    review_band_min = round(current_threshold * 0.85, 3)
+    review_band_max = round(current_threshold - 0.001, 3)
     using_mock = is_using_mock_model()
     return render(request, 'verification/config.html', {
         'current_threshold': current_threshold,
-        'threshold_review_min': threshold_review_min,
-        'threshold_review_max': threshold_review_max,
-        'liveness_required': getattr(django_settings, 'LIVENESS_REQUIRED', False),
+        'threshold_review_min': review_band_min,
+        'threshold_review_max': review_band_max,
+        'liveness_required': _get_liveness_required(),
         'anti_spoof_threshold': getattr(django_settings, 'ANTI_SPOOF_THRESHOLD', 0.15),
         'demo_mode': demo_mode,
         'demo_threshold': getattr(django_settings, 'DEMO_THRESHOLD', 0.60),
+        'prod_threshold': getattr(django_settings, 'VERIFICATION_THRESHOLD', 0.75),
+        'max_retries': getattr(django_settings, 'MAX_RETRY_ATTEMPTS', 2),
         'using_mock': using_mock,
         'model_load_error': get_model_load_error() if using_mock else None,
     })
@@ -652,10 +773,12 @@ def stipend_list(request):
     today = timezone.now().date()
     upcoming = StipendEvent.objects.filter(is_active=True, date__gte=today).order_by('date')
     past = StipendEvent.objects.filter(date__lt=today).order_by('-date')[:20]
+    active_event = StipendEvent.get_active_event_for_date(today)
     return render(request, 'verification/stipend_list.html', {
         'upcoming': upcoming,
         'past': past,
         'today': today,
+        'active_event': active_event,
     })
 
 
@@ -672,6 +795,9 @@ def stipend_create(request):
         date_str = request.POST.get('date', '')
         description = request.POST.get('description', '').strip()
         event_type = request.POST.get('event_type', StipendEvent.EVENT_TYPE_REGULAR)
+        payout_start_str = request.POST.get('payout_start_date', '').strip()
+        payout_end_str = request.POST.get('payout_end_date', '').strip()
+
         if event_type not in (StipendEvent.EVENT_TYPE_REGULAR, StipendEvent.EVENT_TYPE_BIRTHDAY):
             event_type = StipendEvent.EVENT_TYPE_REGULAR
 
@@ -683,9 +809,16 @@ def stipend_create(request):
         import datetime
         try:
             event_date = datetime.date.fromisoformat(date_str)
+            payout_start = datetime.date.fromisoformat(payout_start_str) if payout_start_str else None
+            payout_end = datetime.date.fromisoformat(payout_end_str) if payout_end_str else None
         except ValueError:
             from django.contrib import messages
             messages.error(request, 'Invalid date format.')
+            return render(request, 'verification/stipend_form.html', {'action': 'Create'})
+
+        if payout_start and payout_end and payout_start > payout_end:
+            from django.contrib import messages
+            messages.error(request, 'Payout start date must be before or equal to end date.')
             return render(request, 'verification/stipend_form.html', {'action': 'Create'})
 
         event = StipendEvent.objects.create(
@@ -693,12 +826,20 @@ def stipend_create(request):
             date=event_date,
             event_type=event_type,
             description=description,
+            payout_start_date=payout_start,
+            payout_end_date=payout_end,
             created_by=request.user,
         )
         AuditLog.log(
             action=AuditLog.ACTION_CONFIG_CHANGE,
             user=request.user,
-            details={'stipend_event': title, 'date': str(event_date), 'event_type': event_type},
+            details={
+                'stipend_event': title,
+                'date': str(event_date),
+                'event_type': event_type,
+                'payout_start': str(payout_start) if payout_start else None,
+                'payout_end': str(payout_end) if payout_end else None,
+            },
             request=request
         )
         from django.contrib import messages
@@ -724,6 +865,9 @@ def stipend_edit(request, event_id):
         description = request.POST.get('description', '').strip()
         is_active = request.POST.get('is_active') == 'on'
         event_type = request.POST.get('event_type', StipendEvent.EVENT_TYPE_REGULAR)
+        payout_start_str = request.POST.get('payout_start_date', '').strip()
+        payout_end_str = request.POST.get('payout_end_date', '').strip()
+
         if event_type not in (StipendEvent.EVENT_TYPE_REGULAR, StipendEvent.EVENT_TYPE_BIRTHDAY):
             event_type = StipendEvent.EVENT_TYPE_REGULAR
 
@@ -735,6 +879,8 @@ def stipend_edit(request, event_id):
         import datetime
         try:
             event.date = datetime.date.fromisoformat(date_str)
+            event.payout_start_date = datetime.date.fromisoformat(payout_start_str) if payout_start_str else None
+            event.payout_end_date = datetime.date.fromisoformat(payout_end_str) if payout_end_str else None
         except ValueError:
             from django.contrib import messages
             messages.error(request, 'Invalid date format.')
@@ -769,8 +915,164 @@ def stipend_delete(request, event_id):
         from django.contrib import messages
         messages.warning(request, f'"{event.title}" has linked claims — deactivated instead of deleted.')
     else:
+        title = event.title
         event.delete()
         from django.contrib import messages
-        messages.success(request, 'Stipend event deleted.')
+        messages.success(request, f'Stipend event "{title}" deleted.')
 
     return redirect('verification:stipend_list')
+
+
+# ─── Face Update (Re-enrollment) ─────────────────────────────────────────────
+
+@login_required
+@require_http_methods(['GET'])
+def update_face_data(request, pk):
+    """
+    Show the face update UI for a beneficiary.
+    Staff selects a reason then captures a new face image.
+    Available for all staff (not admin-only) since barangay encoders handle this.
+    """
+    beneficiary = get_object_or_404(Beneficiary, pk=pk)
+
+    if not beneficiary.is_eligible_to_claim:
+        from django.contrib import messages
+        messages.error(
+            request,
+            f'{beneficiary.full_name} is not active — face update is only allowed for active beneficiaries.'
+        )
+        return redirect('beneficiaries:beneficiary_detail', pk=pk)
+
+    has_embedding = hasattr(beneficiary, 'face_embedding')
+    recent_failures = beneficiary.verification_attempts.filter(
+        decision__in=[
+            VerificationAttempt.DECISION_NOT_VERIFIED,
+            VerificationAttempt.DECISION_DENIED,
+        ],
+    ).order_by('-timestamp')[:5]
+
+    update_history = FaceUpdateLog.objects.filter(beneficiary=beneficiary).order_by('-timestamp')[:10]
+    additional_count = AdditionalFaceEmbedding.objects.filter(beneficiary=beneficiary).count()
+
+    using_mock = is_using_mock_model()
+    return render(request, 'verification/update_face.html', {
+        'beneficiary': beneficiary,
+        'has_embedding': has_embedding,
+        'recent_failures': recent_failures,
+        'update_history': update_history,
+        'additional_count': additional_count,
+        'update_reasons': FaceUpdateLog.REASON_CHOICES,
+        'using_mock': using_mock,
+        'model_load_error': get_model_load_error() if using_mock else None,
+    })
+
+
+@login_required
+@require_POST
+def update_face_submit(request, pk):
+    """
+    Process the face update form submission (JSON from webcam capture).
+
+    Action 'replace': replaces the primary FaceEmbedding. Old embedding is gone.
+    Action 'augment': adds a new AdditionalFaceEmbedding; primary is kept.
+                      Use when appearance changed but original still partially works.
+
+    Both actions are fully logged in FaceUpdateLog.
+    """
+    beneficiary = get_object_or_404(Beneficiary, pk=pk)
+
+    try:
+        data = json.loads(request.body)
+        image_data = data.get('image', '')
+        reason = data.get('reason', FaceUpdateLog.REASON_STAFF_DECISION)
+        action = data.get('action', FaceUpdateLog.ACTION_REPLACE)
+        notes = data.get('notes', '').strip()
+
+        if not image_data:
+            return JsonResponse({'success': False, 'error': 'No image received.'})
+
+        if reason not in dict(FaceUpdateLog.REASON_CHOICES):
+            reason = FaceUpdateLog.REASON_STAFF_DECISION
+        if action not in (FaceUpdateLog.ACTION_REPLACE, FaceUpdateLog.ACTION_AUGMENT):
+            action = FaceUpdateLog.ACTION_REPLACE
+
+        if ',' in image_data:
+            image_data = image_data.split(',')[1]
+        image_bytes = base64.b64decode(image_data)
+
+        # Run full registration pipeline (detection + quality + embedding + encrypt)
+        result = process_face_for_registration(image_bytes)
+
+        if not result['success']:
+            FaceUpdateLog.objects.create(
+                beneficiary=beneficiary,
+                performed_by=request.user,
+                reason=reason,
+                action=action,
+                notes=notes or result.get('error', ''),
+                success=False,
+            )
+            return JsonResponse({'success': False, 'error': result['error']})
+
+        encrypted = result['encrypted_embedding']
+
+        if action == FaceUpdateLog.ACTION_REPLACE:
+            if hasattr(beneficiary, 'face_embedding'):
+                emb = beneficiary.face_embedding
+                emb.embedding_data = encrypted
+                emb.created_by = request.user
+                emb.save()
+            else:
+                FaceEmbedding.objects.create(
+                    beneficiary=beneficiary,
+                    embedding_data=encrypted,
+                    created_by=request.user,
+                )
+            action_label = 'Primary embedding replaced'
+        else:
+            AdditionalFaceEmbedding.objects.create(
+                beneficiary=beneficiary,
+                embedding_data=encrypted,
+                label=f'update-{timezone.now().strftime("%Y-%m-%d")}',
+                created_by=request.user,
+            )
+            action_label = 'Additional template added'
+
+        FaceUpdateLog.objects.create(
+            beneficiary=beneficiary,
+            performed_by=request.user,
+            reason=reason,
+            action=action,
+            notes=notes,
+            success=True,
+        )
+
+        AuditLog.log(
+            action=AuditLog.ACTION_UPDATE,
+            user=request.user,
+            target_type='Beneficiary',
+            target_id=beneficiary.id,
+            details={
+                'event': 'face_data_update',
+                'beneficiary_id': beneficiary.beneficiary_id,
+                'reason': reason,
+                'action': action,
+                'action_label': action_label,
+                'notes': notes,
+                'quality_ok': result.get('quality', {}).get('ok'),
+            },
+            request=request,
+        )
+
+        quality_note = ''
+        if result.get('quality') and not result['quality']['ok']:
+            quality_note = f' Note: {result["quality"]["reason"]}'
+
+        return JsonResponse({
+            'success': True,
+            'message': f'{action_label} for {beneficiary.full_name}.{quality_note}',
+            'redirect': f'/dashboard/beneficiaries/{beneficiary.id}/',
+        })
+
+    except Exception as e:
+        return JsonResponse({'success': False, 'error': f'Update failed: {str(e)}'})

@@ -29,6 +29,10 @@ def dashboard(request):
     verified_today = VerificationAttempt.objects.filter(
         timestamp__date=today, decision='verified'
     ).count()
+    manual_review_pending = VerificationAttempt.objects.filter(
+        decision=VerificationAttempt.DECISION_MANUAL_REVIEW,
+        overridden=False,
+    ).count()
 
     recent_logs = AuditLog.objects.select_related('user').order_by('-timestamp')[:10]
 
@@ -38,7 +42,8 @@ def dashboard(request):
         is_active=True, date__gte=today, date__lte=today + timedelta(days=60)
     ).order_by('date')[:5]
 
-    # Next active event for quick display
+    # Active event today
+    active_event = StipendEvent.get_active_event_for_date(today)
     next_event = upcoming_events.first()
 
     return render(request, 'dashboard/index.html', {
@@ -47,8 +52,10 @@ def dashboard(request):
         'pending_beneficiaries': pending_beneficiaries,
         'verifications_today': verifications_today,
         'verified_today': verified_today,
+        'manual_review_pending': manual_review_pending,
         'recent_logs': recent_logs,
         'upcoming_events': upcoming_events,
+        'active_event': active_event,
         'next_event': next_event,
     })
 
