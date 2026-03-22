@@ -21,7 +21,7 @@
       <div class="col-md-5">
         <label class="form-label small fw-semibold mb-1">Search</label>
         <input type="text" name="q" value="{{ query }}" class="form-control"
-               placeholder="Name or beneficiary ID&hellip;">
+               placeholder="Name, Beneficiary ID, or Senior Citizen ID&hellip;">
       </div>
       <div class="col-md-3">
         <label class="form-label small fw-semibold mb-1">Status</label>
@@ -48,6 +48,7 @@
     <table class="table table-hover mb-0">
       <thead>
         <tr>
+          <th style="width:48px;"></th>
           <th>Beneficiary ID</th>
           <th>Name</th>
           <th>Location</th>
@@ -59,6 +60,17 @@
       <tbody>
         {% for b in beneficiaries %}
         <tr>
+          <td class="py-2 ps-3">
+            {% if b.profile_picture %}
+            <img src="{{ b.profile_picture.url }}" alt=""
+                 class="rounded" style="width:36px; height:36px; object-fit:cover;">
+            {% else %}
+            <span class="d-flex align-items-center justify-content-center rounded bg-light text-secondary"
+                  style="width:36px; height:36px; font-size:1.3rem;">
+              <i class="bi bi-person-circle"></i>
+            </span>
+            {% endif %}
+          </td>
           <td><span class="font-mono text-muted small">{{ b.beneficiary_id }}</span></td>
           <td>
             <div class="fw-semibold">{{ b.full_name }}</div>
@@ -92,7 +104,7 @@
         </tr>
         {% empty %}
         <tr>
-          <td colspan="6" class="text-center text-muted py-5">
+          <td colspan="7" class="text-center text-muted py-5">
             <i class="bi bi-people fs-1 d-block mb-2 opacity-25"></i>
             {% if query %}No beneficiaries found for &ldquo;{{ query }}&rdquo;.
             {% else %}No beneficiaries registered yet.{% endif %}

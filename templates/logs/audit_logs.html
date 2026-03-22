@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% load fans_filters %}
 {% block title %}Audit Logs{% endblock %}
 {% block nav_logs %}active{% endblock %}
 
@@ -66,14 +67,26 @@
               {% elif log.action == 'register' %}bg-primary
               {% elif log.action == 'override' %}bg-warning text-dark
               {% elif log.action == 'fallback' %}bg-warning text-dark
+              {% elif log.action == 'face_update_request' %}bg-primary
+              {% elif log.action == 'face_update_approved' %}bg-success
+              {% elif log.action == 'face_update_rejected' %}bg-danger
+              {% elif log.action == 'manual_verify_request' %}bg-primary
+              {% elif log.action == 'manual_verify_approved' %}bg-success
+              {% elif log.action == 'manual_verify_rejected' %}bg-danger
+              {% elif log.action == 'claim' %}bg-success
+              {% elif log.action == 'special_claim_request' %}bg-primary
+              {% elif log.action == 'special_claim_approved' %}bg-success
+              {% elif log.action == 'special_claim_rejected' %}bg-danger
               {% else %}bg-light text-dark{% endif %}">
               {{ log.get_action_display }}
             </span>
           </td>
           <td class="small text-muted">{{ log.target_type }} {{ log.target_id|truncatechars:15 }}</td>
           <td class="small font-mono text-muted">{{ log.ip_address|default:"&mdash;" }}</td>
-          <td class="small text-muted">
-            {% if log.details %}{{ log.details|truncatechars:60 }}{% endif %}
+          <td class="small" style="max-width:320px; word-break:break-word;">
+            {% if log.details %}
+            <span>{{ log.details|format_audit_details|safe }}</span>
+            {% endif %}
           </td>
         </tr>
         {% empty %}

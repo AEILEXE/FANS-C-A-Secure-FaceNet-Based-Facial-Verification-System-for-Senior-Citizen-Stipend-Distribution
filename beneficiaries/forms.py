@@ -150,7 +150,11 @@ class BeneficiaryInfoForm(forms.ModelForm):
             'gender': forms.Select(attrs={'class': 'form-select', 'required': True}),
             'address': forms.Textarea(attrs={'class': 'form-control', 'rows': 2, 'required': True}),
             'contact_number': forms.TextInput(attrs={'class': 'form-control'}),
-            'senior_citizen_id': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g. SC-2024-00123'}),
+            'senior_citizen_id': forms.TextInput(attrs={
+                'class': 'form-control',
+                'placeholder': 'e.g. SC-2024-00123',
+                'autocomplete': 'off',
+            }),
             'valid_id_type': forms.Select(attrs={'class': 'form-select'}, choices=VALID_ID_CHOICES),
             'valid_id_number': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'ID number'}),
         }
@@ -198,6 +202,7 @@ class BeneficiaryEditForm(forms.ModelForm):
             'contact_number', 'senior_citizen_id', 'valid_id_type', 'valid_id_number',
             'has_representative', 'rep_first_name', 'rep_last_name',
             'rep_relationship', 'rep_contact', 'rep_id_type', 'rep_id_number',
+            'profile_picture',
         ]
         widgets = {
             'first_name': forms.TextInput(attrs={'class': 'form-control'}),
@@ -207,7 +212,7 @@ class BeneficiaryEditForm(forms.ModelForm):
             'gender': forms.Select(attrs={'class': 'form-select'}),
             'address': forms.Textarea(attrs={'class': 'form-control', 'rows': 2}),
             'contact_number': forms.TextInput(attrs={'class': 'form-control'}),
-            'senior_citizen_id': forms.TextInput(attrs={'class': 'form-control'}),
+            'senior_citizen_id': forms.TextInput(attrs={'class': 'form-control', 'autocomplete': 'off'}),
             'valid_id_type': forms.Select(attrs={'class': 'form-select'}, choices=VALID_ID_CHOICES),
             'valid_id_number': forms.TextInput(attrs={'class': 'form-control'}),
             'has_representative': forms.CheckboxInput(attrs={'class': 'form-check-input', 'id': 'hasRep'}),

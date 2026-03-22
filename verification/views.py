@@ -15,6 +15,8 @@ from beneficiaries.models import Beneficiary
 from .models import (
     FaceEmbedding, VerificationAttempt, SystemConfig, StipendEvent,
     AdditionalFaceEmbedding, FaceUpdateLog,
+    FaceUpdateRequest, ManualVerificationRequest,
+    ClaimRecord, SpecialClaimRequest,
 )
 from .face_utils import (
     process_face_for_verification,
@@ -36,11 +38,11 @@ from logs.models import AuditLog
 
 def _challenge_display(direction: str) -> str:
     return {
-        'left':  'Slowly turn your head to the LEFT',
-        'right': 'Slowly turn your head to the RIGHT',
-        'up':    'Slowly look UP',
-        'down':  'Slowly look DOWN',
-    }.get(direction, 'Move your head')
+        'left':  'Tilt your whole head slowly to the LEFT',
+        'right': 'Tilt your whole head slowly to the RIGHT',
+        'up':    'Tilt your whole head slightly UP',
+        'down':  'Tilt your whole head slightly DOWN',
+    }.get(direction, 'Slowly move your head')
 
 
 def _get_demo_mode():
@@ -61,7 +63,8 @@ def verify_select(request):
         beneficiaries = (
             Beneficiary.objects.filter(status=Beneficiary.STATUS_ACTIVE, last_name__icontains=query) |
             Beneficiary.objects.filter(status=Beneficiary.STATUS_ACTIVE, first_name__icontains=query) |
-            Beneficiary.objects.filter(status=Beneficiary.STATUS_ACTIVE, beneficiary_id__icontains=query)
+            Beneficiary.objects.filter(status=Beneficiary.STATUS_ACTIVE, beneficiary_id__icontains=query) |
+            Beneficiary.objects.filter(status=Beneficiary.STATUS_ACTIVE, senior_citizen_id__icontains=query)
         ).distinct().order_by('last_name', 'first_name')
 
     today = timezone.now().date()
@@ -119,6 +122,23 @@ def verify_start(request, pk):
                 f'Only beneficiaries born in {active_event.date.strftime("%B")} are eligible.'
             )
             return redirect('verification:verify_select')
+
+    # Duplicate claim guard
+    if active_event:
+        already_claimed = ClaimRecord.objects.filter(
+            beneficiary=beneficiary,
+            stipend_event=active_event,
+            status=ClaimRecord.STATUS_CLAIMED,
+        ).exists()
+        if already_claimed:
+            from django.contrib import messages
+            messages.warning(
+                request,
+                f'{beneficiary.full_name} has already claimed the stipend for '
+                f'"{active_event.title}". To request an additional claim, '
+                'go to the beneficiary profile and submit a Special Claim Request.'
+            )
+            return redirect('beneficiaries:beneficiary_detail', pk=beneficiary.pk)
 
     # Representative claim → fallback ID verification
     if claimant_type == VerificationAttempt.CLAIMANT_REPRESENTATIVE:
@@ -405,6 +425,22 @@ def verify_submit(request):
             comparison.get('templates_checked', 0),
             demo_mode,
         )
+        print(
+            f'[FANS-C] VERIFY RESULT | beneficiary={beneficiary.beneficiary_id} '
+            f'| score={score:.4f} | threshold={threshold:.4f} '
+            f'| gap={score - threshold:+.4f} '
+            f'| {"PASS" if score >= threshold else "FAIL"} '
+            f'| matched={comparison.get("matched_template", "?")} '
+            f'| checked={comparison.get("templates_checked", 0)} '
+            f'| demo={demo_mode}',
+            flush=True,
+        )
+        if comparison.get('all_scores'):
+            for entry in comparison['all_scores']:
+                print(
+                    f'[FANS-C]   template={entry["template"]} score={entry["score"]:.4f}',
+                    flush=True,
+                )
 
         # ── Decision logic ────────────────────────────────────────────────────
         # Review band: scores just below threshold trigger manual review
@@ -453,6 +489,33 @@ def verify_submit(request):
                     all_scores=comparison.get('all_scores', []))
 
         if decision == VerificationAttempt.DECISION_VERIFIED:
+            # Create ClaimRecord (race guard: skip if one already exists)
+            if stipend_event and not ClaimRecord.objects.filter(
+                beneficiary=beneficiary,
+                stipend_event=stipend_event,
+                status=ClaimRecord.STATUS_CLAIMED,
+            ).exists():
+                ClaimRecord.objects.create(
+                    beneficiary=beneficiary,
+                    stipend_event=stipend_event,
+                    claimant_type=claimant_type,
+                    claimed_by=request.user,
+                    verification_attempt=attempt,
+                    status=ClaimRecord.STATUS_CLAIMED,
+                )
+                AuditLog.log(
+                    action=AuditLog.ACTION_CLAIM,
+                    user=request.user,
+                    target_type='Beneficiary',
+                    target_id=beneficiary.id,
+                    details={
+                        'beneficiary_id': beneficiary.beneficiary_id,
+                        'stipend_event': stipend_event.title,
+                        'claimant_type': claimant_type,
+                        'attempt_id': str(attempt.id),
+                    },
+                    request=request,
+                )
             request.session.pop('verification_session', None)
             return JsonResponse({
                 'success': True,
@@ -568,10 +631,34 @@ def verify_result(request, attempt_id):
         attempt.similarity_score is None
         and 'model not loaded' in (attempt.decision_reason or '').lower()
     )
+
+    # Detect specific denial sub-reasons for clearer UI labels
+    denial_reason_label = ''
+    if attempt.decision in (
+        VerificationAttempt.DECISION_DENIED,
+        VerificationAttempt.DECISION_NOT_VERIFIED,
+    ):
+        if attempt.liveness_passed is False:
+            denial_reason_label = 'liveness_failed'
+        elif attempt.similarity_score is not None and attempt.similarity_score < attempt.threshold_used:
+            denial_reason_label = 'face_mismatch'
+
+    # Check if there is a pending manual verification request for this attempt
+    pending_manual_request = ManualVerificationRequest.objects.filter(
+        verification_attempt=attempt,
+        status=ManualVerificationRequest.STATUS_PENDING,
+    ).first()
+
+    # Find the ClaimRecord linked to this attempt (if any)
+    claim_record = ClaimRecord.objects.filter(verification_attempt=attempt).first()
+
     return render(request, 'verification/result.html', {
         'attempt': attempt,
         'mock_denial': mock_denial,
         'model_load_error': get_model_load_error() if mock_denial else None,
+        'denial_reason_label': denial_reason_label,
+        'pending_manual_request': pending_manual_request,
+        'claim_record': claim_record,
     })
 
 
@@ -579,40 +666,159 @@ def verify_result(request, attempt_id):
 @require_http_methods(['GET', 'POST'])
 def verify_fallback(request, attempt_id):
     attempt = get_object_or_404(VerificationAttempt, pk=attempt_id)
+    from django.contrib import messages
 
     if request.method == 'POST':
         id_type = request.POST.get('id_type', '').strip()
         id_verified = request.POST.get('id_verified') == 'true'
         notes = request.POST.get('notes', '').strip()
+        reason = request.POST.get('reason', '').strip()
 
         attempt.fallback_id_verified = id_verified
         attempt.fallback_id_type = id_type
-        attempt.notes = notes
-        attempt.decision = (
-            VerificationAttempt.DECISION_VERIFIED if id_verified
-            else VerificationAttempt.DECISION_DENIED
-        )
-        attempt.decision_reason = (
-            f'ID verification: {id_type} {"accepted" if id_verified else "rejected"}. '
-            f'Fallback used by {request.user.get_full_name() or request.user.username}.'
-        )
-        attempt.save()
 
-        AuditLog.log(
-            action=AuditLog.ACTION_FALLBACK,
-            user=request.user,
-            target_type='VerificationAttempt',
-            target_id=attempt.id,
-            details={
-                'id_type': id_type,
-                'id_verified': id_verified,
-                'decision': attempt.decision,
-                'claimant_type': attempt.claimant_type,
-                'beneficiary_id': attempt.beneficiary.beneficiary_id,
-            },
-            request=request
-        )
-        return redirect('verification:verify_result', attempt_id=attempt.id)
+        is_representative = attempt.claimant_type == VerificationAttempt.CLAIMANT_REPRESENTATIVE
+
+        if is_representative:
+            # ── Representative path: direct ID verification — no face match involved ──
+            attempt.decision = (
+                VerificationAttempt.DECISION_VERIFIED if id_verified
+                else VerificationAttempt.DECISION_DENIED
+            )
+            attempt.decision_reason = (
+                f'Representative ID verification: {id_type} '
+                f'{"accepted" if id_verified else "rejected"}. '
+                f'Fallback used by {request.user.get_full_name() or request.user.username}.'
+            )
+            attempt.notes = notes
+            attempt.save()
+
+            AuditLog.log(
+                action=AuditLog.ACTION_FALLBACK,
+                user=request.user,
+                target_type='VerificationAttempt',
+                target_id=attempt.id,
+                details={
+                    'id_type': id_type,
+                    'id_verified': id_verified,
+                    'decision': attempt.decision,
+                    'claimant_type': attempt.claimant_type,
+                    'beneficiary_id': attempt.beneficiary.beneficiary_id,
+                },
+                request=request
+            )
+            # Representative path verified — create ClaimRecord
+            if id_verified and attempt.stipend_event and not ClaimRecord.objects.filter(
+                beneficiary=attempt.beneficiary,
+                stipend_event=attempt.stipend_event,
+                status=ClaimRecord.STATUS_CLAIMED,
+            ).exists():
+                ClaimRecord.objects.create(
+                    beneficiary=attempt.beneficiary,
+                    stipend_event=attempt.stipend_event,
+                    claimant_type=attempt.claimant_type,
+                    claimed_by=request.user,
+                    verification_attempt=attempt,
+                    status=ClaimRecord.STATUS_CLAIMED,
+                )
+                AuditLog.log(
+                    action=AuditLog.ACTION_CLAIM,
+                    user=request.user,
+                    target_type='Beneficiary',
+                    target_id=attempt.beneficiary.id,
+                    details={
+                        'beneficiary_id': attempt.beneficiary.beneficiary_id,
+                        'stipend_event': attempt.stipend_event.title,
+                        'claimant_type': attempt.claimant_type,
+                        'via': 'representative_fallback',
+                    },
+                    request=request,
+                )
+            return redirect('verification:verify_result', attempt_id=attempt.id)
+
+        else:
+            # ── Beneficiary path: face scan failed; ID check alone is insufficient ──
+            # Staff cannot directly release the stipend.  Create a ManualVerificationRequest
+            # for admin review.  Attempt stays in manual_review state until admin acts.
+
+            if not id_verified:
+                # ID also failed — outright denial, no request needed
+                attempt.decision = VerificationAttempt.DECISION_DENIED
+                attempt.decision_reason = (
+                    f'Face match failed and ID verification also rejected '
+                    f'({id_type}). Denied by {request.user.get_full_name() or request.user.username}.'
+                )
+                attempt.notes = notes
+                attempt.save()
+                AuditLog.log(
+                    action=AuditLog.ACTION_FALLBACK,
+                    user=request.user,
+                    target_type='VerificationAttempt',
+                    target_id=attempt.id,
+                    details={
+                        'id_type': id_type,
+                        'id_verified': False,
+                        'decision': attempt.decision,
+                        'claimant_type': attempt.claimant_type,
+                        'beneficiary_id': attempt.beneficiary.beneficiary_id,
+                    },
+                    request=request
+                )
+                return redirect('verification:verify_result', attempt_id=attempt.id)
+
+            # ID passed — submit pending manual verification request for admin approval
+            if not reason:
+                reason = (
+                    f'Face match failed. ID check ({id_type}) passed by staff. '
+                    'Requesting admin approval to release stipend.'
+                )
+
+            mvr = ManualVerificationRequest.objects.create(
+                beneficiary=attempt.beneficiary,
+                claimant_type=attempt.claimant_type,
+                requested_by=request.user,
+                verification_attempt=attempt,
+                stipend_event=attempt.stipend_event,
+                reason=reason,
+                notes=notes,
+                similarity_score=attempt.similarity_score,
+                liveness_passed=attempt.liveness_passed,
+                liveness_score=attempt.liveness_score,
+                id_type_checked=id_type,
+                id_verified=True,
+            )
+
+            # Keep attempt in manual_review — decision only updates when admin approves/rejects
+            attempt.decision = VerificationAttempt.DECISION_MANUAL_REVIEW
+            attempt.decision_reason = (
+                f'Pending admin approval — manual verification request submitted by '
+                f'{request.user.get_full_name() or request.user.username}. '
+                f'ID check ({id_type}) passed.'
+            )
+            attempt.notes = notes
+            attempt.save()
+
+            AuditLog.log(
+                action=AuditLog.ACTION_MANUAL_VERIFY_REQUEST,
+                user=request.user,
+                target_type='ManualVerificationRequest',
+                target_id=mvr.id,
+                details={
+                    'beneficiary_id': attempt.beneficiary.beneficiary_id,
+                    'id_type': id_type,
+                    'similarity_score': attempt.similarity_score,
+                    'liveness_passed': attempt.liveness_passed,
+                    'reason': reason,
+                },
+                request=request
+            )
+
+            messages.info(
+                request,
+                'Manual verification request submitted. An admin must approve '
+                'before the stipend can be released.'
+            )
+            return redirect('verification:verify_result', attempt_id=attempt.id)
 
     rep_id_type = ''
     rep_id_number = ''
@@ -686,21 +892,6 @@ def admin_override(request, attempt_id):
         return redirect('verification:verify_result', attempt_id=attempt.id)
 
     return render(request, 'verification/override.html', {'attempt': attempt})
-
-
-@login_required
-def manual_review_list(request):
-    if not request.user.is_admin:
-        from django.contrib import messages
-        messages.error(request, 'Admin access required.')
-        return redirect('beneficiaries:dashboard')
-
-    pending = VerificationAttempt.objects.filter(
-        decision=VerificationAttempt.DECISION_MANUAL_REVIEW,
-        overridden=False,
-    ).select_related('beneficiary', 'performed_by', 'stipend_event').order_by('-timestamp')
-
-    return render(request, 'verification/manual_review.html', {'pending': pending})
 
 
 # ─── System Config ────────────────────────────────────────────────────────────
@@ -1016,48 +1207,28 @@ def update_face_submit(request, pk):
 
         encrypted = result['encrypted_embedding']
 
-        if action == FaceUpdateLog.ACTION_REPLACE:
-            if hasattr(beneficiary, 'face_embedding'):
-                emb = beneficiary.face_embedding
-                emb.embedding_data = encrypted
-                emb.created_by = request.user
-                emb.save()
-            else:
-                FaceEmbedding.objects.create(
-                    beneficiary=beneficiary,
-                    embedding_data=encrypted,
-                    created_by=request.user,
-                )
-            action_label = 'Primary embedding replaced'
-        else:
-            AdditionalFaceEmbedding.objects.create(
-                beneficiary=beneficiary,
-                embedding_data=encrypted,
-                label=f'update-{timezone.now().strftime("%Y-%m-%d")}',
-                created_by=request.user,
-            )
-            action_label = 'Additional template added'
-
-        FaceUpdateLog.objects.create(
+        # ── Security: face updates do NOT apply immediately ──────────────────
+        # Create a pending FaceUpdateRequest; an admin must approve before the
+        # active embedding is changed.  The encrypted embedding is stored here
+        # and only written to FaceEmbedding / AdditionalFaceEmbedding on approval.
+        fur = FaceUpdateRequest.objects.create(
             beneficiary=beneficiary,
-            performed_by=request.user,
+            requested_by=request.user,
             reason=reason,
             action=action,
             notes=notes,
-            success=True,
+            new_embedding_data=encrypted,
         )
 
         AuditLog.log(
-            action=AuditLog.ACTION_UPDATE,
+            action=AuditLog.ACTION_FACE_UPDATE_REQUEST,
             user=request.user,
-            target_type='Beneficiary',
-            target_id=beneficiary.id,
+            target_type='FaceUpdateRequest',
+            target_id=fur.id,
             details={
-                'event': 'face_data_update',
                 'beneficiary_id': beneficiary.beneficiary_id,
                 'reason': reason,
                 'action': action,
-                'action_label': action_label,
                 'notes': notes,
                 'quality_ok': result.get('quality', {}).get('ok'),
             },
@@ -1070,9 +1241,435 @@ def update_face_submit(request, pk):
 
         return JsonResponse({
             'success': True,
-            'message': f'{action_label} for {beneficiary.full_name}.{quality_note}',
+            'pending': True,
+            'message': (
+                f'Face capture submitted for {beneficiary.full_name}.{quality_note} '
+                'An admin must approve this request before the face data is updated.'
+            ),
             'redirect': f'/dashboard/beneficiaries/{beneficiary.id}/',
         })
 
     except Exception as e:
         return JsonResponse({'success': False, 'error': f'Update failed: {str(e)}'})
+
+
+# ─── Admin Approval: Unified Queue ────────────────────────────────────────────
+
+@login_required
+def manual_review_list(request):
+    if not request.user.is_admin:
+        from django.contrib import messages
+        messages.error(request, 'Admin access required.')
+        return redirect('beneficiaries:dashboard')
+
+    pending_verifications = VerificationAttempt.objects.filter(
+        decision=VerificationAttempt.DECISION_MANUAL_REVIEW,
+        overridden=False,
+    ).select_related('beneficiary', 'performed_by', 'stipend_event').order_by('-timestamp')
+
+    pending_manual_requests = ManualVerificationRequest.objects.filter(
+        status=ManualVerificationRequest.STATUS_PENDING,
+    ).select_related(
+        'beneficiary', 'requested_by', 'verification_attempt', 'stipend_event'
+    ).order_by('-created_at')
+
+    pending_face_requests = FaceUpdateRequest.objects.filter(
+        status=FaceUpdateRequest.STATUS_PENDING,
+    ).select_related('beneficiary', 'requested_by').order_by('-created_at')
+
+    pending_special_claims = SpecialClaimRequest.objects.filter(
+        status=SpecialClaimRequest.STATUS_PENDING,
+    ).select_related('beneficiary', 'requested_by', 'stipend_event', 'original_claim').order_by('-created_at')
+
+    return render(request, 'verification/manual_review.html', {
+        'pending': pending_verifications,
+        'pending_manual_requests': pending_manual_requests,
+        'pending_face_requests': pending_face_requests,
+        'pending_special_claims': pending_special_claims,
+    })
+
+
+@login_required
+@require_http_methods(['GET', 'POST'])
+def manual_verify_review(request, request_id):
+    """Admin approves or rejects a ManualVerificationRequest."""
+    from django.contrib import messages
+
+    if not request.user.is_admin:
+        messages.error(request, 'Admin access required.')
+        return redirect('beneficiaries:dashboard')
+
+    mvr = get_object_or_404(ManualVerificationRequest, pk=request_id)
+
+    if request.method == 'POST':
+        action = request.POST.get('action', '')
+        review_notes = request.POST.get('review_notes', '').strip()
+
+        if action not in ('approve', 'reject'):
+            messages.error(request, 'Invalid action.')
+            return redirect('verification:manual_review')
+
+        mvr.reviewed_by = request.user
+        mvr.reviewed_at = timezone.now()
+        mvr.review_notes = review_notes
+
+        if action == 'approve':
+            mvr.status = ManualVerificationRequest.STATUS_APPROVED
+            # Update the linked verification attempt to verified
+            if mvr.verification_attempt:
+                attempt = mvr.verification_attempt
+                attempt.decision = VerificationAttempt.DECISION_VERIFIED
+                attempt.decision_reason = (
+                    f'Manual verification approved by '
+                    f'{request.user.get_full_name() or request.user.username}. '
+                    f'{review_notes[:200]}'
+                )
+                attempt.overridden = True
+                attempt.override_by = request.user
+                attempt.override_reason = f'Admin approved manual verification request: {review_notes}'
+                attempt.override_at = timezone.now()
+                attempt.save()
+            AuditLog.log(
+                action=AuditLog.ACTION_MANUAL_VERIFY_APPROVED,
+                user=request.user,
+                target_type='ManualVerificationRequest',
+                target_id=mvr.id,
+                details={
+                    'beneficiary_id': mvr.beneficiary.beneficiary_id,
+                    'review_notes': review_notes,
+                    'attempt_id': str(mvr.verification_attempt_id) if mvr.verification_attempt_id else None,
+                },
+                request=request,
+            )
+            # Create ClaimRecord for approved manual verification
+            if mvr.stipend_event and not ClaimRecord.objects.filter(
+                beneficiary=mvr.beneficiary,
+                stipend_event=mvr.stipend_event,
+                status=ClaimRecord.STATUS_CLAIMED,
+            ).exists():
+                ClaimRecord.objects.create(
+                    beneficiary=mvr.beneficiary,
+                    stipend_event=mvr.stipend_event,
+                    claimant_type=mvr.claimant_type,
+                    claimed_by=mvr.requested_by,
+                    verification_attempt=mvr.verification_attempt,
+                    approved_by=request.user,
+                    approved_at=timezone.now(),
+                    status=ClaimRecord.STATUS_CLAIMED,
+                    notes=f'Admin manual verification approved by {request.user.get_full_name() or request.user.username}.',
+                )
+                AuditLog.log(
+                    action=AuditLog.ACTION_CLAIM,
+                    user=request.user,
+                    target_type='Beneficiary',
+                    target_id=mvr.beneficiary.id,
+                    details={
+                        'beneficiary_id': mvr.beneficiary.beneficiary_id,
+                        'stipend_event': mvr.stipend_event.title,
+                        'claimant_type': mvr.claimant_type,
+                        'via': 'manual_verification_approved',
+                    },
+                    request=request,
+                )
+            messages.success(
+                request,
+                f'Manual verification approved for {mvr.beneficiary.full_name}.'
+            )
+        else:
+            mvr.status = ManualVerificationRequest.STATUS_REJECTED
+            if mvr.verification_attempt:
+                attempt = mvr.verification_attempt
+                attempt.decision = VerificationAttempt.DECISION_DENIED
+                attempt.decision_reason = (
+                    f'Manual verification rejected by '
+                    f'{request.user.get_full_name() or request.user.username}. '
+                    f'{review_notes[:200]}'
+                )
+                attempt.save()
+            AuditLog.log(
+                action=AuditLog.ACTION_MANUAL_VERIFY_REJECTED,
+                user=request.user,
+                target_type='ManualVerificationRequest',
+                target_id=mvr.id,
+                details={
+                    'beneficiary_id': mvr.beneficiary.beneficiary_id,
+                    'review_notes': review_notes,
+                },
+                request=request,
+            )
+            messages.warning(
+                request,
+                f'Manual verification request rejected for {mvr.beneficiary.full_name}.'
+            )
+
+        mvr.save()
+        return redirect('verification:manual_review')
+
+    return render(request, 'verification/manual_verify_review.html', {'mvr': mvr})
+
+
+@login_required
+@require_http_methods(['GET', 'POST'])
+def face_update_review(request, request_id):
+    """Admin approves or rejects a FaceUpdateRequest."""
+    from django.contrib import messages
+
+    if not request.user.is_admin:
+        messages.error(request, 'Admin access required.')
+        return redirect('beneficiaries:dashboard')
+
+    fur = get_object_or_404(FaceUpdateRequest, pk=request_id)
+
+    if request.method == 'POST':
+        action = request.POST.get('action', '')
+        review_notes = request.POST.get('review_notes', '').strip()
+
+        if action not in ('approve', 'reject'):
+            messages.error(request, 'Invalid action.')
+            return redirect('verification:manual_review')
+
+        fur.reviewed_by = request.user
+        fur.reviewed_at = timezone.now()
+        fur.review_notes = review_notes
+
+        if action == 'approve':
+            fur.status = FaceUpdateRequest.STATUS_APPROVED
+
+            # Now apply the stored embedding to the active face data
+            beneficiary = fur.beneficiary
+            encrypted = bytes(fur.new_embedding_data)
+
+            if fur.action == FaceUpdateLog.ACTION_REPLACE:
+                if hasattr(beneficiary, 'face_embedding'):
+                    emb = beneficiary.face_embedding
+                    emb.embedding_data = encrypted
+                    emb.created_by = fur.requested_by
+                    emb.save()
+                else:
+                    FaceEmbedding.objects.create(
+                        beneficiary=beneficiary,
+                        embedding_data=encrypted,
+                        created_by=fur.requested_by,
+                    )
+                action_label = 'Primary embedding replaced'
+            else:
+                AdditionalFaceEmbedding.objects.create(
+                    beneficiary=beneficiary,
+                    embedding_data=encrypted,
+                    label=f'update-{fur.created_at.strftime("%Y-%m-%d")}',
+                    created_by=fur.requested_by,
+                )
+                action_label = 'Additional template added'
+
+            FaceUpdateLog.objects.create(
+                beneficiary=beneficiary,
+                performed_by=fur.requested_by,
+                reason=fur.reason,
+                action=fur.action,
+                notes=f'Approved by {request.user.get_full_name() or request.user.username}. {review_notes}',
+                success=True,
+            )
+
+            AuditLog.log(
+                action=AuditLog.ACTION_FACE_UPDATE_APPROVED,
+                user=request.user,
+                target_type='FaceUpdateRequest',
+                target_id=fur.id,
+                details={
+                    'beneficiary_id': beneficiary.beneficiary_id,
+                    'action': fur.action,
+                    'action_label': action_label,
+                    'review_notes': review_notes,
+                },
+                request=request,
+            )
+            messages.success(
+                request,
+                f'Face update approved and applied for {beneficiary.full_name}.'
+            )
+        else:
+            fur.status = FaceUpdateRequest.STATUS_REJECTED
+            FaceUpdateLog.objects.create(
+                beneficiary=fur.beneficiary,
+                performed_by=fur.requested_by,
+                reason=fur.reason,
+                action=fur.action,
+                notes=f'Rejected by {request.user.get_full_name() or request.user.username}. {review_notes}',
+                success=False,
+            )
+            AuditLog.log(
+                action=AuditLog.ACTION_FACE_UPDATE_REJECTED,
+                user=request.user,
+                target_type='FaceUpdateRequest',
+                target_id=fur.id,
+                details={
+                    'beneficiary_id': fur.beneficiary.beneficiary_id,
+                    'review_notes': review_notes,
+                },
+                request=request,
+            )
+            messages.warning(
+                request,
+                f'Face update request rejected for {fur.beneficiary.full_name}.'
+            )
+
+        fur.save()
+        return redirect('verification:manual_review')
+
+    return render(request, 'verification/face_update_review.html', {'fur': fur})
+
+
+# ─── Special Claim Request ────────────────────────────────────────────────────
+
+@login_required
+@require_POST
+def special_claim_request(request, pk):
+    """
+    Staff submits a SpecialClaimRequest to allow a second claim for a beneficiary
+    that has already claimed the current stipend event.
+    """
+    from django.contrib import messages
+
+    beneficiary = get_object_or_404(Beneficiary, pk=pk)
+    today = timezone.now().date()
+    active_event = StipendEvent.get_active_event_for_date(today)
+
+    reason = request.POST.get('reason', '').strip()
+
+    if not reason:
+        messages.error(request, 'A reason is required for the special claim request.')
+        return redirect('beneficiaries:beneficiary_detail', pk=pk)
+
+    if not active_event:
+        messages.error(request, 'No active stipend event found. Special claim requests require an active event.')
+        return redirect('beneficiaries:beneficiary_detail', pk=pk)
+
+    # Find the original claim to reference
+    original_claim = ClaimRecord.objects.filter(
+        beneficiary=beneficiary,
+        stipend_event=active_event,
+        status=ClaimRecord.STATUS_CLAIMED,
+    ).first()
+
+    # Check for an already-pending request to avoid duplicates
+    if SpecialClaimRequest.objects.filter(
+        beneficiary=beneficiary,
+        stipend_event=active_event,
+        status=SpecialClaimRequest.STATUS_PENDING,
+    ).exists():
+        messages.warning(
+            request,
+            'A special claim request for this beneficiary and event is already pending admin review.'
+        )
+        return redirect('beneficiaries:beneficiary_detail', pk=pk)
+
+    scr = SpecialClaimRequest.objects.create(
+        beneficiary=beneficiary,
+        stipend_event=active_event,
+        original_claim=original_claim,
+        requested_by=request.user,
+        reason=reason,
+        notes=request.POST.get('notes', '').strip(),
+    )
+
+    AuditLog.log(
+        action=AuditLog.ACTION_SPECIAL_CLAIM_REQUEST,
+        user=request.user,
+        target_type='SpecialClaimRequest',
+        target_id=scr.id,
+        details={
+            'beneficiary_id': beneficiary.beneficiary_id,
+            'stipend_event': active_event.title,
+            'reason': reason,
+        },
+        request=request,
+    )
+
+    messages.info(
+        request,
+        f'Special claim request submitted for {beneficiary.full_name}. '
+        'An admin must approve before a second claim can be recorded.'
+    )
+    return redirect('beneficiaries:beneficiary_detail', pk=pk)
+
+
+@login_required
+@require_http_methods(['GET', 'POST'])
+def special_claim_review(request, request_id):
+    """Admin approves or rejects a SpecialClaimRequest."""
+    from django.contrib import messages
+
+    if not request.user.is_admin:
+        messages.error(request, 'Admin access required.')
+        return redirect('beneficiaries:dashboard')
+
+    scr = get_object_or_404(SpecialClaimRequest, pk=request_id)
+
+    if request.method == 'POST':
+        action = request.POST.get('action', '')
+        review_notes = request.POST.get('review_notes', '').strip()
+
+        if action not in ('approve', 'reject'):
+            messages.error(request, 'Invalid action.')
+            return redirect('verification:manual_review')
+
+        scr.reviewed_by = request.user
+        scr.reviewed_at = timezone.now()
+        scr.review_notes = review_notes
+
+        if action == 'approve':
+            scr.status = SpecialClaimRequest.STATUS_APPROVED
+
+            # Create the additional ClaimRecord
+            if scr.stipend_event:
+                ClaimRecord.objects.create(
+                    beneficiary=scr.beneficiary,
+                    stipend_event=scr.stipend_event,
+                    claimant_type=VerificationAttempt.CLAIMANT_BENEFICIARY,
+                    claimed_by=scr.requested_by,
+                    approved_by=request.user,
+                    approved_at=timezone.now(),
+                    status=ClaimRecord.STATUS_CLAIMED,
+                    is_special_additional=True,
+                    notes=f'Special additional claim approved by {request.user.get_full_name() or request.user.username}. {review_notes}',
+                )
+
+            AuditLog.log(
+                action=AuditLog.ACTION_SPECIAL_CLAIM_APPROVED,
+                user=request.user,
+                target_type='SpecialClaimRequest',
+                target_id=scr.id,
+                details={
+                    'beneficiary_id': scr.beneficiary.beneficiary_id,
+                    'stipend_event': scr.stipend_event.title if scr.stipend_event else None,
+                    'review_notes': review_notes,
+                },
+                request=request,
+            )
+            messages.success(
+                request,
+                f'Special claim approved for {scr.beneficiary.full_name}. A second claim record has been created.'
+            )
+        else:
+            scr.status = SpecialClaimRequest.STATUS_REJECTED
+            AuditLog.log(
+                action=AuditLog.ACTION_SPECIAL_CLAIM_REJECTED,
+                user=request.user,
+                target_type='SpecialClaimRequest',
+                target_id=scr.id,
+                details={
+                    'beneficiary_id': scr.beneficiary.beneficiary_id,
+                    'stipend_event': scr.stipend_event.title if scr.stipend_event else None,
+                    'review_notes': review_notes,
+                },
+                request=request,
+            )
+            messages.warning(
+                request,
+                f'Special claim request rejected for {scr.beneficiary.full_name}.'
+            )
+
+        scr.save()
+        return redirect('verification:manual_review')
+
+    return render(request, 'verification/special_claim_review.html', {'scr': scr})

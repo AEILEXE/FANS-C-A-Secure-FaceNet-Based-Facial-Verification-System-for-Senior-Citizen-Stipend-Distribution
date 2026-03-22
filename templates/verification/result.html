@@ -47,10 +47,20 @@
     <i class="bi bi-x-circle-fill"></i>
     <div class="result-text">
       <div class="result-label">
-        NOT VERIFIED
+        {% if denial_reason_label == 'liveness_failed' %}DENIED &mdash; LIVENESS FAILED
+        {% elif denial_reason_label == 'face_mismatch' %}DENIED &mdash; FACE MISMATCH
+        {% else %}NOT VERIFIED{% endif %}
         {% if attempt.demo_mode_active %}<span class="demo-mode-badge ms-2">DEMO</span>{% endif %}
       </div>
-      <div class="result-sub">Identity could not be confirmed</div>
+      <div class="result-sub">
+        {% if denial_reason_label == 'liveness_failed' %}
+          Anti-spoofing or head movement challenge was not passed
+        {% elif denial_reason_label == 'face_mismatch' %}
+          Face did not match the enrolled biometric data
+        {% else %}
+          Identity could not be confirmed
+        {% endif %}
+      </div>
     </div>
   </div>
   {% elif attempt.decision == 'manual_review' %}
@@ -58,10 +68,17 @@
     <i class="bi bi-eye-fill"></i>
     <div class="result-text">
       <div class="result-label">
-        MANUAL REVIEW
+        {% if pending_manual_request %}PENDING ADMIN APPROVAL
+        {% else %}MANUAL REVIEW{% endif %}
         {% if attempt.demo_mode_active %}<span class="demo-mode-badge ms-2">DEMO</span>{% endif %}
       </div>
-      <div class="result-sub">Requires administrator review before release</div>
+      <div class="result-sub">
+        {% if pending_manual_request %}
+          Manual verification request submitted &mdash; awaiting admin decision
+        {% else %}
+          Requires administrator review before release
+        {% endif %}
+      </div>
     </div>
   </div>
   {% else %}
@@ -70,6 +87,22 @@
     <div class="result-text">
       <div class="result-label">{{ attempt.get_decision_display|upper }}</div>
       <div class="result-sub">&mdash;</div>
+    </div>
+  </div>
+  {% endif %}
+
+  {% if claim_record %}
+  <div class="alert d-flex gap-2 align-items-center mb-3"
+       style="background:#f0fdf4; border:1px solid #86efac; font-size:0.875rem;">
+    <i class="bi bi-receipt-cutoff text-success flex-shrink-0" style="font-size:1.2rem;"></i>
+    <div>
+      <span class="fw-semibold">Claim Recorded.</span>
+      {% if claim_record.stipend_event %}
+        Payout claim for <strong>{{ claim_record.stipend_event.title }}</strong> has been logged.
+      {% endif %}
+      {% if claim_record.is_special_additional %}
+        <span class="badge bg-info text-dark ms-1">Additional Claim</span>
+      {% endif %}
     </div>
   </div>
   {% endif %}
@@ -328,6 +361,21 @@
   <div class="text-muted small fst-italic mb-3">{{ attempt.notes }}</div>
   {% endif %}
 
+  {% if pending_manual_request %}
+  <div class="alert d-flex gap-2 align-items-start mb-3"
+       style="background:#f0fdf4; border:1px solid #86efac; font-size:0.85rem;">
+    <i class="bi bi-hourglass-split text-success flex-shrink-0 mt-1"></i>
+    <div>
+      <div class="fw-semibold">Pending Admin Approval</div>
+      <div class="text-muted">
+        This manual verification request was submitted by
+        {{ pending_manual_request.requested_by.get_full_name|default:pending_manual_request.requested_by.username }}
+        and is awaiting administrator review. The stipend cannot be released until an admin approves.
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
   <div class="d-flex gap-2 flex-wrap">
     <a href="{% url 'verification:verify_select' %}" class="btn btn-primary">
       <i class="bi bi-camera-video me-1"></i> New Verification
@@ -336,7 +384,15 @@
        class="btn btn-outline-secondary">
       <i class="bi bi-person me-1"></i> View Beneficiary
     </a>
+    {% if not attempt.fallback_triggered and attempt.decision in 'not_verified,denied' and attempt.claimant_type == 'beneficiary' and not attempt.overridden %}
+    <a href="{% url 'verification:verify_fallback' attempt.pk %}" class="btn btn-warning">
+      <i class="bi bi-person-badge me-1"></i> ID Fallback / Request Manual Review
+    </a>
+    {% endif %}
     {% if user.is_admin and attempt.decision == 'manual_review' and not attempt.overridden %}
+    <a href="{% url 'verification:manual_review' %}" class="btn btn-outline-warning">
+      <i class="bi bi-eye me-1"></i> Admin Review Queue
+    </a>
     <a href="{% url 'verification:admin_override' attempt.pk %}" class="btn btn-warning">
       <i class="bi bi-pencil me-1"></i> Override Decision
     </a>

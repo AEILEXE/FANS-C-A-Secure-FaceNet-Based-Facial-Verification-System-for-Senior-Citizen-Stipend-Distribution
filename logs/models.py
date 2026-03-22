@@ -16,6 +16,16 @@ class AuditLog(models.Model):
     ACTION_CONFIG_CHANGE = 'config_change'
     ACTION_FALLBACK = 'fallback'
     ACTION_UPDATE = 'update'
+    ACTION_FACE_UPDATE_REQUEST  = 'face_update_request'
+    ACTION_FACE_UPDATE_APPROVED = 'face_update_approved'
+    ACTION_FACE_UPDATE_REJECTED = 'face_update_rejected'
+    ACTION_MANUAL_VERIFY_REQUEST  = 'manual_verify_request'
+    ACTION_MANUAL_VERIFY_APPROVED = 'manual_verify_approved'
+    ACTION_MANUAL_VERIFY_REJECTED = 'manual_verify_rejected'
+    ACTION_CLAIM                       = 'claim'
+    ACTION_SPECIAL_CLAIM_REQUEST       = 'special_claim_request'
+    ACTION_SPECIAL_CLAIM_APPROVED      = 'special_claim_approved'
+    ACTION_SPECIAL_CLAIM_REJECTED      = 'special_claim_rejected'
 
     ACTION_CHOICES = [
         (ACTION_LOGIN, 'Login'),
@@ -30,6 +40,16 @@ class AuditLog(models.Model):
         (ACTION_CONFIG_CHANGE, 'Config Changed'),
         (ACTION_FALLBACK, 'Fallback Triggered'),
         (ACTION_UPDATE, 'Record Updated'),
+        (ACTION_FACE_UPDATE_REQUEST,  'Face Update Requested'),
+        (ACTION_FACE_UPDATE_APPROVED, 'Face Update Approved'),
+        (ACTION_FACE_UPDATE_REJECTED, 'Face Update Rejected'),
+        (ACTION_MANUAL_VERIFY_REQUEST,  'Manual Verification Requested'),
+        (ACTION_MANUAL_VERIFY_APPROVED, 'Manual Verification Approved'),
+        (ACTION_MANUAL_VERIFY_REJECTED, 'Manual Verification Rejected'),
+        (ACTION_CLAIM,                  'Claim Recorded'),
+        (ACTION_SPECIAL_CLAIM_REQUEST,  'Special Claim Requested'),
+        (ACTION_SPECIAL_CLAIM_APPROVED, 'Special Claim Approved'),
+        (ACTION_SPECIAL_CLAIM_REJECTED, 'Special Claim Rejected'),
     ]
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)

@@ -12,9 +12,13 @@
     <h4 class="fw-bold text-qc-blue mb-0">{{ beneficiary.full_name }}</h4>
     <span class="font-mono text-muted small">{{ beneficiary.beneficiary_id }}</span>
   </div>
-  <div class="d-flex gap-2 flex-wrap">
+  <div class="d-flex gap-2 flex-wrap align-items-center">
     {% if beneficiary.status == 'active' %}
-      {% if has_embedding %}
+      {% if active_event and current_event_claimed %}
+        <span class="badge bg-success p-2 fs-6">
+          <i class="bi bi-check-circle-fill me-1"></i> Already Claimed &mdash; {{ active_event.title }}
+        </span>
+      {% elif has_embedding %}
       <a href="{% url 'verification:verify_start' beneficiary.pk %}?claimant=beneficiary"
          class="btn btn-success">
         <i class="bi bi-camera-video me-1"></i> Verify Beneficiary
@@ -92,8 +96,85 @@
 </div>
 {% endif %}
 
+{# Special Claim Request Banner #}
+{% if active_event and current_event_claimed and beneficiary.status == 'active' %}
+<div class="alert d-flex gap-3 align-items-start mb-4"
+     style="background:#f0fdf4; border:1px solid #86efac;">
+  <i class="bi bi-check-circle-fill text-success flex-shrink-0 mt-1" style="font-size:1.3rem;"></i>
+  <div class="flex-grow-1">
+    <div class="fw-bold mb-1">Stipend already claimed for {{ active_event.title }}</div>
+    <div class="small text-muted">
+      This beneficiary has an existing claim record for the current event.
+      If a second claim is genuinely required (e.g., error, representative substitution),
+      a Special Claim Request must be submitted for admin approval.
+    </div>
+    {% if pending_special %}
+    <div class="mt-2 small text-warning fw-semibold">
+      <i class="bi bi-hourglass-split me-1"></i>
+      A special claim request is already pending admin review.
+    </div>
+    {% else %}
+    <button class="btn btn-sm btn-outline-warning mt-2" data-bs-toggle="collapse" data-bs-target="#specialClaimForm">
+      <i class="bi bi-plus-circle me-1"></i> Request Additional Claim
+    </button>
+    <div class="collapse mt-2" id="specialClaimForm">
+      <form method="POST" action="{% url 'verification:special_claim_request' beneficiary.pk %}">
+        {% csrf_token %}
+        <div class="mb-2">
+          <label class="form-label small fw-semibold mb-1">Reason for additional claim <span class="text-danger">*</span></label>
+          <textarea name="reason" class="form-control form-control-sm" rows="3"
+                    placeholder="Explain why a second claim is required for this event…" required></textarea>
+        </div>
+        <div class="mb-2">
+          <label class="form-label small fw-semibold mb-1">Additional notes (optional)</label>
+          <textarea name="notes" class="form-control form-control-sm" rows="2"
+                    placeholder="Any supporting details…"></textarea>
+        </div>
+        <button type="submit" class="btn btn-sm btn-warning">
+          <i class="bi bi-send me-1"></i> Submit for Admin Approval
+        </button>
+      </form>
+    </div>
+    {% endif %}
+  </div>
+</div>
+{% endif %}
+
 <div class="row g-4">
   <div class="col-lg-5">
+
+    {# Profile Picture #}
+    <div class="card mb-4">
+      <div class="card-body p-3 d-flex gap-3 align-items-center">
+        {% if beneficiary.profile_picture %}
+        <img src="{{ beneficiary.profile_picture.url }}" alt="Photo of {{ beneficiary.full_name }}"
+             class="rounded" style="width:90px; height:90px; object-fit:cover; flex-shrink:0;">
+        {% else %}
+        <span class="d-flex align-items-center justify-content-center rounded bg-light text-secondary flex-shrink-0"
+              style="width:90px; height:90px; font-size:3rem;">
+          <i class="bi bi-person-circle"></i>
+        </span>
+        {% endif %}
+        <div>
+          <div class="fw-bold">{{ beneficiary.full_name }}</div>
+          <div class="font-mono text-muted small">{{ beneficiary.beneficiary_id }}</div>
+          <span class="badge mt-1
+            {% if beneficiary.status == 'active' %}bg-success
+            {% elif beneficiary.status == 'deceased' %}bg-dark
+            {% elif beneficiary.status == 'inactive' %}bg-secondary
+            {% else %}bg-warning text-dark{% endif %}">
+            {{ beneficiary.get_status_display }}
+          </span>
+          {% if not beneficiary.profile_picture %}
+          <div class="small text-muted mt-1">
+            <a href="{% url 'beneficiaries:beneficiary_edit' beneficiary.pk %}" class="text-muted">
+              <i class="bi bi-camera me-1"></i>Add photo
+            </a>
+          </div>
+          {% endif %}
+        </div>
+      </div>
+    </div>
 
     <div class="card mb-4">
       <div class="card-header bg-qc-blue text-white">
@@ -120,18 +201,6 @@
             <tr><th class="text-muted ps-3">Barangay</th><td>{{ beneficiary.barangay }}</td></tr>
             <tr><th class="text-muted ps-3">Municipality</th><td>{{ beneficiary.municipality }}</td></tr>
             <tr><th class="text-muted ps-3">Province</th><td>{{ beneficiary.province }}</td></tr>
-            <tr>
-              <th class="text-muted ps-3">Status</th>
-              <td>
-                <span class="badge
-                  {% if beneficiary.status == 'active' %}bg-success
-                  {% elif beneficiary.status == 'deceased' %}bg-dark
-                  {% elif beneficiary.status == 'inactive' %}bg-secondary
-                  {% else %}bg-warning text-dark{% endif %}">
-                  {{ beneficiary.get_status_display }}
-                </span>
-              </td>
-            </tr>
             <tr>
               <th class="text-muted ps-3">Consent</th>
               <td>
@@ -194,9 +263,75 @@
   </div>
 
   <div class="col-lg-7">
+
+    {# ── Claim History ─────────────────────────────────────────────────────── #}
+    <div class="card mb-4">
+      <div class="card-header bg-qc-blue text-white d-flex justify-content-between align-items-center">
+        <span><i class="bi bi-receipt me-2"></i>Claim History</span>
+        <span class="badge bg-light text-dark">{{ claims|length }} record{{ claims|length|pluralize }}</span>
+      </div>
+      <div class="table-responsive">
+        <table class="table table-hover table-sm mb-0">
+          <thead>
+            <tr>
+              <th>Date</th>
+              <th>Event</th>
+              <th>Claimant</th>
+              <th>Status</th>
+              <th>Type</th>
+              <th>By</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for c in claims %}
+            <tr>
+              <td class="small text-muted" style="white-space:nowrap;">{{ c.claimed_at|date:"M d, Y" }}</td>
+              <td class="small">
+                {% if c.stipend_event %}{{ c.stipend_event.title|truncatechars:22 }}
+                {% else %}&mdash;{% endif %}
+              </td>
+              <td>
+                {% if c.claimant_type == 'representative' %}
+                  <span class="badge bg-primary small">Rep.</span>
+                {% else %}
+                  <span class="badge bg-secondary small">Self</span>
+                {% endif %}
+              </td>
+              <td>
+                <span class="badge
+                  {% if c.status == 'claimed' %}bg-success
+                  {% elif c.status == 'pending_approval' %}bg-warning text-dark
+                  {% elif c.status == 'rejected' %}bg-danger
+                  {% else %}bg-secondary{% endif %}">
+                  {{ c.get_status_display }}
+                </span>
+              </td>
+              <td class="small text-muted">
+                {% if c.is_special_additional %}
+                  <span class="badge bg-info text-dark">Additional</span>
+                {% else %}
+                  Regular
+                {% endif %}
+              </td>
+              <td class="small">{{ c.claimed_by.username|default:"&mdash;" }}</td>
+            </tr>
+            {% empty %}
+            <tr>
+              <td colspan="6" class="text-center text-muted py-4">
+                <i class="bi bi-receipt fs-2 d-block mb-2 opacity-25"></i>
+                No claim records yet.
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    {# ── Verification Attempts ─────────────────────────────────────────────── #}
     <div class="card">
       <div class="card-header bg-qc-blue text-white d-flex justify-content-between align-items-center">
-        <span><i class="bi bi-clock-history me-2"></i>Verification History</span>
+        <span><i class="bi bi-clock-history me-2"></i>Verification Attempts</span>
         <div class="d-flex gap-2">
           {% if beneficiary.status == 'active' %}
           <a href="{% url 'verification:update_face_data' beneficiary.pk %}"
@@ -211,7 +346,7 @@
         </div>
       </div>
       <div class="table-responsive">
-        <table class="table table-hover mb-0">
+        <table class="table table-hover table-sm mb-0">
           <thead>
             <tr>
               <th>Date / Time</th>
@@ -258,7 +393,7 @@
                 {% else %}&mdash;{% endif %}
               </td>
               <td class="small text-muted">
-                {% if a.stipend_event %}{{ a.stipend_event.title|truncatechars:20 }}
+                {% if a.stipend_event %}{{ a.stipend_event.title|truncatechars:18 }}
                 {% else %}&mdash;{% endif %}
               </td>
               <td class="small">{{ a.performed_by.username|default:"&mdash;" }}</td>
@@ -267,7 +402,7 @@
             <tr>
               <td colspan="7" class="text-center text-muted py-5">
                 <i class="bi bi-clock-history fs-2 d-block mb-2 opacity-25"></i>
-                No verification history yet.
+                No verification attempts yet.
               </td>
             </tr>
             {% endfor %}
@@ -275,6 +410,7 @@
         </table>
       </div>
     </div>
+
   </div>
 </div>
 {% endblock %}

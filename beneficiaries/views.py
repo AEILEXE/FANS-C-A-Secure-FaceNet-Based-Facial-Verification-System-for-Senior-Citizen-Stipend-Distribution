@@ -69,7 +69,8 @@ def beneficiary_list(request):
         beneficiaries = (
             beneficiaries.filter(last_name__icontains=query) |
             beneficiaries.filter(first_name__icontains=query) |
-            beneficiaries.filter(beneficiary_id__icontains=query)
+            beneficiaries.filter(beneficiary_id__icontains=query) |
+            beneficiaries.filter(senior_citizen_id__icontains=query)
         )
     if status_filter:
         beneficiaries = beneficiaries.filter(status=status_filter)
@@ -85,12 +86,34 @@ def beneficiary_list(request):
 def beneficiary_detail(request, pk):
     beneficiary = get_object_or_404(Beneficiary, pk=pk)
     has_embedding = hasattr(beneficiary, 'face_embedding')
-    from verification.models import VerificationAttempt
-    attempts = VerificationAttempt.objects.filter(beneficiary=beneficiary).order_by('-timestamp')[:15]
+    from verification.models import VerificationAttempt, ClaimRecord, StipendEvent
+    attempts = VerificationAttempt.objects.filter(beneficiary=beneficiary).order_by('-timestamp')[:20]
+    claims = (
+        ClaimRecord.objects
+        .filter(beneficiary=beneficiary)
+        .select_related('stipend_event', 'claimed_by', 'approved_by', 'verification_attempt')
+        .order_by('-claimed_at')
+    )
+    today = timezone.now().date()
+    active_event = StipendEvent.get_active_event_for_date(today)
+    current_event_claimed = False
+    if active_event:
+        current_event_claimed = ClaimRecord.objects.filter(
+            beneficiary=beneficiary,
+            stipend_event=active_event,
+            status=ClaimRecord.STATUS_CLAIMED,
+        ).exists()
+    pending_special = beneficiary.special_claim_requests.filter(
+        status='pending'
+    ).select_related('stipend_event').first() if active_event else None
     return render(request, 'beneficiaries/detail.html', {
         'beneficiary': beneficiary,
         'has_embedding': has_embedding,
         'attempts': attempts,
+        'claims': claims,
+        'active_event': active_event,
+        'current_event_claimed': current_event_claimed,
+        'pending_special': pending_special,
     })
 
 
@@ -100,7 +123,7 @@ def beneficiary_edit(request, pk):
     beneficiary = get_object_or_404(Beneficiary, pk=pk)
 
     if request.method == 'POST':
-        form = BeneficiaryEditForm(request.POST, instance=beneficiary)
+        form = BeneficiaryEditForm(request.POST, request.FILES, instance=beneficiary)
         if form.is_valid():
             changed_fields = [f for f in form.changed_data]
             form.save()
@@ -296,6 +319,34 @@ def register_submit_face(request):
         step2 = request.session.get('reg_step2', {})
 
         dob = datetime.date.fromisoformat(step1['date_of_birth'])
+
+        # ── Duplicate check ────────────────────────────────────────────────────
+        sc_id = step1.get('senior_citizen_id', '').strip()
+        if sc_id and Beneficiary.objects.filter(senior_citizen_id=sc_id).exists():
+            return JsonResponse({
+                'success': False,
+                'error': (
+                    f'A beneficiary with Senior Citizen ID "{sc_id}" is already registered. '
+                    'Check existing records before proceeding.'
+                ),
+            })
+
+        name_dob_qs = Beneficiary.objects.filter(
+            first_name__iexact=step1['first_name'],
+            last_name__iexact=step1['last_name'],
+            date_of_birth=dob,
+        )
+        if name_dob_qs.exists():
+            existing = name_dob_qs.first()
+            return JsonResponse({
+                'success': False,
+                'error': (
+                    f'A beneficiary named "{existing.full_name}" with the same date of birth '
+                    f'({dob}) is already registered (ID: {existing.beneficiary_id}). '
+                    'Verify this is not a duplicate before proceeding.'
+                ),
+            })
+        # ──────────────────────────────────────────────────────────────────────
 
         beneficiary = Beneficiary(
             first_name=step1['first_name'],

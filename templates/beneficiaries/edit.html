@@ -31,7 +31,7 @@
     {% endfor %}
   {% endif %}
 
-  <form method="POST" novalidate>
+  <form method="POST" enctype="multipart/form-data" novalidate>
     {% csrf_token %}
 
     <div class="card mb-4">
@@ -147,6 +147,37 @@
               {{ form.rep_id_number }}
             </div>
           </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card mb-4">
+      <div class="card-header bg-qc-blue text-white">
+        <i class="bi bi-image me-2"></i>Profile Picture
+      </div>
+      <div class="card-body p-4">
+        <div class="row g-3 align-items-center">
+          {% if beneficiary.profile_picture %}
+          <div class="col-auto">
+            <img src="{{ beneficiary.profile_picture.url }}" alt="Current photo"
+                 class="rounded" style="width:80px; height:80px; object-fit:cover;">
+          </div>
+          <div class="col">
+            <div class="small text-muted mb-2">Current photo on file. Upload a new file to replace it.</div>
+            {{ form.profile_picture }}
+          </div>
+          {% else %}
+          <div class="col-auto">
+            <span class="d-flex align-items-center justify-content-center rounded bg-light text-secondary"
+                  style="width:80px; height:80px; font-size:2.5rem;">
+              <i class="bi bi-person-circle"></i>
+            </span>
+          </div>
+          <div class="col">
+            <div class="small text-muted mb-2">No photo on file. Upload an optional ID photo for easy identification.</div>
+            {{ form.profile_picture }}
+          </div>
+          {% endif %}
         </div>
       </div>
     </div>

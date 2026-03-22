@@ -591,8 +591,9 @@ def process_face_for_verification(image_bytes: bytes, reject_poor_quality: bool 
         face_img = detect_and_align_face(img)
         quality = check_face_quality(face_img)
 
-        # Hard reject extremely blurry frames during verification
-        if reject_poor_quality and quality['blur_score'] < 5:
+        # Hard reject only severely blurry frames during verification
+        # Threshold lowered from 5 to 3 to avoid rejecting borderline captures
+        if reject_poor_quality and quality['blur_score'] < 3:
             return {
                 'success': False,
                 'error': (
@@ -620,6 +621,18 @@ def compare_with_stored(live_embedding: np.ndarray, encrypted_stored: bytes) -> 
     """Compare live embedding against a single stored encrypted embedding."""
     try:
         stored_embedding = decrypt_embedding(encrypted_stored)
+        # Skip embeddings whose dimension doesn't match the live embedding
+        # (can happen after a model version change or corrupt storage)
+        if stored_embedding.shape != live_embedding.shape:
+            return {
+                'success': False,
+                'error': (
+                    f'Embedding dimension mismatch: '
+                    f'live={live_embedding.shape}, stored={stored_embedding.shape}. '
+                    'Re-register this beneficiary to fix.'
+                ),
+                'score': 0.0,
+            }
         score = cosine_similarity(live_embedding, stored_embedding)
         return {'success': True, 'score': score}
     except Exception as e:
@@ -647,6 +660,12 @@ def compare_with_all_embeddings(live_embedding: np.ndarray, beneficiary) -> dict
     all_scores = []
     errors = []
 
+    print(
+        f'[FANS-C] compare_with_all_embeddings | beneficiary={getattr(beneficiary, "beneficiary_id", "?")} '
+        f'| live_embedding.shape={live_embedding.shape}',
+        flush=True,
+    )
+
     # Primary embedding
     try:
         primary = beneficiary.face_embedding
@@ -654,12 +673,16 @@ def compare_with_all_embeddings(live_embedding: np.ndarray, beneficiary) -> dict
         if result['success']:
             s = result['score']
             all_scores.append({'template': 'primary', 'score': s})
+            print(f'[FANS-C]   primary score={s:.4f}', flush=True)
             if best_score is None or s > best_score:
                 best_score = s
                 matched_template = 'primary'
         else:
-            errors.append(result.get('error', 'Primary comparison failed'))
+            err = result.get('error', 'Primary comparison failed')
+            print(f'[FANS-C]   primary FAILED: {err}', flush=True)
+            errors.append(err)
     except Exception as e:
+        print(f'[FANS-C]   primary embedding error: {e}', flush=True)
         errors.append(f'Primary embedding error: {e}')
 
     # Additional templates (AdditionalFaceEmbedding)
@@ -671,15 +694,23 @@ def compare_with_all_embeddings(live_embedding: np.ndarray, beneficiary) -> dict
             if r['success']:
                 s = r['score']
                 all_scores.append({'template': label, 'score': s})
+                print(f'[FANS-C]   {label} score={s:.4f}', flush=True)
                 if best_score is None or s > best_score:
                     best_score = s
                     matched_template = label
+            else:
+                print(f'[FANS-C]   {label} FAILED: {r.get("error", "")}', flush=True)
     except AttributeError:
         pass  # No additional embeddings model — fine
     except Exception as e:
         errors.append(f'Additional template error: {e}')
 
     templates_checked = len(all_scores)
+    print(
+        f'[FANS-C]   BEST score={best_score} | matched={matched_template} '
+        f'| templates_checked={templates_checked}',
+        flush=True,
+    )
 
     if best_score is None:
         return {

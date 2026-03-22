@@ -352,6 +352,294 @@ class FaceUpdateLog(models.Model):
         )
 
 
+class FaceUpdateRequest(models.Model):
+    """
+    Pending face re-enrollment request that must be approved by an admin before
+    the new embedding replaces or augments the active face data.
+
+    Workflow:
+      Staff captures a new face on the Update Face page → a FaceUpdateRequest is
+      created with status='pending' and the encrypted embedding stored here.
+      Admin reviews and either approves (triggering the actual FaceEmbedding /
+      AdditionalFaceEmbedding write) or rejects the request.
+    """
+    STATUS_PENDING  = 'pending'
+    STATUS_APPROVED = 'approved'
+    STATUS_REJECTED = 'rejected'
+    STATUS_CHOICES = [
+        (STATUS_PENDING,  'Pending Review'),
+        (STATUS_APPROVED, 'Approved'),
+        (STATUS_REJECTED, 'Rejected'),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    beneficiary = models.ForeignKey(
+        Beneficiary,
+        on_delete=models.CASCADE,
+        related_name='face_update_requests',
+    )
+    requested_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name='submitted_face_update_requests',
+    )
+
+    # Same choices as FaceUpdateLog so we can create a FaceUpdateLog on approval
+    reason = models.CharField(max_length=30, choices=FaceUpdateLog.REASON_CHOICES)
+    action = models.CharField(max_length=10, choices=FaceUpdateLog.ACTION_CHOICES)
+    notes = models.TextField(blank=True)
+
+    # New embedding — stored encrypted, NOT applied until approved
+    new_embedding_data = models.BinaryField()
+
+    status = models.CharField(max_length=10, choices=STATUS_CHOICES, default=STATUS_PENDING)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    # Review fields (populated when admin acts)
+    reviewed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name='reviewed_face_update_requests',
+    )
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    review_notes = models.TextField(blank=True)
+
+    class Meta:
+        db_table = 'fans_face_update_requests'
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return (
+            f'FaceUpdateRequest [{self.status}] for {self.beneficiary.full_name} '
+            f'by {self.requested_by} ({self.created_at.date()})'
+        )
+
+
+class ManualVerificationRequest(models.Model):
+    """
+    When a beneficiary's face scan fails and the fallback path is triggered, staff
+    submits a ManualVerificationRequest instead of directly marking the attempt as
+    verified.  An admin must approve before a stipend can be released.
+
+    For REPRESENTATIVE claimants the ID-based path continues unchanged (no approval
+    needed because face matching was never involved for representatives).
+    """
+    STATUS_PENDING  = 'pending'
+    STATUS_APPROVED = 'approved'
+    STATUS_REJECTED = 'rejected'
+    STATUS_CHOICES = [
+        (STATUS_PENDING,  'Pending Review'),
+        (STATUS_APPROVED, 'Approved'),
+        (STATUS_REJECTED, 'Rejected'),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    beneficiary = models.ForeignKey(
+        Beneficiary,
+        on_delete=models.CASCADE,
+        related_name='manual_verification_requests',
+    )
+    claimant_type = models.CharField(
+        max_length=20,
+        choices=VerificationAttempt.CLAIMANT_CHOICES,
+        default=VerificationAttempt.CLAIMANT_BENEFICIARY,
+    )
+    requested_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name='submitted_manual_verification_requests',
+    )
+
+    # Link to the failed verification attempt that triggered this request
+    verification_attempt = models.ForeignKey(
+        VerificationAttempt,
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name='manual_requests',
+    )
+    stipend_event = models.ForeignKey(
+        StipendEvent,
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name='manual_verification_requests',
+    )
+
+    # What the staff member observed / verified offline
+    reason = models.TextField(help_text='Why manual verification is being requested.')
+    notes = models.TextField(blank=True)
+
+    # Copy of key metrics from the failed attempt (for admin review context)
+    similarity_score = models.FloatField(null=True, blank=True)
+    liveness_passed = models.BooleanField(null=True)
+    liveness_score = models.FloatField(null=True, blank=True)
+
+    # ID check performed by staff during fallback
+    id_type_checked = models.CharField(max_length=50, blank=True)
+    id_verified = models.BooleanField(null=True)
+
+    status = models.CharField(max_length=10, choices=STATUS_CHOICES, default=STATUS_PENDING)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    # Review fields (populated when admin acts)
+    reviewed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name='reviewed_manual_verification_requests',
+    )
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    review_notes = models.TextField(blank=True)
+
+    class Meta:
+        db_table = 'fans_manual_verification_requests'
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return (
+            f'ManualVerificationRequest [{self.status}] for {self.beneficiary.full_name} '
+            f'by {self.requested_by} ({self.created_at.date()})'
+        )
+
+
+class ClaimRecord(models.Model):
+    """
+    Represents an actual completed stipend payout claim.
+    Separate from VerificationAttempt (which is a raw attempt log).
+    One claim per beneficiary per stipend event under normal circumstances;
+    a second claim requires an approved SpecialClaimRequest.
+    """
+    STATUS_CLAIMED          = 'claimed'
+    STATUS_PENDING_APPROVAL = 'pending_approval'
+    STATUS_REJECTED         = 'rejected'
+    STATUS_CANCELLED        = 'cancelled'
+    STATUS_CHOICES = [
+        (STATUS_CLAIMED,          'Claimed'),
+        (STATUS_PENDING_APPROVAL, 'Pending Approval'),
+        (STATUS_REJECTED,         'Rejected'),
+        (STATUS_CANCELLED,        'Cancelled'),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    beneficiary = models.ForeignKey(
+        Beneficiary,
+        on_delete=models.CASCADE,
+        related_name='claim_records',
+    )
+    stipend_event = models.ForeignKey(
+        StipendEvent,
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name='claim_records',
+    )
+    claimant_type = models.CharField(
+        max_length=20,
+        choices=VerificationAttempt.CLAIMANT_CHOICES,
+        default=VerificationAttempt.CLAIMANT_BENEFICIARY,
+    )
+    claimed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name='processed_claims',
+    )
+    verification_attempt = models.ForeignKey(
+        VerificationAttempt,
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name='claim_records',
+    )
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_CLAIMED)
+    claimed_at = models.DateTimeField(auto_now_add=True)
+    approved_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name='approved_claims',
+    )
+    approved_at = models.DateTimeField(null=True, blank=True)
+    is_special_additional = models.BooleanField(
+        default=False,
+        help_text='True if this is a second claim approved via SpecialClaimRequest.',
+    )
+    notes = models.TextField(blank=True)
+
+    class Meta:
+        db_table = 'fans_claim_records'
+        ordering = ['-claimed_at']
+
+    def __str__(self):
+        event = self.stipend_event.title if self.stipend_event else 'No Event'
+        return f'Claim [{self.status}] — {self.beneficiary.full_name} / {event}'
+
+
+class SpecialClaimRequest(models.Model):
+    """
+    Request for a second (additional) claim for the same stipend event.
+    Staff submits this; an admin must approve before the second ClaimRecord is created.
+    """
+    STATUS_PENDING  = 'pending'
+    STATUS_APPROVED = 'approved'
+    STATUS_REJECTED = 'rejected'
+    STATUS_CHOICES = [
+        (STATUS_PENDING,  'Pending Review'),
+        (STATUS_APPROVED, 'Approved'),
+        (STATUS_REJECTED, 'Rejected'),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    beneficiary = models.ForeignKey(
+        Beneficiary,
+        on_delete=models.CASCADE,
+        related_name='special_claim_requests',
+    )
+    stipend_event = models.ForeignKey(
+        StipendEvent,
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name='special_claim_requests',
+    )
+    original_claim = models.ForeignKey(
+        ClaimRecord,
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name='special_requests',
+    )
+    requested_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name='submitted_special_claim_requests',
+    )
+    reason = models.TextField(help_text='Why a second claim is being requested.')
+    notes = models.TextField(blank=True)
+    status = models.CharField(max_length=10, choices=STATUS_CHOICES, default=STATUS_PENDING)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    # Review fields (populated when admin acts)
+    reviewed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name='reviewed_special_claim_requests',
+    )
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    review_notes = models.TextField(blank=True)
+
+    class Meta:
+        db_table = 'fans_special_claim_requests'
+        ordering = ['-created_at']
+
+    def __str__(self):
+        event = self.stipend_event.title if self.stipend_event else 'No Event'
+        return (
+            f'SpecialClaimRequest [{self.status}] for {self.beneficiary.full_name} '
+            f'/ {event} by {self.requested_by} ({self.created_at.date()})'
+        )
+
+
 class SystemConfig(models.Model):
     key = models.CharField(max_length=100, unique=True)
     value = models.CharField(max_length=500)

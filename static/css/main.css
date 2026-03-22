@@ -194,6 +194,8 @@ a:hover { color: var(--qc-blue-dark); }
 }
 
 .stat-card:hover { transform: translateY(-2px); box-shadow: var(--shadow-md); }
+.stat-card-link { cursor: pointer; }
+.stat-card-link:hover { transform: translateY(-3px) !important; box-shadow: var(--shadow-md) !important; outline: 2px solid rgba(26,76,140,0.18); }
 
 .stat-icon {
   width: 52px;
@@ -213,7 +215,7 @@ a:hover { color: var(--qc-blue-dark); }
 .stat-icon.purple { background: #f3e8ff; color: #7e22ce; }
 
 .stat-value { font-size: 2rem; font-weight: 800; line-height: 1; }
-.stat-label { font-size: 0.78rem; color: var(--text-muted); font-weight: 500; text-transform: uppercase; letter-spacing: 0.5px; margin-top: 0.15rem; }
+.stat-label { font-size: 0.82rem; color: var(--text-muted); font-weight: 600; margin-top: 0.2rem; }
 
 /* ── Buttons ───────────────────────────────────────────── */
 .btn { border-radius: 8px; font-weight: 500; font-size: 0.875rem; }

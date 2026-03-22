@@ -60,6 +60,13 @@ class Beneficiary(models.Model):
     )
     deactivated_reason = models.TextField(blank=True)
 
+    profile_picture = models.ImageField(
+        upload_to='beneficiaries/profile_pics/',
+        null=True,
+        blank=True,
+        help_text='Optional profile photo for identification.',
+    )
+
     registered_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,
