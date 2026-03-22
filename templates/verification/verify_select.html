@@ -75,12 +75,14 @@
               &bull; {{ b.municipality }}, {{ b.province }}
               &bull; Age {{ b.age }}
             </div>
-            {% if b.has_representative %}
+            {% for rep in b.representatives.all %}
+            {% if rep.is_active %}
             <div class="small text-info mt-1">
               <i class="bi bi-people me-1"></i>
-              Rep: {{ b.rep_first_name }} {{ b.rep_last_name }} ({{ b.rep_relationship }})
+              Rep: {{ rep.full_name }} ({{ rep.relationship }}){% if not rep.has_face_data %} &mdash; <span class="text-warning">No face registered</span>{% endif %}
             </div>
             {% endif %}
+            {% endfor %}
             {% if b.status != 'active' %}
             <div class="small text-danger mt-1">
               <i class="bi bi-exclamation-circle me-1"></i>
@@ -94,12 +96,14 @@
                class="btn btn-success btn-sm px-3">
               <i class="bi bi-person me-1"></i> Beneficiary
             </a>
-            {% if b.has_representative %}
-            <a href="{% url 'verification:verify_start' b.pk %}?claimant=representative"
+            {% for rep in b.representatives.all %}
+            {% if rep.is_active and rep.has_face_data %}
+            <a href="{% url 'verification:verify_start' b.pk %}?claimant=representative&rep_id={{ rep.pk }}"
                class="btn btn-outline-primary btn-sm px-3">
-              <i class="bi bi-people me-1"></i> Representative
+              <i class="bi bi-people me-1"></i> {{ rep.first_name }}
             </a>
             {% endif %}
+            {% endfor %}
             {% else %}
             <span class="badge bg-secondary p-2">Ineligible</span>
             {% endif %}
@@ -119,7 +123,7 @@
   <div class="mt-4 p-3 rounded-3 small text-muted" style="background:#f0f4ff; border:1px solid #c7d7fa;">
     <div class="fw-semibold text-qc-blue mb-1"><i class="bi bi-info-circle me-1"></i>Claim Type Guide</div>
     <div class="mb-1"><strong>Beneficiary</strong> &mdash; Face scan verifies the senior citizen directly.</div>
-    <div><strong>Representative</strong> &mdash; Proceeds to ID-based verification using the registered rep&rsquo;s credentials.</div>
+    <div><strong>Representative</strong> &mdash; Biometric face scan verifies the representative&rsquo;s identity. Rep must have face data registered; ID-only fallback is not available for representatives.</div>
   </div>
 
 </div>

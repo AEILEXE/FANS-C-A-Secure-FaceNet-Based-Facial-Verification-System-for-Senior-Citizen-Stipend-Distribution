@@ -75,12 +75,6 @@
   </div>
 </div>
 
-{% if messages %}
-  {% for msg in messages %}
-  <div class="alert alert-{% if msg.tags == 'error' %}danger{% else %}{{ msg.tags }}{% endif %} mb-3">{{ msg }}</div>
-  {% endfor %}
-{% endif %}
-
 {% if beneficiary.status == 'pending' %}
 <div class="alert d-flex gap-3 align-items-start mb-4"
      style="background:#f0f4ff; border:1px solid #c7d7fa;">

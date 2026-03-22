@@ -661,4 +661,5 @@ code, .font-mono {
 
 @media (max-width: 576px) {
   .stat-value { font-size: 1.5rem; }
+  .navbar-fans .navbar-brand .brand-sub { display: none; }
 }

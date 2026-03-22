@@ -67,7 +67,7 @@ def verify_select(request):
             Beneficiary.objects.filter(status=Beneficiary.STATUS_ACTIVE, first_name__icontains=query) |
             Beneficiary.objects.filter(status=Beneficiary.STATUS_ACTIVE, beneficiary_id__icontains=query) |
             Beneficiary.objects.filter(status=Beneficiary.STATUS_ACTIVE, senior_citizen_id__icontains=query)
-        ).distinct().order_by('last_name', 'first_name')
+        ).distinct().order_by('last_name', 'first_name').prefetch_related('representatives__face_embedding')
 
     today = timezone.now().date()
     active_event = StipendEvent.get_active_event_for_date(today)

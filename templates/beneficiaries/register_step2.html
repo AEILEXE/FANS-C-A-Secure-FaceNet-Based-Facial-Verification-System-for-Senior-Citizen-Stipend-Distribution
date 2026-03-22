@@ -33,7 +33,7 @@
   <div class="card">
     <div class="card-header bg-qc-blue text-white">
       <i class="bi bi-people me-2"></i>Step 2 of 4 &mdash; Representative Information
-      <span class="ms-2 opacity-75" style="font-size:0.8rem; font-weight:400;">(optional)</span>
+      <span class="ms-2 opacity-75" style="font-size:0.8rem; font-weight:400;">(skip if no representative)</span>
     </div>
     <div class="card-body p-4">
 
@@ -57,11 +57,11 @@
         <div id="repFields" style="display:none;">
           <div class="row g-3">
             <div class="col-md-6">
-              <label class="form-label">Representative First Name</label>
+              <label class="form-label">Representative First Name <span class="text-danger">*</span></label>
               {{ form.rep_first_name }}
             </div>
             <div class="col-md-6">
-              <label class="form-label">Representative Last Name</label>
+              <label class="form-label">Representative Last Name <span class="text-danger">*</span></label>
               {{ form.rep_last_name }}
             </div>
             <div class="col-md-4">
@@ -69,15 +69,15 @@
               {{ form.rep_relationship }}
             </div>
             <div class="col-md-4">
-              <label class="form-label">Contact Number</label>
+              <label class="form-label">Contact Number <span class="text-danger">*</span></label>
               {{ form.rep_contact }}
             </div>
             <div class="col-md-4">
-              <label class="form-label">ID Type</label>
+              <label class="form-label">ID Type <span class="text-danger">*</span></label>
               {{ form.rep_id_type }}
             </div>
             <div class="col-md-6">
-              <label class="form-label">ID Number</label>
+              <label class="form-label">ID Number <span class="text-danger">*</span></label>
               {{ form.rep_id_number }}
             </div>
           </div>
@@ -103,8 +103,16 @@
 <script>
 const hasRepCheckbox = document.getElementById('{{ form.has_representative.id_for_label }}');
 const repFields = document.getElementById('repFields');
+const requiredRepInputs = ['{{ form.rep_first_name.html_name }}', '{{ form.rep_last_name.html_name }}',
+                           '{{ form.rep_contact.html_name }}', '{{ form.rep_id_type.html_name }}',
+                           '{{ form.rep_id_number.html_name }}'];
 function toggleRepFields() {
-  repFields.style.display = hasRepCheckbox.checked ? '' : 'none';
+  const checked = hasRepCheckbox.checked;
+  repFields.style.display = checked ? '' : 'none';
+  requiredRepInputs.forEach(name => {
+    const el = document.querySelector(`[name="${name}"]`);
+    if (el) el.required = checked;
+  });
 }
 hasRepCheckbox.addEventListener('change', toggleRepFields);
 toggleRepFields();

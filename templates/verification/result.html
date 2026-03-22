@@ -410,7 +410,7 @@
        class="btn btn-outline-secondary">
       <i class="bi bi-person me-1"></i> View Beneficiary
     </a>
-    {% if not attempt.fallback_triggered and attempt.decision in 'not_verified,denied' and attempt.claimant_type == 'beneficiary' and not attempt.overridden %}
+    {% if not attempt.fallback_triggered and attempt.decision != 'verified' and attempt.decision != 'manual_review' and attempt.claimant_type == 'beneficiary' and not attempt.overridden %}
     <a href="{% url 'verification:verify_fallback' attempt.pk %}" class="btn btn-warning">
       <i class="bi bi-person-badge me-1"></i> ID Fallback / Request Manual Review
     </a>
