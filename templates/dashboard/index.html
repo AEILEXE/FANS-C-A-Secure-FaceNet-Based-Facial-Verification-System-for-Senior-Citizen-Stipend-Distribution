@@ -5,8 +5,8 @@
 {% block content %}
 <div class="page-header">
   <div>
-    <h2><i class="bi bi-speedometer2 me-2"></i>Dashboard</h2>
-    <p>Quezon City Senior Citizen Stipend Distribution &mdash; Overview</p>
+    <h4 class="fw-bold text-qc-blue mb-0">Dashboard</h4>
+    <p class="text-muted small mb-0">Quezon City Senior Citizen Stipend Distribution &mdash; Overview</p>
   </div>
   <div class="d-flex gap-2 flex-wrap">
     <a href="{% url 'beneficiaries:register_step1' %}" class="btn btn-primary">
@@ -50,10 +50,10 @@
 {% endif %}
 
 {% if manual_review_pending and manual_review_pending > 0 %}
-<div class="alert d-flex gap-3 align-items-center mb-4" style="background:#fce7f3; border:1px solid #f9a8d4;">
+<div class="alert d-flex gap-3 align-items-center mb-3" style="background:#fce7f3; border:1px solid #f9a8d4;">
   <i class="bi bi-eye-fill flex-shrink-0" style="font-size:1.4rem; color:#9d174d;"></i>
   <div class="flex-grow-1">
-    <div class="fw-bold" style="color:#9d174d;">{{ manual_review_pending }} Verification{{ manual_review_pending|pluralize }} Pending Manual Review</div>
+    <div class="fw-bold" style="color:#9d174d;">{{ manual_review_pending }} item{{ manual_review_pending|pluralize }} pending manual review</div>
     <div class="small text-muted">Administrator action required before stipend release.</div>
   </div>
   {% if user.is_admin %}
@@ -61,6 +61,19 @@
     <i class="bi bi-eye me-1"></i> Review Now
   </a>
   {% endif %}
+</div>
+{% endif %}
+
+{% if user.is_admin and pending_registrations_count and pending_registrations_count > 0 %}
+<div class="alert d-flex gap-3 align-items-center mb-4" style="background:#f0fdf4; border:1px solid #86efac;">
+  <i class="bi bi-person-plus-fill flex-shrink-0 text-success" style="font-size:1.4rem;"></i>
+  <div class="flex-grow-1">
+    <div class="fw-bold text-success">{{ pending_registrations_count }} pending registration{{ pending_registrations_count|pluralize }} awaiting approval</div>
+    <div class="small text-muted">New beneficiaries submitted by staff. Approve before they can be verified.</div>
+  </div>
+  <a href="{% url 'verification:registration_review_list' %}" class="btn btn-sm btn-outline-success flex-shrink-0">
+    <i class="bi bi-person-check me-1"></i> Approve Now
+  </a>
 </div>
 {% endif %}
 
@@ -132,6 +145,21 @@
     </a>
   </div>
   {% endif %}
+  {% if user.is_admin and pending_registrations_count %}
+  <div class="col-6 col-xl-3">
+    <a href="{% url 'verification:registration_review_list' %}" class="text-decoration-none">
+    <div class="card stat-card h-100 stat-card-link">
+      <div class="card-body d-flex align-items-center gap-3 p-3">
+        <div class="stat-icon green"><i class="bi bi-person-plus-fill"></i></div>
+        <div>
+          <div class="stat-value" style="color:#15803d;">{{ pending_registrations_count }}</div>
+          <div class="stat-label">Pending Approval</div>
+        </div>
+      </div>
+    </div>
+    </a>
+  </div>
+  {% endif %}
 </div>
 
 <div class="row g-4">
@@ -165,11 +193,14 @@
         <a href="{% url 'verification:manual_review' %}" class="action-btn">
           <div class="action-icon" style="background:#fce7f3; color:#9d174d;">
             <i class="bi bi-eye-fill"></i>
-            {% if manual_review_pending and manual_review_pending > 0 %}
-            <span class="position-absolute translate-middle badge rounded-pill bg-danger" style="font-size:0.6rem; top:2px; right:2px;">{{ manual_review_pending }}</span>
-            {% endif %}
           </div>
-          <span>Manual Review Queue{% if manual_review_pending and manual_review_pending > 0 %} <span class="badge bg-danger ms-1">{{ manual_review_pending }}</span>{% endif %}</span>
+          <span>Admin Review Queue{% if manual_review_pending and manual_review_pending > 0 %} <span class="badge bg-danger ms-1">{{ manual_review_pending }}</span>{% endif %}</span>
+        </a>
+        <a href="{% url 'verification:registration_review_list' %}" class="action-btn">
+          <div class="action-icon" style="background:#dcfce7; color:#15803d;">
+            <i class="bi bi-person-check-fill"></i>
+          </div>
+          <span>Pending Registrations{% if pending_registrations_count and pending_registrations_count > 0 %} <span class="badge bg-success ms-1">{{ pending_registrations_count }}</span>{% endif %}</span>
         </a>
         <a href="{% url 'beneficiaries:user_list' %}" class="action-btn">
           <div class="action-icon" style="background:#f1f5f9; color:#374151;"><i class="bi bi-people-fill"></i></div>

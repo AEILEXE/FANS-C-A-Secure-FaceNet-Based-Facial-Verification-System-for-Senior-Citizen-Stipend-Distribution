@@ -11,7 +11,7 @@ from django.utils import timezone
 from .models import Beneficiary
 from .forms import BeneficiaryInfoForm, BeneficiaryEditForm, RepresentativeForm, ConsentForm
 from verification.models import FaceEmbedding
-from verification.face_utils import process_face_for_registration
+from verification.face_utils import process_face_for_registration, check_duplicate_face
 from logs.models import AuditLog
 from accounts.models import CustomUser
 from accounts.forms import UserCreateForm, UserUpdateForm
@@ -50,6 +50,7 @@ def dashboard(request):
         'total_beneficiaries': total_beneficiaries,
         'active_beneficiaries': active_beneficiaries,
         'pending_beneficiaries': pending_beneficiaries,
+        'pending_registrations_count': pending_beneficiaries,
         'verifications_today': verifications_today,
         'verified_today': verified_today,
         'manual_review_pending': manual_review_pending,
@@ -348,6 +349,43 @@ def register_submit_face(request):
             })
         # ──────────────────────────────────────────────────────────────────────
 
+        # ── Duplicate face check (CRITICAL SECURITY) ───────────────────────
+        from django.conf import settings as django_settings
+        dup_threshold = getattr(django_settings, 'FACE_DEDUP_THRESHOLD', 0.80)
+        from verification.face_utils import get_embedding, decrypt_embedding
+        import numpy as np
+        # Decrypt and re-use embedding from the registration result
+        live_emb = decrypt_embedding(result['encrypted_embedding'])
+
+        dup_result = check_duplicate_face(live_emb, threshold=dup_threshold)
+        if dup_result['duplicates_found']:
+            top = dup_result['matches'][0]
+            AuditLog.log(
+                action=AuditLog.ACTION_DUPLICATE_FACE,
+                user=request.user,
+                target_type='Beneficiary',
+                target_id=top['beneficiary_id'],
+                details={
+                    'attempted_name': f"{step1['first_name']} {step1['last_name']}",
+                    'matched_beneficiary_id': top['beneficiary_id'],
+                    'matched_name': top['full_name'],
+                    'score': top['score'],
+                    'threshold': dup_threshold,
+                    'total_matches': len(dup_result['matches']),
+                },
+                request=request,
+            )
+            return JsonResponse({
+                'success': False,
+                'error': (
+                    f'Registration blocked: Face already registered for '
+                    f'beneficiary {top["beneficiary_id"]} ({top["full_name"]}) '
+                    f'with similarity score {top["score"]:.2%}. '
+                    'Contact your supervisor if this is a legitimate new enrollment.'
+                ),
+            })
+        # ──────────────────────────────────────────────────────────────────────
+
         beneficiary = Beneficiary(
             first_name=step1['first_name'],
             middle_name=step1.get('middle_name', ''),
@@ -371,7 +409,7 @@ def register_submit_face(request):
             rep_id_number=step2.get('rep_id_number', ''),
             consent_given=True,
             consent_date=timezone.now(),
-            status=Beneficiary.STATUS_ACTIVE,
+            status=Beneficiary.STATUS_PENDING,
             registered_by=request.user,
         )
         beneficiary.save()
@@ -390,7 +428,12 @@ def register_submit_face(request):
             user=request.user,
             target_type='Beneficiary',
             target_id=beneficiary.id,
-            details={'beneficiary_id': beneficiary.beneficiary_id, 'name': beneficiary.full_name},
+            details={
+                'beneficiary_id': beneficiary.beneficiary_id,
+                'name': beneficiary.full_name,
+                'status': 'pending_approval',
+                'highest_dedup_score': dup_result['highest_score'],
+            },
             request=request
         )
 
@@ -400,7 +443,10 @@ def register_submit_face(request):
 
         return JsonResponse({
             'success': True,
-            'message': f'Registration successful! ID: {beneficiary.beneficiary_id}{quality_msg}',
+            'message': (
+                f'Registration submitted (ID: {beneficiary.beneficiary_id}). '
+                f'Pending admin approval before the beneficiary can be verified.{quality_msg}'
+            ),
             'redirect': f'/dashboard/beneficiaries/{beneficiary.id}/'
         })
 
@@ -492,7 +538,7 @@ def user_edit(request, pk):
 
     user = get_object_or_404(CustomUser, pk=pk)
     if request.method == 'POST':
-        form = UserUpdateForm(request.POST, instance=user)
+        form = UserUpdateForm(request.POST, request.FILES, instance=user)
         if form.is_valid():
             form.save()
             AuditLog.log(

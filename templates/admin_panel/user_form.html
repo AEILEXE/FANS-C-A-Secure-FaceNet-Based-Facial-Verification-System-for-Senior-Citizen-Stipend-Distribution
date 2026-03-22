@@ -20,7 +20,7 @@
       <i class="bi bi-person me-2"></i>User Details
     </div>
     <div class="card-body p-4">
-      <form method="POST" novalidate>
+      <form method="POST" enctype="multipart/form-data" novalidate>
         {% csrf_token %}
         <div class="row g-3">
 
@@ -80,6 +80,17 @@
           {% endif %}
 
           {% if action == 'Edit' %}
+          <div class="col-12">
+            <label class="form-label fw-semibold">Profile Picture</label>
+            {% if edited_user.profile_picture %}
+            <div class="mb-2">
+              <img src="{{ edited_user.profile_picture.url }}" alt="Current photo"
+                   style="width:64px; height:64px; object-fit:cover; border-radius:50%; border:2px solid #e2e8f0;">
+            </div>
+            {% endif %}
+            {{ form.profile_picture }}
+            <div class="form-text">Optional. Leave blank to keep the current photo.</div>
+          </div>
           <div class="col-12">
             <div class="form-check form-switch">
               {{ form.is_active }}

@@ -60,7 +60,7 @@ class UserCreateForm(forms.ModelForm):
 class UserUpdateForm(forms.ModelForm):
     class Meta:
         model = CustomUser
-        fields = ['first_name', 'last_name', 'email', 'role', 'employee_id', 'phone', 'is_active']
+        fields = ['first_name', 'last_name', 'email', 'role', 'employee_id', 'phone', 'profile_picture', 'is_active']
         widgets = {
             'first_name': forms.TextInput(attrs={'class': 'form-control'}),
             'last_name': forms.TextInput(attrs={'class': 'form-control'}),
@@ -68,4 +68,5 @@ class UserUpdateForm(forms.ModelForm):
             'role': forms.Select(attrs={'class': 'form-select'}),
             'employee_id': forms.TextInput(attrs={'class': 'form-control'}),
             'phone': forms.TextInput(attrs={'class': 'form-control'}),
+            'profile_picture': forms.FileInput(attrs={'class': 'form-control'}),
         }

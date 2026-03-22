@@ -26,6 +26,9 @@ class AuditLog(models.Model):
     ACTION_SPECIAL_CLAIM_REQUEST       = 'special_claim_request'
     ACTION_SPECIAL_CLAIM_APPROVED      = 'special_claim_approved'
     ACTION_SPECIAL_CLAIM_REJECTED      = 'special_claim_rejected'
+    ACTION_REGISTER_APPROVED           = 'register_approved'
+    ACTION_REGISTER_REJECTED           = 'register_rejected'
+    ACTION_DUPLICATE_FACE              = 'duplicate_face'
 
     ACTION_CHOICES = [
         (ACTION_LOGIN, 'Login'),
@@ -50,6 +53,9 @@ class AuditLog(models.Model):
         (ACTION_SPECIAL_CLAIM_REQUEST,  'Special Claim Requested'),
         (ACTION_SPECIAL_CLAIM_APPROVED, 'Special Claim Approved'),
         (ACTION_SPECIAL_CLAIM_REJECTED, 'Special Claim Rejected'),
+        (ACTION_REGISTER_APPROVED,      'Registration Approved'),
+        (ACTION_REGISTER_REJECTED,      'Registration Rejected'),
+        (ACTION_DUPLICATE_FACE,         'Duplicate Face Detected'),
     ]
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)

@@ -264,6 +264,7 @@ def verify_check_liveness(request):
             'success': True,
             'face_detected': True,
             'passed': liveness_result['passed'],
+            'anti_spoof_passed': liveness_result.get('anti_spoof_passed', liveness_result['anti_spoof_score'] >= anti_spoof_threshold),
             'anti_spoof_score': liveness_result['anti_spoof_score'],
             'liveness_score': liveness_result['liveness_score'],
             'reason': liveness_result['reason'],
@@ -477,6 +478,45 @@ def verify_submit(request):
         # Append quality note if applicable
         if face_result.get('quality') and not face_result['quality']['ok']:
             reason += f' Note: {face_result["quality"]["reason"]}'
+
+        # ── Lookalike / twin detection ─────────────────────────────────────────
+        # If the target would pass, check whether another registered beneficiary
+        # also has a score within LOOKALIKE_BAND of the target score. If so,
+        # escalate to manual review — staff must confirm with ID before releasing.
+        LOOKALIKE_BAND = getattr(django_settings, 'LOOKALIKE_BAND', 0.05)
+        if decision == VerificationAttempt.DECISION_VERIFIED and score >= threshold:
+            from .face_utils import check_duplicate_face as _check_dup
+            lookalike_threshold = max(score - LOOKALIKE_BAND, threshold * 0.85)
+            dup_check = _check_dup(
+                live_embedding,
+                threshold=lookalike_threshold,
+                exclude_beneficiary_id=str(beneficiary.beneficiary_id),
+            )
+            if dup_check['duplicates_found']:
+                top_match = dup_check['matches'][0]
+                decision = VerificationAttempt.DECISION_MANUAL_REVIEW
+                reason = (
+                    f'Manual review — possible lookalike: score {score:.3f} >= threshold {threshold:.2f}, '
+                    f'but beneficiary {top_match["beneficiary_id"]} ({top_match["full_name"]}) '
+                    f'also scored {top_match["score"]:.3f} (within {LOOKALIKE_BAND:.2f} band). '
+                    'Staff must confirm identity with ID before releasing stipend.'
+                )
+                AuditLog.log(
+                    action=AuditLog.ACTION_DUPLICATE_FACE,
+                    user=request.user,
+                    target_type='VerificationAttempt',
+                    target_id=attempt.id,
+                    details={
+                        'beneficiary_id': beneficiary.beneficiary_id,
+                        'score': round(score, 4),
+                        'lookalike_id': top_match['beneficiary_id'],
+                        'lookalike_name': top_match['full_name'],
+                        'lookalike_score': top_match['score'],
+                        'band': LOOKALIKE_BAND,
+                    },
+                    request=request,
+                )
+        # ──────────────────────────────────────────────────────────────────────
 
         attempt.decision = decision
         attempt.decision_reason = reason
@@ -1281,11 +1321,19 @@ def manual_review_list(request):
         status=SpecialClaimRequest.STATUS_PENDING,
     ).select_related('beneficiary', 'requested_by', 'stipend_event', 'original_claim').order_by('-created_at')
 
+    pending_registrations = (
+        Beneficiary.objects
+        .filter(status=Beneficiary.STATUS_PENDING)
+        .select_related('registered_by')
+        .order_by('created_at')
+    )
+
     return render(request, 'verification/manual_review.html', {
         'pending': pending_verifications,
         'pending_manual_requests': pending_manual_requests,
         'pending_face_requests': pending_face_requests,
         'pending_special_claims': pending_special_claims,
+        'pending_registrations': pending_registrations,
     })
 
 
@@ -1673,3 +1721,104 @@ def special_claim_review(request, request_id):
         return redirect('verification:manual_review')
 
     return render(request, 'verification/special_claim_review.html', {'scr': scr})
+
+
+# ─── Registration Approval ────────────────────────────────────────────────────
+
+@login_required
+def registration_review_list(request):
+    """Admin queue showing all pending beneficiary registrations."""
+    from django.contrib import messages
+
+    if not request.user.is_admin:
+        messages.error(request, 'Admin access required.')
+        return redirect('beneficiaries:dashboard')
+
+    pending = (
+        Beneficiary.objects
+        .filter(status=Beneficiary.STATUS_PENDING)
+        .select_related('registered_by')
+        .order_by('created_at')
+    )
+    return render(request, 'verification/registration_review_list.html', {
+        'pending': pending,
+    })
+
+
+@login_required
+@require_http_methods(['GET', 'POST'])
+def registration_review(request, pk):
+    """Admin approves or rejects a single pending beneficiary registration."""
+    from django.contrib import messages
+
+    if not request.user.is_admin:
+        messages.error(request, 'Admin access required.')
+        return redirect('beneficiaries:dashboard')
+
+    beneficiary = get_object_or_404(Beneficiary, pk=pk, status=Beneficiary.STATUS_PENDING)
+
+    if request.method == 'POST':
+        action = request.POST.get('action', '')
+        review_notes = request.POST.get('review_notes', '').strip()
+
+        if action not in ('approve', 'reject'):
+            messages.error(request, 'Invalid action.')
+            return redirect('verification:registration_review_list')
+
+        if not review_notes:
+            messages.error(request, 'Review notes are required.')
+            return render(request, 'verification/registration_review.html', {
+                'beneficiary': beneficiary,
+            })
+
+        if action == 'approve':
+            beneficiary.status = Beneficiary.STATUS_ACTIVE
+            beneficiary.save()
+
+            AuditLog.log(
+                action=AuditLog.ACTION_REGISTER_APPROVED,
+                user=request.user,
+                target_type='Beneficiary',
+                target_id=beneficiary.id,
+                details={
+                    'beneficiary_id': beneficiary.beneficiary_id,
+                    'name': beneficiary.full_name,
+                    'review_notes': review_notes,
+                },
+                request=request,
+            )
+            messages.success(
+                request,
+                f'Registration approved for {beneficiary.full_name} '
+                f'(ID: {beneficiary.beneficiary_id}). They are now active.'
+            )
+        else:
+            beneficiary.status = Beneficiary.STATUS_INACTIVE
+            beneficiary.deactivated_reason = (
+                f'Registration rejected by '
+                f'{request.user.get_full_name() or request.user.username}: {review_notes}'
+            )
+            beneficiary.save()
+
+            AuditLog.log(
+                action=AuditLog.ACTION_REGISTER_REJECTED,
+                user=request.user,
+                target_type='Beneficiary',
+                target_id=beneficiary.id,
+                details={
+                    'beneficiary_id': beneficiary.beneficiary_id,
+                    'name': beneficiary.full_name,
+                    'review_notes': review_notes,
+                },
+                request=request,
+            )
+            messages.warning(
+                request,
+                f'Registration rejected for {beneficiary.full_name}.'
+            )
+
+        return redirect('verification:registration_review_list')
+
+    return render(request, 'verification/registration_review.html', {
+        'beneficiary': beneficiary,
+    })

@@ -729,3 +729,94 @@ def compare_with_all_embeddings(live_embedding: np.ndarray, beneficiary) -> dict
         'templates_checked': templates_checked,
         'all_scores': all_scores,
     }
+
+
+# ─── Duplicate Face Detection ─────────────────────────────────────────────────
+
+def check_duplicate_face(
+    live_embedding: np.ndarray,
+    threshold: float = 0.80,
+    exclude_beneficiary_id: str = None,
+) -> dict:
+    """
+    Compare a new embedding against ALL stored beneficiary embeddings to detect
+    duplicate or near-duplicate faces during registration.
+
+    Args:
+        live_embedding: 128-d L2-normalized embedding from the new capture.
+        threshold: Cosine similarity threshold above which a face is considered
+            a duplicate. Default 0.80 (tighter than verification threshold to
+            flag even partial lookalikes for review).
+        exclude_beneficiary_id: Skip embeddings belonging to this beneficiary
+            (used when re-registering an existing record).
+
+    Returns a dict with:
+        duplicates_found – bool, True if any match exceeds threshold
+        matches          – list of dicts: {beneficiary_id, full_name, score, template}
+        highest_score    – float, best match found (0.0 if none)
+        checked          – int, total number of embeddings compared
+    """
+    from .models import FaceEmbedding, AdditionalFaceEmbedding
+
+    matches = []
+    highest_score = 0.0
+    checked = 0
+
+    # Check primary embeddings
+    primary_qs = FaceEmbedding.objects.select_related('beneficiary').all()
+    if exclude_beneficiary_id:
+        primary_qs = primary_qs.exclude(beneficiary__beneficiary_id=exclude_beneficiary_id)
+
+    for fe in primary_qs:
+        try:
+            stored = decrypt_embedding(fe.embedding_data)
+            if stored.shape != live_embedding.shape:
+                continue
+            score = cosine_similarity(live_embedding, stored)
+            checked += 1
+            if score > highest_score:
+                highest_score = score
+            if score >= threshold:
+                matches.append({
+                    'beneficiary_id': fe.beneficiary.beneficiary_id,
+                    'full_name': fe.beneficiary.full_name,
+                    'score': round(score, 4),
+                    'template': 'primary',
+                })
+        except Exception:
+            continue
+
+    # Check additional embeddings
+    additional_qs = AdditionalFaceEmbedding.objects.select_related('beneficiary').all()
+    if exclude_beneficiary_id:
+        additional_qs = additional_qs.exclude(beneficiary__beneficiary_id=exclude_beneficiary_id)
+
+    for afe in additional_qs:
+        try:
+            stored = decrypt_embedding(afe.embedding_data)
+            if stored.shape != live_embedding.shape:
+                continue
+            score = cosine_similarity(live_embedding, stored)
+            checked += 1
+            if score > highest_score:
+                highest_score = score
+            if score >= threshold:
+                label = getattr(afe, 'label', None) or 'additional'
+                matches.append({
+                    'beneficiary_id': afe.beneficiary.beneficiary_id,
+                    'full_name': afe.beneficiary.full_name,
+                    'score': round(score, 4),
+                    'template': label,
+                })
+        except Exception:
+            continue
+
+    # Sort by score descending
+    matches.sort(key=lambda m: m['score'], reverse=True)
+
+    return {
+        'duplicates_found': len(matches) > 0,
+        'matches': matches,
+        'highest_score': round(highest_score, 4),
+        'checked': checked,
+    }

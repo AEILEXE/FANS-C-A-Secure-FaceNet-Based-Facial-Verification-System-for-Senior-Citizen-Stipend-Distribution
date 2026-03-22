@@ -32,6 +32,15 @@ _KEY_LABELS = {
     'original_score':   'Original Score',
     'stipend_event':    'Stipend Event',
     'via':              'Via',
+    'highest_dedup_score': 'Dedup Score',
+    'matched_beneficiary_id': 'Matched ID',
+    'matched_name':     'Matched Name',
+    'total_matches':    'Total Matches',
+    'lookalike_id':     'Lookalike ID',
+    'lookalike_name':   'Lookalike Name',
+    'lookalike_score':  'Lookalike Score',
+    'band':             'Detection Band',
+    'attempted_name':   'Attempted Name',
 }
 
 

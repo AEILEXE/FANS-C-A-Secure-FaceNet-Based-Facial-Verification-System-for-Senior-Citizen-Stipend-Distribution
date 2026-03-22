@@ -23,4 +23,6 @@ urlpatterns = [
     path('stipend/<uuid:event_id>/delete/', views.stipend_delete, name='stipend_delete'),
     path('update-face/<uuid:pk>/', views.update_face_data, name='update_face_data'),
     path('update-face/<uuid:pk>/submit/', views.update_face_submit, name='update_face_submit'),
+    path('registration-review/', views.registration_review_list, name='registration_review_list'),
+    path('registration-review/<uuid:pk>/', views.registration_review, name='registration_review'),
 ]

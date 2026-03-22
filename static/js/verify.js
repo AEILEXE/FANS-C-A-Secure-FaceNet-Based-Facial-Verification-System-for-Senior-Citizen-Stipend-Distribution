@@ -170,7 +170,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       showGuidance(livenessApiResult.face_quality_reason, 'warning');
     }
 
-    if (livenessApiResult.passed) {
+    if (livenessApiResult.anti_spoof_passed) {
       step1Icon.innerHTML = iconCheck();
       step1Msg.textContent = `Passed (score: ${pct(livenessData.anti_spoof_score)}%)`;
       if (faceBorder) faceBorder.style.borderColor = 'rgba(34,197,94,0.85)';
@@ -224,7 +224,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     step2Icon.innerHTML = iconCheck();
     step2Msg.textContent = challengeCompleted ? 'Challenge completed' : 'Challenge auto-accepted (timer)';
 
-    livenessData.passed = livenessApiResult.passed && challengeCompleted;
+    livenessData.passed = livenessApiResult.anti_spoof_passed && challengeCompleted;
 
     // Compute final combined liveness score client-side (matches server formula):
     //   0.6 * anti_spoof_score  +  0.4 * challenge_completed

@@ -77,6 +77,9 @@
               {% elif log.action == 'special_claim_request' %}bg-primary
               {% elif log.action == 'special_claim_approved' %}bg-success
               {% elif log.action == 'special_claim_rejected' %}bg-danger
+              {% elif log.action == 'register_approved' %}bg-success
+              {% elif log.action == 'register_rejected' %}bg-danger
+              {% elif log.action == 'duplicate_face' %}bg-danger
               {% else %}bg-light text-dark{% endif %}">
               {{ log.get_action_display }}
             </span>
