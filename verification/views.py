@@ -17,7 +17,9 @@ from .models import (
     AdditionalFaceEmbedding, FaceUpdateLog,
     FaceUpdateRequest, ManualVerificationRequest,
     ClaimRecord, SpecialClaimRequest,
+    RepresentativeFaceEmbedding,
 )
+from beneficiaries.models import Representative
 from .face_utils import (
     process_face_for_verification,
     process_face_for_registration,
@@ -140,44 +142,64 @@ def verify_start(request, pk):
             )
             return redirect('beneficiaries:beneficiary_detail', pk=beneficiary.pk)
 
-    # Representative claim → fallback ID verification
+    # Representative claim → biometric face verification (NOT ID-only)
     if claimant_type == VerificationAttempt.CLAIMANT_REPRESENTATIVE:
-        if not beneficiary.has_representative:
-            from django.contrib import messages
-            messages.error(request, 'This beneficiary has no registered representative.')
-            return redirect('verification:verify_select')
+        from django.contrib import messages
+        rep_id_param = request.GET.get('rep_id')
+        qs = beneficiary.representatives.filter(is_active=True).select_related('face_embedding')
+        if rep_id_param:
+            try:
+                rep = qs.get(pk=rep_id_param)
+            except (Representative.DoesNotExist, Exception):
+                messages.error(request, 'The specified representative was not found or is not active.')
+                return redirect('beneficiaries:beneficiary_detail', pk=beneficiary.pk)
+        else:
+            rep = qs.first()
+
+        if not rep:
+            messages.error(
+                request,
+                'No active representative registered for this beneficiary. '
+                'Add a representative and register their face on the beneficiary profile.'
+            )
+            return redirect('beneficiaries:beneficiary_detail', pk=beneficiary.pk)
+
+        if not rep.has_face_data:
+            messages.error(
+                request,
+                f'{rep.full_name} is registered as representative but has no face data. '
+                'Register their face before verifying.'
+            )
+            return redirect('verification:register_rep_face', pk=beneficiary.pk, rep_pk=rep.pk)
 
         session_id = str(uuid.uuid4())
-        attempt = VerificationAttempt.objects.create(
-            beneficiary=beneficiary,
-            performed_by=request.user,
-            claimant_type=VerificationAttempt.CLAIMANT_REPRESENTATIVE,
-            liveness_passed=None,
-            fallback_triggered=True,
-            threshold_used=SystemConfig.get_threshold(),
-            session_id=session_id,
-            # Representative claims go directly to ID verification
-            # Use DECISION_NOT_VERIFIED as the initial placeholder;
-            # the fallback view will update this to verified/denied after ID check.
-            decision=VerificationAttempt.DECISION_NOT_VERIFIED,
-            decision_reason='Representative claim — ID verification required (pending).',
-            notes='Representative claimant: redirected to ID verification.',
-            stipend_event=active_event,
-            demo_mode_active=_get_demo_mode(),
-        )
-        AuditLog.log(
-            action=AuditLog.ACTION_VERIFY,
-            user=request.user,
-            target_type='Beneficiary',
-            target_id=beneficiary.id,
-            details={
-                'claimant_type': 'representative',
-                'reason': 'Redirected to fallback ID check',
-                'rep_name': f'{beneficiary.rep_first_name} {beneficiary.rep_last_name}'.strip(),
-            },
-            request=request
-        )
-        return redirect('verification:verify_fallback', attempt_id=attempt.id)
+        challenge = get_random_challenge()
+        request.session['verification_session'] = {
+            'beneficiary_id': str(pk),
+            'representative_id': str(rep.id),
+            'session_id': session_id,
+            'attempt_number': 1,
+            'challenge': challenge,
+            'claimant_type': claimant_type,
+            'stipend_event_id': str(active_event.id) if active_event else None,
+        }
+        liveness_required = _get_liveness_required()
+        demo_mode = _get_demo_mode()
+        using_mock = is_using_mock_model()
+        return render(request, 'verification/verify_capture.html', {
+            'beneficiary': beneficiary,
+            'representative': rep,
+            'session_id': session_id,
+            'challenge': challenge,
+            'challenge_display': _challenge_display(challenge),
+            'claimant_type': claimant_type,
+            'liveness_required': liveness_required,
+            'demo_mode': demo_mode,
+            'active_event': active_event,
+            'is_birthday_event': False,
+            'using_mock': using_mock,
+            'model_load_error': get_model_load_error() if using_mock else None,
+        })
 
     # Beneficiary face scan — requires an embedding
     if not hasattr(beneficiary, 'face_embedding'):
@@ -309,6 +331,23 @@ def verify_submit(request):
         liveness_required = _get_liveness_required()
         demo_mode = _get_demo_mode()
 
+        # Resolve representative (for representative claims)
+        representative = None
+        if claimant_type == VerificationAttempt.CLAIMANT_REPRESENTATIVE:
+            rep_id = session_data.get('representative_id')
+            if rep_id:
+                try:
+                    representative = (
+                        Representative.objects
+                        .select_related('face_embedding')
+                        .get(pk=rep_id, beneficiary=beneficiary, is_active=True)
+                    )
+                except Representative.DoesNotExist:
+                    return JsonResponse({
+                        'success': False,
+                        'error': 'Representative not found or no longer active.',
+                    })
+
         if ',' in image_data:
             image_data = image_data.split(',')[1]
         image_bytes = base64.b64decode(image_data)
@@ -326,6 +365,7 @@ def verify_submit(request):
             beneficiary=beneficiary,
             performed_by=request.user,
             claimant_type=claimant_type,
+            representative=representative,
             liveness_passed=liveness_passed_client,
             liveness_score=liveness_score,
             anti_spoof_score=anti_spoof_score,
@@ -400,8 +440,32 @@ def verify_submit(request):
 
         live_embedding = face_result['embedding']
 
-        # Use multi-template comparison (best score across all stored templates)
-        comparison = compare_with_all_embeddings(live_embedding, beneficiary)
+        # Compare against representative's face if rep claim, else beneficiary's
+        if representative:
+            if not representative.has_face_data:
+                attempt.decision = VerificationAttempt.DECISION_DENIED
+                attempt.decision_reason = 'Denied: representative has no registered face data.'
+                attempt.save()
+                return JsonResponse({
+                    'success': True,
+                    'decision': 'denied',
+                    'reason': attempt.decision_reason,
+                    'redirect': f'/verification/result/{attempt.id}/',
+                })
+            rep_result = compare_with_stored(live_embedding, representative.face_embedding.embedding_data)
+            if not rep_result['success']:
+                comparison = {'success': False, 'error': rep_result.get('error', 'Rep comparison failed'), 'score': 0.0}
+            else:
+                comparison = {
+                    'success': True,
+                    'score': rep_result['score'],
+                    'matched_template': 'representative_primary',
+                    'templates_checked': 1,
+                    'all_scores': [{'template': 'representative_primary', 'score': rep_result['score']}],
+                }
+        else:
+            # Use multi-template comparison (best score across all stored templates)
+            comparison = compare_with_all_embeddings(live_embedding, beneficiary)
 
         if not comparison['success']:
             attempt.decision = VerificationAttempt.DECISION_DENIED
@@ -539,6 +603,7 @@ def verify_submit(request):
                     beneficiary=beneficiary,
                     stipend_event=stipend_event,
                     claimant_type=claimant_type,
+                    representative=representative,
                     claimed_by=request.user,
                     verification_attempt=attempt,
                     status=ClaimRecord.STATUS_CLAIMED,
@@ -678,10 +743,19 @@ def verify_result(request, attempt_id):
         VerificationAttempt.DECISION_DENIED,
         VerificationAttempt.DECISION_NOT_VERIFIED,
     ):
+        reason_lower = (attempt.decision_reason or '').lower()
         if attempt.liveness_passed is False:
             denial_reason_label = 'liveness_failed'
         elif attempt.similarity_score is not None and attempt.similarity_score < attempt.threshold_used:
-            denial_reason_label = 'face_mismatch'
+            if attempt.claimant_type == VerificationAttempt.CLAIMANT_REPRESENTATIVE:
+                denial_reason_label = 'rep_face_mismatch'
+            else:
+                denial_reason_label = 'face_mismatch'
+        elif attempt.claimant_type == VerificationAttempt.CLAIMANT_REPRESENTATIVE:
+            if 'no registered face data' in reason_lower or 'no face data' in reason_lower:
+                denial_reason_label = 'rep_no_face'
+            elif 'not found or no longer active' in reason_lower or 'deactivated' in reason_lower:
+                denial_reason_label = 'rep_not_active'
 
     # Check if there is a pending manual verification request for this attempt
     pending_manual_request = ManualVerificationRequest.objects.filter(
@@ -708,6 +782,15 @@ def verify_fallback(request, attempt_id):
     attempt = get_object_or_404(VerificationAttempt, pk=attempt_id)
     from django.contrib import messages
 
+    # Representatives must use biometric face verification — ID-only is blocked.
+    if attempt.claimant_type == VerificationAttempt.CLAIMANT_REPRESENTATIVE:
+        messages.error(
+            request,
+            'Representatives must verify using face scan. '
+            'ID-only verification is not permitted for representatives.'
+        )
+        return redirect('beneficiaries:beneficiary_detail', pk=attempt.beneficiary.pk)
+
     if request.method == 'POST':
         id_type = request.POST.get('id_type', '').strip()
         id_verified = request.POST.get('id_verified') == 'true'
@@ -717,7 +800,7 @@ def verify_fallback(request, attempt_id):
         attempt.fallback_id_verified = id_verified
         attempt.fallback_id_type = id_type
 
-        is_representative = attempt.claimant_type == VerificationAttempt.CLAIMANT_REPRESENTATIVE
+        is_representative = False  # always False now (blocked above)
 
         if is_representative:
             # ── Representative path: direct ID verification — no face match involved ──
@@ -1822,3 +1905,68 @@ def registration_review(request, pk):
     return render(request, 'verification/registration_review.html', {
         'beneficiary': beneficiary,
     })
+
+
+# ─── Representative Face Registration ────────────────────────────────────────
+
+@login_required
+@require_http_methods(['GET'])
+def register_rep_face(request, pk, rep_pk):
+    """Show the face capture UI for a representative."""
+    beneficiary = get_object_or_404(Beneficiary, pk=pk)
+    rep = get_object_or_404(Representative, pk=rep_pk, beneficiary=beneficiary)
+    return render(request, 'verification/register_rep_face.html', {
+        'beneficiary': beneficiary,
+        'representative': rep,
+        'using_mock': is_using_mock_model(),
+        'model_load_error': get_model_load_error() if is_using_mock_model() else None,
+    })
+
+
+@login_required
+@require_POST
+def register_rep_face_submit(request, pk, rep_pk):
+    """Ajax endpoint to save a representative's face embedding."""
+    beneficiary = get_object_or_404(Beneficiary, pk=pk)
+    rep = get_object_or_404(Representative, pk=rep_pk, beneficiary=beneficiary)
+    try:
+        data = json.loads(request.body)
+        image_data = data.get('image', '')
+        if not image_data:
+            return JsonResponse({'success': False, 'error': 'No image provided.'})
+
+        if ',' in image_data:
+            image_data = image_data.split(',')[1]
+        image_bytes = base64.b64decode(image_data)
+
+        result = process_face_for_registration(image_bytes)
+        if not result['success']:
+            return JsonResponse({'success': False, 'error': result['error']})
+
+        RepresentativeFaceEmbedding.objects.update_or_create(
+            representative=rep,
+            defaults={
+                'embedding_data': result['encrypted_embedding'],
+                'created_by': request.user,
+            },
+        )
+
+        AuditLog.log(
+            action=AuditLog.ACTION_REGISTER,
+            user=request.user,
+            target_type='Representative',
+            target_id=rep.id,
+            details={
+                'representative_name': rep.full_name,
+                'beneficiary_id': beneficiary.beneficiary_id,
+                'action': 'face_registered',
+            },
+            request=request,
+        )
+        return JsonResponse({
+            'success': True,
+            'message': f'Face registered for {rep.full_name}.',
+            'redirect': f'/dashboard/beneficiaries/{beneficiary.pk}/',
+        })
+    except Exception as e:
+        return JsonResponse({'success': False, 'error': str(e)})

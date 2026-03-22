@@ -155,6 +155,33 @@ class FaceEmbedding(models.Model):
         return f'Embedding for {self.beneficiary.full_name}'
 
 
+class RepresentativeFaceEmbedding(models.Model):
+    """
+    Encrypted FaceNet embedding for a registered representative.
+    A representative cannot be used for claiming until this record exists.
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    representative = models.OneToOneField(
+        'beneficiaries.Representative',
+        on_delete=models.CASCADE,
+        related_name='face_embedding',
+    )
+    embedding_data = models.BinaryField()
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+    )
+
+    class Meta:
+        db_table = 'fans_rep_face_embeddings'
+
+    def __str__(self):
+        return f'Embedding for {self.representative.full_name}'
+
+
 class VerificationAttempt(models.Model):
     DECISION_VERIFIED = 'verified'
     DECISION_NOT_VERIFIED = 'not_verified'
@@ -200,6 +227,13 @@ class VerificationAttempt(models.Model):
         max_length=20,
         choices=CLAIMANT_CHOICES,
         default=CLAIMANT_BENEFICIARY,
+    )
+    # Which representative was verified (null for beneficiary claimants)
+    representative = models.ForeignKey(
+        'beneficiaries.Representative',
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name='verification_attempts',
     )
 
     # Liveness result
@@ -538,6 +572,13 @@ class ClaimRecord(models.Model):
         max_length=20,
         choices=VerificationAttempt.CLAIMANT_CHOICES,
         default=VerificationAttempt.CLAIMANT_BENEFICIARY,
+    )
+    # Which representative was verified (null for beneficiary claimants)
+    representative = models.ForeignKey(
+        'beneficiaries.Representative',
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name='claim_records',
     )
     claimed_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,

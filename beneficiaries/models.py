@@ -149,3 +149,46 @@ class Beneficiary(models.Model):
 
     def __str__(self):
         return f'{self.full_name} ({self.beneficiary_id})'
+
+
+class Representative(models.Model):
+    """
+    A biometrically-registered representative authorized to claim on behalf of a beneficiary.
+    Each representative must have face data captured before they can be used in verification.
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    beneficiary = models.ForeignKey(
+        Beneficiary,
+        on_delete=models.CASCADE,
+        related_name='representatives',
+    )
+    first_name = models.CharField(max_length=100)
+    last_name = models.CharField(max_length=100)
+    relationship = models.CharField(max_length=100)
+    contact_number = models.CharField(max_length=20)
+    valid_id_type = models.CharField(max_length=50)
+    valid_id_number = models.CharField(max_length=50)
+    is_active = models.BooleanField(default=True)
+    registered_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name='registered_representatives',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'fans_representatives'
+        ordering = ['last_name', 'first_name']
+
+    @property
+    def full_name(self):
+        return f'{self.first_name} {self.last_name}'.strip()
+
+    @property
+    def has_face_data(self):
+        return hasattr(self, 'face_embedding')
+
+    def __str__(self):
+        return f'{self.full_name} (Rep for {self.beneficiary.beneficiary_id})'

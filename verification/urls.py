@@ -25,4 +25,6 @@ urlpatterns = [
     path('update-face/<uuid:pk>/submit/', views.update_face_submit, name='update_face_submit'),
     path('registration-review/', views.registration_review_list, name='registration_review_list'),
     path('registration-review/<uuid:pk>/', views.registration_review, name='registration_review'),
+    path('register-rep-face/<uuid:pk>/<uuid:rep_pk>/', views.register_rep_face, name='register_rep_face'),
+    path('register-rep-face/<uuid:pk>/<uuid:rep_pk>/submit/', views.register_rep_face_submit, name='register_rep_face_submit'),
 ]

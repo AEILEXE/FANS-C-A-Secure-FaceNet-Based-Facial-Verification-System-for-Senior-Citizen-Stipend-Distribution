@@ -39,7 +39,15 @@
         VERIFIED
         {% if attempt.demo_mode_active %}<span class="demo-mode-badge ms-2">DEMO</span>{% endif %}
       </div>
-      <div class="result-sub">Identity confirmed &mdash; stipend may be released</div>
+      <div class="result-sub">
+        {% if attempt.claimant_type == 'representative' and attempt.representative %}
+          Representative <strong>{{ attempt.representative.full_name }}</strong> identity confirmed &mdash; stipend may be released
+        {% elif attempt.claimant_type == 'representative' %}
+          Representative identity confirmed &mdash; stipend may be released
+        {% else %}
+          Beneficiary identity confirmed &mdash; stipend may be released
+        {% endif %}
+      </div>
     </div>
   </div>
   {% elif attempt.decision == 'denied' %}
@@ -49,6 +57,9 @@
       <div class="result-label">
         {% if denial_reason_label == 'liveness_failed' %}DENIED &mdash; LIVENESS FAILED
         {% elif denial_reason_label == 'face_mismatch' %}DENIED &mdash; FACE MISMATCH
+        {% elif denial_reason_label == 'rep_face_mismatch' %}DENIED &mdash; REPRESENTATIVE FACE MISMATCH
+        {% elif denial_reason_label == 'rep_no_face' %}DENIED &mdash; NO REP FACE DATA
+        {% elif denial_reason_label == 'rep_not_active' %}DENIED &mdash; REPRESENTATIVE INACTIVE
         {% else %}NOT VERIFIED{% endif %}
         {% if attempt.demo_mode_active %}<span class="demo-mode-badge ms-2">DEMO</span>{% endif %}
       </div>
@@ -57,6 +68,12 @@
           Anti-spoofing or head movement challenge was not passed
         {% elif denial_reason_label == 'face_mismatch' %}
           Face did not match the enrolled biometric data
+        {% elif denial_reason_label == 'rep_face_mismatch' %}
+          Representative's face did not match their registered biometric data
+        {% elif denial_reason_label == 'rep_no_face' %}
+          Representative has no registered face data &mdash; register their face before verifying
+        {% elif denial_reason_label == 'rep_not_active' %}
+          Representative is no longer active for this beneficiary
         {% else %}
           Identity could not be confirmed
         {% endif %}
@@ -123,6 +140,15 @@
       <div class="fw-bold fs-5">{{ attempt.beneficiary.full_name }}</div>
       <div class="font-mono text-muted small">{{ attempt.beneficiary.beneficiary_id }}</div>
       <div class="text-muted small">{{ attempt.beneficiary.municipality }}, {{ attempt.beneficiary.province }}</div>
+      {% if attempt.claimant_type == 'representative' and attempt.representative %}
+      <div class="mt-2 small d-flex align-items-center gap-2">
+        <i class="bi bi-person-badge text-primary"></i>
+        <span>
+          <strong>Representative:</strong> {{ attempt.representative.full_name }}
+          <span class="text-muted">({{ attempt.representative.relationship|default:"Representative" }})</span>
+        </span>
+      </div>
+      {% endif %}
       {% if attempt.stipend_event %}
       <div class="mt-2 small">
         <i class="bi bi-calendar-check text-qc-blue me-1"></i>

@@ -25,6 +25,12 @@
           <i class="bi bi-people me-1"></i>Representative claiming
         {% endif %}
       </span>
+      {% if claimant_type == 'representative' and representative %}
+      <div class="mt-1 small text-muted">
+        Verifying: <strong>{{ representative.full_name }}</strong>
+        ({{ representative.relationship|default:"Representative" }})
+      </div>
+      {% endif %}
     </div>
     <span class="badge bg-secondary font-mono" style="font-size:0.7rem; max-width:130px; overflow:hidden; text-overflow:ellipsis;">
       {{ session_id|truncatechars:10 }}&hellip;

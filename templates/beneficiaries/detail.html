@@ -23,12 +23,18 @@
          class="btn btn-success">
         <i class="bi bi-camera-video me-1"></i> Verify Beneficiary
       </a>
-      {% if beneficiary.has_representative %}
-      <a href="{% url 'verification:verify_start' beneficiary.pk %}?claimant=representative"
+      {% for rep in representatives %}{% if rep.is_active and rep.has_face_data %}
+      <a href="{% url 'verification:verify_start' beneficiary.pk %}?claimant=representative&rep_id={{ rep.pk }}"
          class="btn btn-outline-primary">
-        <i class="bi bi-people me-1"></i> Verify Representative
+        <i class="bi bi-people me-1"></i> Verify {{ rep.first_name }}
       </a>
-      {% endif %}
+      {% endif %}{% endfor %}
+      {% for rep in representatives %}{% if rep.is_active and not rep.has_face_data %}
+      <a href="{% url 'verification:register_rep_face' beneficiary.pk rep.pk %}"
+         class="btn btn-outline-warning" title="{{ rep.full_name }} has no face data — register before verifying">
+        <i class="bi bi-exclamation-triangle me-1"></i> {{ rep.first_name }}: Register Face
+      </a>
+      {% endif %}{% endfor %}
       {% else %}
       <span class="badge bg-warning text-dark p-2 fs-6">
         <i class="bi bi-exclamation-triangle me-1"></i> No face embedding &mdash; re-registration required
@@ -241,24 +247,95 @@
     </div>
     {% endif %}
 
-    {% if beneficiary.has_representative %}
+    {# ── Representatives ─────────────────────────────────────────────── #}
     <div class="card">
-      <div class="card-header bg-qc-blue text-white">
-        <i class="bi bi-people me-2"></i>Authorized Representative
+      <div class="card-header bg-qc-blue text-white d-flex justify-content-between align-items-center">
+        <span><i class="bi bi-people me-2"></i>Authorized Representatives</span>
+        <span class="badge bg-light text-dark">{{ representatives|length }}</span>
       </div>
-      <div class="card-body p-0">
-        <table class="table table-sm table-borderless mb-0">
-          <tbody>
-            <tr><th class="text-muted ps-3" style="width:42%;">Name</th><td>{{ beneficiary.rep_first_name }} {{ beneficiary.rep_last_name }}</td></tr>
-            <tr><th class="text-muted ps-3">Relationship</th><td>{{ beneficiary.rep_relationship }}</td></tr>
-            <tr><th class="text-muted ps-3">Contact</th><td>{{ beneficiary.rep_contact }}</td></tr>
-            <tr><th class="text-muted ps-3">ID Type</th><td>{{ beneficiary.rep_id_type }}</td></tr>
-            <tr><th class="text-muted ps-3">ID Number</th><td class="font-mono small">{{ beneficiary.rep_id_number }}</td></tr>
-          </tbody>
-        </table>
+
+      {% for rep in representatives %}
+      <div class="p-3 {% if not forloop.last %}border-bottom{% endif %}">
+        <div class="d-flex justify-content-between align-items-start gap-2">
+          <div>
+            <div class="fw-semibold">{{ rep.full_name }}
+              {% if not rep.is_active %}<span class="badge bg-secondary ms-1 small">Inactive</span>{% endif %}
+            </div>
+            <div class="small text-muted">{{ rep.relationship|default:"&mdash;" }} &bull; {{ rep.contact_number }}</div>
+            <div class="small text-muted">ID: {{ rep.valid_id_type }} {{ rep.valid_id_number }}</div>
+            <div class="mt-1">
+              {% if rep.has_face_data %}
+              <span class="badge bg-success small"><i class="bi bi-check-circle me-1"></i>Face registered</span>
+              {% else %}
+              <span class="badge bg-danger small"><i class="bi bi-exclamation-triangle me-1"></i>No face data</span>
+              {% endif %}
+            </div>
+          </div>
+          <div class="d-flex flex-column gap-1 align-items-end flex-shrink-0">
+            {% if rep.is_active %}
+            <a href="{% url 'verification:register_rep_face' beneficiary.pk rep.pk %}"
+               class="btn btn-sm {% if rep.has_face_data %}btn-outline-secondary{% else %}btn-warning{% endif %}"
+               title="{% if rep.has_face_data %}Update face data{% else %}Register face (required before verifying){% endif %}">
+              <i class="bi bi-camera me-1"></i>{% if rep.has_face_data %}Update Face{% else %}Register Face{% endif %}
+            </a>
+            {% if rep.has_face_data and beneficiary.status == 'active' %}
+            <a href="{% url 'verification:verify_start' beneficiary.pk %}?claimant=representative&rep_id={{ rep.pk }}"
+               class="btn btn-sm btn-outline-primary">
+              <i class="bi bi-camera-video me-1"></i>Verify Rep
+            </a>
+            {% endif %}
+            <form method="POST"
+                  action="{% url 'beneficiaries:deactivate_representative' beneficiary.pk rep.pk %}"
+                  onsubmit="return confirm('Deactivate {{ rep.full_name }} as representative?')">
+              {% csrf_token %}
+              <button type="submit" class="btn btn-sm btn-outline-danger">Deactivate</button>
+            </form>
+            {% endif %}
+          </div>
+        </div>
       </div>
+      {% empty %}
+      <div class="p-3 text-muted small text-center">No representatives registered.</div>
+      {% endfor %}
+
+      {% if beneficiary.status == 'active' %}
+      <div class="card-footer bg-light p-2">
+        <button class="btn btn-sm btn-outline-primary w-100" data-bs-toggle="collapse" data-bs-target="#addRepForm">
+          <i class="bi bi-person-plus me-1"></i> Add Representative
+        </button>
+        <div class="collapse mt-2" id="addRepForm">
+          <form method="POST" action="{% url 'beneficiaries:add_representative' beneficiary.pk %}" class="p-2">
+            {% csrf_token %}
+            <div class="row g-2">
+              <div class="col-6">
+                <input name="rep_first_name" class="form-control form-control-sm" placeholder="First Name *" required>
+              </div>
+              <div class="col-6">
+                <input name="rep_last_name" class="form-control form-control-sm" placeholder="Last Name *" required>
+              </div>
+              <div class="col-12">
+                <input name="rep_relationship" class="form-control form-control-sm" placeholder="Relationship (e.g. Son, Daughter)">
+              </div>
+              <div class="col-12">
+                <input name="rep_contact" class="form-control form-control-sm" placeholder="Contact Number *" required>
+              </div>
+              <div class="col-6">
+                <input name="rep_id_type" class="form-control form-control-sm" placeholder="ID Type *" required>
+              </div>
+              <div class="col-6">
+                <input name="rep_id_number" class="form-control form-control-sm" placeholder="ID Number *" required>
+              </div>
+              <div class="col-12">
+                <button type="submit" class="btn btn-sm btn-primary w-100">
+                  <i class="bi bi-save me-1"></i> Save Representative
+                </button>
+              </div>
+            </div>
+          </form>
+        </div>
+      </div>
+      {% endif %}
     </div>
-    {% endif %}
 
   </div>
 
@@ -293,6 +370,9 @@
               <td>
                 {% if c.claimant_type == 'representative' %}
                   <span class="badge bg-primary small">Rep.</span>
+                  {% if c.representative %}
+                  <div class="text-muted" style="font-size:0.72rem;">{{ c.representative.full_name }}</div>
+                  {% endif %}
                 {% else %}
                   <span class="badge bg-secondary small">Self</span>
                 {% endif %}
@@ -365,6 +445,9 @@
               <td>
                 {% if a.claimant_type == 'representative' %}
                   <span class="badge bg-primary small">Rep.</span>
+                  {% if a.representative %}
+                  <div class="text-muted" style="font-size:0.72rem;">{{ a.representative.full_name }}</div>
+                  {% endif %}
                 {% else %}
                   <span class="badge bg-secondary small">Self</span>
                 {% endif %}

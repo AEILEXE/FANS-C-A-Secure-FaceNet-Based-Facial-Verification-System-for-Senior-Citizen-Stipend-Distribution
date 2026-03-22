@@ -8,7 +8,7 @@ from django.views.decorators.http import require_http_methods, require_POST
 from django.http import JsonResponse
 from django.utils import timezone
 
-from .models import Beneficiary
+from .models import Beneficiary, Representative
 from .forms import BeneficiaryInfoForm, BeneficiaryEditForm, RepresentativeForm, ConsentForm
 from verification.models import FaceEmbedding
 from verification.face_utils import process_face_for_registration, check_duplicate_face
@@ -88,11 +88,16 @@ def beneficiary_detail(request, pk):
     beneficiary = get_object_or_404(Beneficiary, pk=pk)
     has_embedding = hasattr(beneficiary, 'face_embedding')
     from verification.models import VerificationAttempt, ClaimRecord, StipendEvent
-    attempts = VerificationAttempt.objects.filter(beneficiary=beneficiary).order_by('-timestamp')[:20]
+    attempts = (
+        VerificationAttempt.objects
+        .filter(beneficiary=beneficiary)
+        .select_related('representative')
+        .order_by('-timestamp')[:20]
+    )
     claims = (
         ClaimRecord.objects
         .filter(beneficiary=beneficiary)
-        .select_related('stipend_event', 'claimed_by', 'approved_by', 'verification_attempt')
+        .select_related('stipend_event', 'claimed_by', 'approved_by', 'verification_attempt', 'representative')
         .order_by('-claimed_at')
     )
     today = timezone.now().date()
@@ -107,6 +112,11 @@ def beneficiary_detail(request, pk):
     pending_special = beneficiary.special_claim_requests.filter(
         status='pending'
     ).select_related('stipend_event').first() if active_event else None
+    representatives = (
+        beneficiary.representatives
+        .select_related('face_embedding')
+        .order_by('-is_active', 'last_name')
+    )
     return render(request, 'beneficiaries/detail.html', {
         'beneficiary': beneficiary,
         'has_embedding': has_embedding,
@@ -115,6 +125,7 @@ def beneficiary_detail(request, pk):
         'active_event': active_event,
         'current_event_claimed': current_event_claimed,
         'pending_special': pending_special,
+        'representatives': representatives,
     })
 
 
@@ -452,6 +463,101 @@ def register_submit_face(request):
 
     except Exception as e:
         return JsonResponse({'success': False, 'error': f'Registration failed: {str(e)}'})
+
+
+# ─── Representative Management ───────────────────────────────────────────────
+
+@login_required
+@require_http_methods(['POST'])
+def add_representative(request, pk):
+    """Add an authorized representative to a beneficiary."""
+    beneficiary = get_object_or_404(Beneficiary, pk=pk)
+    first_name = request.POST.get('rep_first_name', '').strip()
+    last_name = request.POST.get('rep_last_name', '').strip()
+    relationship = request.POST.get('rep_relationship', '').strip()
+    contact_number = request.POST.get('rep_contact', '').strip()
+    valid_id_type = request.POST.get('rep_id_type', '').strip()
+    valid_id_number = request.POST.get('rep_id_number', '').strip()
+
+    errors = []
+    if not first_name:
+        errors.append('First name is required.')
+    if not last_name:
+        errors.append('Last name is required.')
+    if not contact_number:
+        errors.append('Contact number is required.')
+    if not valid_id_type:
+        errors.append('Valid ID type is required.')
+    if not valid_id_number:
+        errors.append('Valid ID number is required.')
+
+    if errors:
+        for e in errors:
+            messages.error(request, e)
+        return redirect('beneficiaries:beneficiary_detail', pk=pk)
+
+    rep = Representative.objects.create(
+        beneficiary=beneficiary,
+        first_name=first_name,
+        last_name=last_name,
+        relationship=relationship,
+        contact_number=contact_number,
+        valid_id_type=valid_id_type,
+        valid_id_number=valid_id_number,
+        registered_by=request.user,
+    )
+    # Also update legacy inline fields for backward compat
+    beneficiary.has_representative = True
+    beneficiary.rep_first_name = first_name
+    beneficiary.rep_last_name = last_name
+    beneficiary.rep_relationship = relationship
+    beneficiary.rep_contact = contact_number
+    beneficiary.rep_id_type = valid_id_type
+    beneficiary.rep_id_number = valid_id_number
+    beneficiary.save()
+
+    AuditLog.log(
+        action=AuditLog.ACTION_UPDATE,
+        user=request.user,
+        target_type='Representative',
+        target_id=rep.id,
+        details={
+            'beneficiary_id': beneficiary.beneficiary_id,
+            'representative_name': rep.full_name,
+            'action': 'Representative added',
+        },
+        request=request,
+    )
+    messages.success(
+        request,
+        f'{rep.full_name} added as representative. '
+        'Please register their face data before they can verify.'
+    )
+    return redirect('beneficiaries:beneficiary_detail', pk=pk)
+
+
+@login_required
+@require_POST
+def deactivate_representative(request, pk, rep_pk):
+    """Deactivate a representative (soft delete)."""
+    beneficiary = get_object_or_404(Beneficiary, pk=pk)
+    rep = get_object_or_404(Representative, pk=rep_pk, beneficiary=beneficiary)
+    rep.is_active = False
+    rep.save()
+    AuditLog.log(
+        action=AuditLog.ACTION_UPDATE,
+        user=request.user,
+        target_type='Representative',
+        target_id=rep.id,
+        details={
+            'beneficiary_id': beneficiary.beneficiary_id,
+            'representative_name': rep.full_name,
+            'action': 'Representative deactivated',
+        },
+        request=request,
+    )
+    messages.warning(request, f'{rep.full_name} has been deactivated as representative.')
+    return redirect('beneficiaries:beneficiary_detail', pk=pk)
 
 
 # ─── Address Data API ─────────────────────────────────────────────────────────
