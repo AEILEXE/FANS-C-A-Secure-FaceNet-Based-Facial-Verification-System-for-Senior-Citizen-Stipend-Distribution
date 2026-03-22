@@ -37,7 +37,7 @@
     <div class="result-text">
       <div class="result-label">
         VERIFIED
-        {% if attempt.demo_mode_active %}<span class="demo-mode-badge ms-2">DEMO</span>{% endif %}
+        {% if attempt.demo_mode_active %}<span class="demo-mode-badge ms-2">PILOT</span>{% endif %}
       </div>
       <div class="result-sub">
         {% if attempt.claimant_type == 'representative' and attempt.representative %}
@@ -61,7 +61,7 @@
         {% elif denial_reason_label == 'rep_no_face' %}DENIED &mdash; NO REP FACE DATA
         {% elif denial_reason_label == 'rep_not_active' %}DENIED &mdash; REPRESENTATIVE INACTIVE
         {% else %}NOT VERIFIED{% endif %}
-        {% if attempt.demo_mode_active %}<span class="demo-mode-badge ms-2">DEMO</span>{% endif %}
+        {% if attempt.demo_mode_active %}<span class="demo-mode-badge ms-2">PILOT</span>{% endif %}
       </div>
       <div class="result-sub">
         {% if denial_reason_label == 'liveness_failed' %}
@@ -87,7 +87,7 @@
       <div class="result-label">
         {% if pending_manual_request %}PENDING ADMIN APPROVAL
         {% else %}MANUAL REVIEW{% endif %}
-        {% if attempt.demo_mode_active %}<span class="demo-mode-badge ms-2">DEMO</span>{% endif %}
+        {% if attempt.demo_mode_active %}<span class="demo-mode-badge ms-2">PILOT</span>{% endif %}
       </div>
       <div class="result-sub">
         {% if pending_manual_request %}

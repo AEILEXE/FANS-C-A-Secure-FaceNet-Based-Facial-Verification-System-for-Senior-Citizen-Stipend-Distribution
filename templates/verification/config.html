@@ -92,12 +92,12 @@
           </tr>
           {% endif %}
           <tr>
-            <th class="text-muted ps-3">Demo Mode</th>
+            <th class="text-muted ps-3">Pilot Mode</th>
             <td>
               {% if demo_mode %}
-                <span class="badge bg-warning text-dark">On (threshold: {{ demo_threshold }})</span>
+                <span class="badge bg-warning text-dark">On &mdash; Assisted Rollout (threshold: {{ demo_threshold }})</span>
               {% else %}
-                <span class="badge bg-secondary">Off (threshold: {{ current_threshold }})</span>
+                <span class="badge bg-success">Off &mdash; Full Enforcement (threshold: {{ current_threshold }})</span>
               {% endif %}
             </td>
           </tr>
@@ -128,7 +128,7 @@
               {% if liveness_required %}
                 <span class="badge bg-danger">Strict &mdash; blocks verification on failure</span>
               {% else %}
-                <span class="badge bg-warning text-dark">Dev &mdash; non-blocking (logged only)</span>
+                <span class="badge bg-warning text-dark">Assisted Rollout &mdash; non-blocking (logged only)</span>
               {% endif %}
             </td>
           </tr>

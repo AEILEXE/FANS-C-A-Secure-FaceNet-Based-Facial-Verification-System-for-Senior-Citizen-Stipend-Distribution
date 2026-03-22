@@ -538,7 +538,7 @@ a:hover { color: var(--qc-blue-dark); }
   color: var(--qc-gold);
 }
 
-/* ── Demo Mode Banner ──────────────────────────────────── */
+/* ── Pilot Mode Badge ──────────────────────────────────── */
 .demo-mode-badge {
   display: inline-flex;
   align-items: center;

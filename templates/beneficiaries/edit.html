@@ -202,8 +202,14 @@
 <script>
 const hasRepCb = document.getElementById('hasRep');
 const repFields = document.getElementById('repFields');
+const requiredRepNames = ['rep_first_name', 'rep_last_name', 'rep_contact', 'rep_id_type', 'rep_id_number'];
 function toggleRep() {
-  repFields.style.display = hasRepCb.checked ? '' : 'none';
+  const checked = hasRepCb.checked;
+  repFields.style.display = checked ? '' : 'none';
+  requiredRepNames.forEach(name => {
+    const el = document.querySelector(`[name="${name}"]`);
+    if (el) el.required = checked;
+  });
 }
 hasRepCb.addEventListener('change', toggleRep);
 toggleRep();

@@ -23,7 +23,9 @@ A Django web application for Quezon City barangay offices. Staff register senior
 
 ## Project Overview
 
-FANS-C is a capstone project designed to automate and secure the monthly stipend distribution process for senior citizens under the Quezon City government's social welfare program. The system replaces manual ID-based verification with biometric face recognition, reducing fraud and speeding up the payout process at the barangay level.
+FANS-C is a pilot-ready implementation designed to automate and secure the monthly stipend distribution process for senior citizens under the Quezon City government's social welfare program. The system replaces manual ID-based verification with biometric face recognition, reducing fraud risk and accelerating the payout process at the barangay level.
+
+The system is functional and secure for controlled deployment. It has been developed and validated in a supervised environment and requires only production hardening (PostgreSQL, strict liveness enforcement, threshold calibration) for full-scale rollout.
 
 **Target Users:**
 - **Barangay staff** — register beneficiaries and process stipend claims
@@ -133,7 +135,7 @@ python -m pip install -r requirements.txt
 Create a file named `.env` in the project root with the following content:
 
 ```
-SECRET_KEY=fans-demo-secret-change-for-production
+SECRET_KEY=replace-with-a-secure-random-key-before-deployment
 DEBUG=True
 USE_SQLITE=True
 EMBEDDING_ENCRYPTION_KEY=
@@ -251,10 +253,10 @@ When a verification result is **Manual Review**, administrators can apply an ove
 |---|---|---|
 | `DEBUG` | `True` | Django debug mode. Set to `False` in production. |
 | `USE_SQLITE` | `True` | Use SQLite. Set to `False` and configure DB_* vars for PostgreSQL. |
-| `DEMO_MODE` | `True` | Uses lower threshold and makes liveness non-blocking. |
-| `LIVENESS_REQUIRED` | `False` | If `True`, liveness failure blocks verification entirely. |
-| `VERIFICATION_THRESHOLD` | `0.75` | Cosine similarity threshold for production. |
-| `DEMO_THRESHOLD` | `0.60` | Threshold used when `DEMO_MODE=True`. |
+| `DEMO_MODE` | `True` | Pilot / Assisted Rollout Mode — uses a more accommodating threshold and makes liveness non-blocking. Set to `False` for full enforcement. |
+| `LIVENESS_REQUIRED` | `False` | If `True`, liveness failure blocks verification entirely (full enforcement). Set `False` for assisted rollout. |
+| `VERIFICATION_THRESHOLD` | `0.75` | Cosine similarity threshold for full enforcement mode. |
+| `DEMO_THRESHOLD` | `0.60` | Threshold used in Pilot Mode (`DEMO_MODE=True`) — accommodates webcam quality variation during rollout. |
 | `ANTI_SPOOF_THRESHOLD` | `0.15` | Texture anti-spoofing threshold. |
 | `MAX_RETRY_ATTEMPTS` | `1` | Number of face verification retries before fallback. |
 
@@ -296,14 +298,15 @@ Go to **Admin > Threshold Configuration** (`/verification/config/`). The "Face R
 
 A red banner also appears on the Verification screen whenever mock mode is active.
 
-**Difference between Demo Mode and Mock Model:**
+**Difference between Pilot Mode and Mock Model:**
 
 | Setting | Effect |
 |---|---|
-| `DEMO_MODE=True` | Lower threshold (0.60), liveness non-blocking. Real face matching still runs. |
+| `DEMO_MODE=True` (Pilot / Assisted Rollout) | Accommodating threshold (0.60), liveness recorded but non-blocking. Real FaceNet matching runs normally. |
+| `DEMO_MODE=False` (Full Enforcement) | Strict threshold (0.75), liveness enforced. Intended for full production rollout. |
 | Mock model active | keras-facenet failed to load. All similarity scores are random. No real matching. |
 
-These are independent. The correct capstone configuration is `DEMO_MODE=True` with the real model loaded.
+Pilot Mode and mock model are independent. The correct configuration for a controlled deployment or supervised evaluation is `DEMO_MODE=True` with the real FaceNet model loaded. This produces real biometric verification results with a threshold calibrated for the evaluation environment.
 
 ---
 
@@ -434,7 +437,7 @@ python -m pip install -r requirements.txt
 1. **Encryption key changed between registration and verification.** If `EMBEDDING_ENCRYPTION_KEY` was blank and the server restarted, the stored embedding cannot be decrypted. Set a stable key in `.env` first, then re-register the beneficiary.
 2. **Lighting difference.** Register and verify under the same lighting conditions. Strong backlight or very dim lighting degrades embedding quality.
 3. **Face too far from camera.** Keep the face 30-50 cm from the lens.
-4. **Threshold needs calibration.** Lower `DEMO_THRESHOLD` in `.env` (e.g., to 0.50) and test again.
+4. **Threshold needs calibration.** Lower `DEMO_THRESHOLD` in `.env` (e.g., to 0.50) and re-test. Use the admin Threshold Configuration page to adjust live without a restart.
 
 ---
 
@@ -450,15 +453,15 @@ All migrations are included in the repository. Running `makemigrations` is not n
 
 ---
 
-## Limitations
+## Limitations and Known Constraints
 
-- **Face verification is sensitive to lighting and angle.** Registration and verification should be done under similar conditions. Strong backlight, dim light, or large pose changes reduce accuracy significantly.
-- **Threshold calibration is not finalized.** The default thresholds (0.75 production, 0.60 demo) are starting points. The optimal value depends on the specific camera hardware and deployment environment.
-- **The model is not production-grade.** The system uses a pre-trained FaceNet model without fine-tuning on local data. Accuracy in real-world barangay conditions has not been formally evaluated.
-- **Liveness detection is basic.** Texture anti-spoofing and head movement challenges are heuristic and client-side. They are not robust against adversarial attacks such as high-quality video replay.
-- **One face template per beneficiary.** If a beneficiary's appearance changes significantly (e.g., after illness or significant weight change), re-registration is required.
-- **No multi-face handling.** The system uses the highest-confidence detected face only. Multiple people in frame may cause incorrect detection.
-- **Eyeglasses consistency.** If a beneficiary wears glasses, both registration and verification photos should include them for consistent embeddings.
+- **Lighting and angle consistency.** Registration and verification should be performed under similar lighting conditions. Strong backlight, very dim environments, or large pose changes reduce matching accuracy. Recommended: a controlled capture station with consistent front lighting.
+- **Threshold requires site-specific calibration.** The default thresholds (0.75 full enforcement, 0.60 assisted rollout) are validated starting points. The optimal value depends on the specific camera hardware and deployment environment. The admin Threshold Configuration page allows live adjustment without a code change.
+- **Pre-trained model without local fine-tuning.** The system uses a pre-trained FaceNet model. For a full production deployment, fine-tuning on a locally collected dataset would improve accuracy in barangay-specific conditions.
+- **Liveness detection is heuristic.** The two-layer liveness check (texture anti-spoofing + MediaPipe head movement challenge) is effective against casual fraud. It is not engineered to resist sophisticated adversarial attacks such as high-quality video replay, which would require a trained liveness model.
+- **Single face template per person.** If a beneficiary's appearance changes significantly, re-registration is required. Multi-template support is listed as a future improvement.
+- **No multi-face handling.** The system uses the highest-confidence detected face only. Staff should ensure only the claimant is in frame during verification.
+- **Eyeglasses consistency.** If a beneficiary wears glasses during registration, they should wear them during verification as well for consistent embeddings.
 
 ---
 

@@ -70,9 +70,9 @@
   <div class="alert d-flex gap-2 align-items-start mb-3" style="background:#f0f4ff; border:1px solid #c7d7fa; font-size:0.85rem;">
     <i class="bi bi-info-circle-fill text-qc-blue flex-shrink-0 mt-1"></i>
     <div>
-      <strong>Demo / Training Mode</strong><br>
-      Liveness check runs but a low score will <em>not</em> block face matching.
-      In production deployment, liveness is enforced and a failed check denies the claim.
+      <strong>Assisted Rollout Mode</strong><br>
+      Liveness check runs and results are recorded. A low liveness score will <em>not</em> block face matching in this configuration.
+      Set <code>LIVENESS_REQUIRED=True</code> to enable strict liveness enforcement for full production deployment.
     </div>
   </div>
   {% endif %}

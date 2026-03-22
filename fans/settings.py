@@ -119,17 +119,17 @@ LOGOUT_REDIRECT_URL = '/accounts/login/'
 EMBEDDING_ENCRYPTION_KEY = os.getenv('EMBEDDING_ENCRYPTION_KEY', '')
 
 # ── Face Matching ─────────────────────────────────────────────────────────────
-# Default threshold for production: 0.75 (strict, well-lit enrollment)
-# Demo/dev threshold: 0.60 (forgiving of webcam quality, slight pose variation)
-# DEMO_MODE=True uses DEMO_THRESHOLD automatically.
+# Full enforcement threshold: 0.75 (strict, well-lit enrollment)
+# Pilot / assisted-rollout threshold: 0.60 (accommodates webcam quality variation during rollout)
+# DEMO_MODE=True activates assisted-rollout threshold automatically.
 DEMO_MODE = _bool_env('DEMO_MODE', default=True)
 VERIFICATION_THRESHOLD = float(os.getenv('VERIFICATION_THRESHOLD', '0.75'))
 DEMO_THRESHOLD = float(os.getenv('DEMO_THRESHOLD', '0.60'))
 MAX_RETRY_ATTEMPTS = int(os.getenv('MAX_RETRY_ATTEMPTS', '2'))
 
 # ── Liveness ──────────────────────────────────────────────────────────────────
-# LIVENESS_REQUIRED=False: liveness is logged but never blocks face matching.
-# Set to True in production for strict enforcement.
+# LIVENESS_REQUIRED=False: liveness runs and is recorded but does not block face matching (assisted rollout).
+# Set to True for full enforcement — liveness failure denies verification entirely.
 LIVENESS_REQUIRED = _bool_env('LIVENESS_REQUIRED', default=False)
 
 # Anti-spoofing texture score threshold (0.0-1.0).

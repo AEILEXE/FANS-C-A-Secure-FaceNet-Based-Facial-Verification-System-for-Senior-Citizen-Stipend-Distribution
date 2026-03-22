@@ -516,7 +516,7 @@ def verify_submit(request):
 
         liveness_warning = ''
         if not liveness_passed_client and not liveness_required:
-            liveness_warning = ' [Liveness warning — demo mode]'
+            liveness_warning = ' [Liveness warning — assisted rollout mode, non-blocking]'
 
         if score >= threshold:
             decision = VerificationAttempt.DECISION_VERIFIED

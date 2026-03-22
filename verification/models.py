@@ -260,10 +260,10 @@ class VerificationAttempt(models.Model):
     attempt_number = models.PositiveSmallIntegerField(default=1)
     session_id = models.UUIDField(default=uuid.uuid4)
 
-    # Demo mode flag — clarifies in audit logs whether threshold was relaxed
+    # Pilot mode flag — clarifies in audit logs whether assisted-rollout threshold was active
     demo_mode_active = models.BooleanField(
         default=False,
-        help_text='True if DEMO_MODE was enabled at the time of this verification.'
+        help_text='True if Pilot Mode (DEMO_MODE) was active at the time of this verification (assisted-rollout threshold applied).'
     )
 
     # Fallback
@@ -702,8 +702,8 @@ class SystemConfig(models.Model):
     def get_threshold(cls):
         """
         Returns the active verification threshold.
-        In DEMO_MODE, the DB value defaults to DEMO_THRESHOLD if not explicitly set.
-        Production mode defaults to VERIFICATION_THRESHOLD (0.75).
+        In Pilot Mode (DEMO_MODE=True), defaults to DEMO_THRESHOLD for assisted rollout.
+        Full enforcement mode defaults to VERIFICATION_THRESHOLD (0.75).
         """
         from django.conf import settings as django_settings
         demo_mode = getattr(django_settings, 'DEMO_MODE', True)
