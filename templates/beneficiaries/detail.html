@@ -81,16 +81,43 @@
   {% endfor %}
 {% endif %}
 
-{% if beneficiary.status != 'active' %}
+{% if beneficiary.status == 'pending' %}
+<div class="alert d-flex gap-3 align-items-start mb-4"
+     style="background:#f0f4ff; border:1px solid #c7d7fa;">
+  <i class="bi bi-hourglass-split text-qc-blue flex-shrink-0 mt-1" style="font-size:1.3rem;"></i>
+  <div>
+    <div class="fw-bold mb-1 text-qc-blue">Awaiting Admin Approval</div>
+    <div class="small">
+      This registration is <strong>pending review</strong>. An administrator must approve it before the beneficiary can be verified or claim a stipend.
+    </div>
+    <div class="small mt-2">
+      <strong>What you can do now:</strong>
+      <ul class="mb-0 mt-1 ps-3">
+        <li>Add an authorized representative and register their face data — this can be done before approval.</li>
+        <li>Once approved, the beneficiary (and any registered representatives) will be eligible to claim.</li>
+      </ul>
+    </div>
+    {% if user.is_admin %}
+    <div class="mt-2">
+      <a href="{% url 'verification:registration_review' beneficiary.pk %}" class="btn btn-sm btn-primary">
+        <i class="bi bi-person-check me-1"></i> Review &amp; Approve Registration
+      </a>
+    </div>
+    {% endif %}
+  </div>
+</div>
+{% elif beneficiary.status != 'active' %}
 <div class="alert d-flex gap-3 align-items-start mb-4"
      style="background:#fff7ed; border:1px solid #fdba74;">
   <i class="bi bi-person-x-fill text-warning flex-shrink-0 mt-1" style="font-size:1.3rem;"></i>
   <div>
     <div class="fw-bold mb-1">
       {% if beneficiary.status == 'deceased' %}Beneficiary is Deceased{% else %}Beneficiary is Inactive{% endif %}
+      &mdash; Not Eligible for Claims
     </div>
+    <div class="small text-muted">Inactive and deceased beneficiaries cannot be verified or claim a stipend until reactivated by an administrator.</div>
     {% if beneficiary.deactivated_at %}
-    <div class="small">
+    <div class="small mt-1">
       <strong>Date:</strong> {{ beneficiary.deactivated_at|date:"M d, Y H:i" }}
       {% if beneficiary.deactivated_by %}&bull; <strong>By:</strong> {{ beneficiary.deactivated_by.get_full_name|default:beneficiary.deactivated_by.username }}{% endif %}
     </div>
@@ -257,32 +284,58 @@
       {% for rep in representatives %}
       <div class="p-3 {% if not forloop.last %}border-bottom{% endif %}">
         <div class="d-flex justify-content-between align-items-start gap-2">
-          <div>
-            <div class="fw-semibold">{{ rep.full_name }}
-              {% if not rep.is_active %}<span class="badge bg-secondary ms-1 small">Inactive</span>{% endif %}
+          <div class="flex-grow-1">
+            <div class="fw-semibold">
+              {{ rep.full_name }}
+              {% if not rep.is_active %}
+              <span class="badge bg-secondary ms-1 small">Inactive</span>
+              {% endif %}
             </div>
-            <div class="small text-muted">{{ rep.relationship|default:"&mdash;" }} &bull; {{ rep.contact_number }}</div>
-            <div class="small text-muted">ID: {{ rep.valid_id_type }} {{ rep.valid_id_number }}</div>
-            <div class="mt-1">
-              {% if rep.has_face_data %}
-              <span class="badge bg-success small"><i class="bi bi-check-circle me-1"></i>Face registered</span>
+            <div class="small text-muted mt-1">
+              <i class="bi bi-person-heart me-1"></i>{{ rep.relationship|default:"&mdash;" }}
+              &nbsp;&bull;&nbsp;
+              <i class="bi bi-telephone me-1"></i>{{ rep.contact_number }}
+            </div>
+            <div class="small text-muted">
+              <i class="bi bi-card-text me-1"></i>{{ rep.valid_id_type }} &mdash; {{ rep.valid_id_number }}
+            </div>
+            <div class="mt-2 d-flex flex-wrap gap-1 align-items-center">
+              {% if not rep.is_active %}
+              <span class="badge bg-secondary small">
+                <i class="bi bi-slash-circle me-1"></i>Representative Deactivated
+              </span>
+              {% elif rep.has_face_data %}
+              <span class="badge bg-success small">
+                <i class="bi bi-check-circle me-1"></i>Face Registered &mdash; Ready to Verify
+              </span>
               {% else %}
-              <span class="badge bg-danger small"><i class="bi bi-exclamation-triangle me-1"></i>No face data</span>
+              <span class="badge bg-danger small">
+                <i class="bi bi-exclamation-triangle me-1"></i>No Face Data
+              </span>
+              <span class="small text-danger ms-1">
+                Cannot claim until face is registered
+              </span>
               {% endif %}
             </div>
           </div>
           <div class="d-flex flex-column gap-1 align-items-end flex-shrink-0">
             {% if rep.is_active %}
+            {% if not rep.has_face_data %}
             <a href="{% url 'verification:register_rep_face' beneficiary.pk rep.pk %}"
-               class="btn btn-sm {% if rep.has_face_data %}btn-outline-secondary{% else %}btn-warning{% endif %}"
-               title="{% if rep.has_face_data %}Update face data{% else %}Register face (required before verifying){% endif %}">
-              <i class="bi bi-camera me-1"></i>{% if rep.has_face_data %}Update Face{% else %}Register Face{% endif %}
+               class="btn btn-sm btn-warning">
+              <i class="bi bi-camera me-1"></i>Register Face
             </a>
-            {% if rep.has_face_data and beneficiary.status == 'active' %}
+            {% else %}
+            <a href="{% url 'verification:register_rep_face' beneficiary.pk rep.pk %}"
+               class="btn btn-sm btn-outline-secondary">
+              <i class="bi bi-camera me-1"></i>Update Face
+            </a>
+            {% if beneficiary.status == 'active' %}
             <a href="{% url 'verification:verify_start' beneficiary.pk %}?claimant=representative&rep_id={{ rep.pk }}"
                class="btn btn-sm btn-outline-primary">
               <i class="bi bi-camera-video me-1"></i>Verify Rep
             </a>
+            {% endif %}
             {% endif %}
             <form method="POST"
                   action="{% url 'beneficiaries:deactivate_representative' beneficiary.pk rep.pk %}"
@@ -295,39 +348,64 @@
         </div>
       </div>
       {% empty %}
-      <div class="p-3 text-muted small text-center">No representatives registered.</div>
+      <div class="p-3 text-center">
+        <i class="bi bi-people fs-2 d-block mb-1 opacity-25"></i>
+        <div class="text-muted small">No representatives registered.</div>
+        <div class="text-muted small mt-1">
+          Use the button below to add an authorized representative who can claim on behalf of the beneficiary.
+        </div>
+      </div>
       {% endfor %}
 
-      {% if beneficiary.status == 'active' %}
+      {% if beneficiary.status == 'active' or beneficiary.status == 'pending' %}
       <div class="card-footer bg-light p-2">
         <button class="btn btn-sm btn-outline-primary w-100" data-bs-toggle="collapse" data-bs-target="#addRepForm">
           <i class="bi bi-person-plus me-1"></i> Add Representative
         </button>
         <div class="collapse mt-2" id="addRepForm">
+          <div class="alert alert-info d-flex gap-2 align-items-start mb-2 p-2" style="font-size:0.82rem;">
+            <i class="bi bi-info-circle-fill flex-shrink-0 mt-1"></i>
+            <span>After saving, you will be taken directly to <strong>face capture</strong> for this representative. All fields marked <span class="text-danger">*</span> are required.</span>
+          </div>
           <form method="POST" action="{% url 'beneficiaries:add_representative' beneficiary.pk %}" class="p-2">
             {% csrf_token %}
             <div class="row g-2">
               <div class="col-6">
-                <input name="rep_first_name" class="form-control form-control-sm" placeholder="First Name *" required>
+                <label class="form-label form-label-sm mb-1">First Name <span class="text-danger">*</span></label>
+                <input name="rep_first_name" class="form-control form-control-sm" required>
               </div>
               <div class="col-6">
-                <input name="rep_last_name" class="form-control form-control-sm" placeholder="Last Name *" required>
+                <label class="form-label form-label-sm mb-1">Last Name <span class="text-danger">*</span></label>
+                <input name="rep_last_name" class="form-control form-control-sm" required>
               </div>
               <div class="col-12">
-                <input name="rep_relationship" class="form-control form-control-sm" placeholder="Relationship (e.g. Son, Daughter)">
+                <label class="form-label form-label-sm mb-1">Relationship to Beneficiary</label>
+                <input name="rep_relationship" class="form-control form-control-sm" placeholder="e.g. Son, Daughter, Spouse">
               </div>
               <div class="col-12">
-                <input name="rep_contact" class="form-control form-control-sm" placeholder="Contact Number *" required>
+                <label class="form-label form-label-sm mb-1">Contact Number <span class="text-danger">*</span></label>
+                <input name="rep_contact" class="form-control form-control-sm" required>
               </div>
               <div class="col-6">
-                <input name="rep_id_type" class="form-control form-control-sm" placeholder="ID Type *" required>
+                <label class="form-label form-label-sm mb-1">ID Type <span class="text-danger">*</span></label>
+                <select name="rep_id_type" class="form-select form-select-sm" required>
+                  <option value="">-- Select ID Type --</option>
+                  <option value="PhilSys">PhilSys ID</option>
+                  <option value="Passport">Passport</option>
+                  <option value="Drivers License">Driver's License</option>
+                  <option value="UMID">UMID</option>
+                  <option value="Voters ID">Voter's ID</option>
+                  <option value="Senior Citizen ID">Senior Citizen ID</option>
+                  <option value="Other">Other</option>
+                </select>
               </div>
               <div class="col-6">
-                <input name="rep_id_number" class="form-control form-control-sm" placeholder="ID Number *" required>
+                <label class="form-label form-label-sm mb-1">ID Number <span class="text-danger">*</span></label>
+                <input name="rep_id_number" class="form-control form-control-sm" required>
               </div>
-              <div class="col-12">
+              <div class="col-12 mt-1">
                 <button type="submit" class="btn btn-sm btn-primary w-100">
-                  <i class="bi bi-save me-1"></i> Save Representative
+                  <i class="bi bi-save me-1"></i> Save Representative &amp; Register Face
                 </button>
               </div>
             </div>

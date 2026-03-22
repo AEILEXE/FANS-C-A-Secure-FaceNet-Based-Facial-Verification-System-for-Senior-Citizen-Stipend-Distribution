@@ -479,6 +479,9 @@ def add_representative(request, pk):
     valid_id_type = request.POST.get('rep_id_type', '').strip()
     valid_id_number = request.POST.get('rep_id_number', '').strip()
 
+    from .forms import REP_ID_CHOICES
+    allowed_id_types = [v for v, _ in REP_ID_CHOICES if v]
+
     errors = []
     if not first_name:
         errors.append('First name is required.')
@@ -487,7 +490,9 @@ def add_representative(request, pk):
     if not contact_number:
         errors.append('Contact number is required.')
     if not valid_id_type:
-        errors.append('Valid ID type is required.')
+        errors.append('ID type must be selected.')
+    elif valid_id_type not in allowed_id_types:
+        errors.append(f'"{valid_id_type}" is not a valid ID type. Please select from the list.')
     if not valid_id_number:
         errors.append('Valid ID number is required.')
 
@@ -531,9 +536,9 @@ def add_representative(request, pk):
     messages.success(
         request,
         f'{rep.full_name} added as representative. '
-        'Please register their face data before they can verify.'
+        'Register their face data now to enable verification.'
     )
-    return redirect('beneficiaries:beneficiary_detail', pk=pk)
+    return redirect('verification:register_rep_face', pk=beneficiary.pk, rep_pk=rep.pk)
 
 
 @login_required

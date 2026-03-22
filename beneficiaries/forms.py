@@ -230,6 +230,22 @@ class BeneficiaryEditForm(forms.ModelForm):
             raise forms.ValidationError('Please select a province.')
         return province
 
+    def clean(self):
+        cleaned_data = super().clean()
+        has_rep = cleaned_data.get('has_representative', False)
+        if has_rep:
+            required = {
+                'rep_first_name': 'Representative first name is required when a representative is enabled.',
+                'rep_last_name': 'Representative last name is required when a representative is enabled.',
+                'rep_contact': 'Representative contact number is required when a representative is enabled.',
+                'rep_id_type': 'Representative ID type must be selected when a representative is enabled.',
+                'rep_id_number': 'Representative ID number is required when a representative is enabled.',
+            }
+            for field, msg in required.items():
+                if not cleaned_data.get(field, '').strip():
+                    self.add_error(field, msg)
+        return cleaned_data
+
 
 class RepresentativeForm(forms.ModelForm):
     class Meta:
@@ -247,6 +263,22 @@ class RepresentativeForm(forms.ModelForm):
             'rep_id_type': forms.Select(attrs={'class': 'form-select'}, choices=REP_ID_CHOICES),
             'rep_id_number': forms.TextInput(attrs={'class': 'form-control'}),
         }
+
+    def clean(self):
+        cleaned_data = super().clean()
+        has_rep = cleaned_data.get('has_representative', False)
+        if has_rep:
+            required = {
+                'rep_first_name': 'Representative first name is required.',
+                'rep_last_name': 'Representative last name is required.',
+                'rep_contact': 'Representative contact number is required.',
+                'rep_id_type': 'Representative ID type must be selected.',
+                'rep_id_number': 'Representative ID number is required.',
+            }
+            for field, msg in required.items():
+                if not cleaned_data.get(field, '').strip():
+                    self.add_error(field, msg)
+        return cleaned_data
 
 
 class ConsentForm(forms.Form):

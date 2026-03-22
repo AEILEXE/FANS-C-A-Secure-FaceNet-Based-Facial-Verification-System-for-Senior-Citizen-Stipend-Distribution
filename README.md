@@ -40,9 +40,11 @@ FANS-C is a capstone project designed to automate and secure the monthly stipend
 - Stipend event calendar with automatic claim linkage to payout periods
 - Manual review workflow with admin override and audit trail
 - Beneficiary lifecycle management (Active, Inactive, Deceased, Pending)
-- Representative claim support with ID-based fallback verification
+- **Biometric representative verification** — representatives must have their face enrolled (FaceNet) and pass liveness; ID-only is blocked
+- **Representative management** — add/deactivate representatives with required validation; ID type selected from a standardized dropdown; face enrollment can begin immediately after adding (including while beneficiary is pending approval)
+- Registration approval queue — new beneficiaries are held as Pending until an admin approves them
 - Cascading Philippine address dropdowns (QC 131+ barangays)
-- Quezon City government portal theme (Bootstrap 5)
+- Quezon City government portal theme (Bootstrap 5) with official city logo in the navbar
 
 ---
 
@@ -187,22 +189,51 @@ Open `http://localhost:8000/dashboard/` and log in.
 2. Go to **Beneficiaries > Register New**.
 3. Complete the four-step form:
    - **Step 1 — Personal Info:** Name, date of birth, gender, address, contact, government IDs.
-   - **Step 2 — Representative:** Optionally register an authorized representative (name, relationship, contact, ID).
+   - **Step 2 — Representative:** Optionally indicate that the beneficiary has an authorized representative. If enabled, all representative fields are **required**: first name, last name, contact number, ID type (dropdown), and ID number.
    - **Step 3 — Consent:** Beneficiary or guardian consents to biometric data collection.
    - **Step 4 — Face Capture:** Staff captures the beneficiary's face via webcam. The system detects and aligns the face, generates a FaceNet embedding, encrypts it, and stores it.
+4. After registration, the beneficiary is set to **Pending** status and cannot be verified until an admin approves the registration via the Registration Review queue.
+
+### Registering a Representative
+
+Representatives must be biometrically enrolled before they can verify or claim.
+
+1. Open the beneficiary's profile page.
+2. In the **Authorized Representatives** card, click **Add Representative**.
+3. Fill in all required fields: first name, last name, contact number, ID type (select from dropdown), and ID number.
+4. Click **Save Representative & Register Face** — you are taken directly to the face capture page for that representative.
+5. Capture the representative's face. Their FaceNet embedding is encrypted and stored.
+6. On the detail page, the representative now shows **Face Registered — Ready to Verify**.
+
+> **Note on Pending Beneficiaries:** Representatives can be added and have their faces enrolled even while the beneficiary is awaiting approval. Once the admin approves the beneficiary, the representative is immediately usable for verification.
+
+### Representative ID Type
+
+When adding a representative, the **ID Type** field is a required dropdown with the following choices:
+- PhilSys ID
+- Passport
+- Driver's License
+- UMID
+- Voter's ID
+- Senior Citizen ID
+- Other
+
+Free-text ID types are not accepted.
 
 ### Processing a Stipend Claim
 
 1. Go to **Verify** and search by name or beneficiary ID.
-2. Select who is claiming: **Beneficiary** (face scan) or **Representative** (ID check).
+2. Select who is claiming: **Beneficiary** (face scan) or **Representative** (biometric face scan).
 3. If claiming as beneficiary:
    - Liveness check runs (texture + head movement challenge).
    - A burst of 5 frames is captured; the sharpest is submitted for face matching.
    - Result: **Verified**, **Manual Review**, or **Not Verified**.
-   - After one failed retry, the system falls back to ID verification.
+   - After one failed retry, the system falls back to ID verification (for beneficiaries only).
 4. If claiming as representative:
-   - Staff cross-checks the presented ID type and number against the registered record.
-5. Result is recorded and linked to the active stipend event.
+   - The same liveness check and FaceNet face matching runs — but against the representative's enrolled face, not the beneficiary's.
+   - ID-only verification is **blocked** for representatives; they must pass biometric face verification.
+   - Deactivated representatives are blocked from claiming.
+5. Result is recorded and linked to the active stipend event. The claim record stores which representative performed the claim.
 
 ### Stipend Events
 

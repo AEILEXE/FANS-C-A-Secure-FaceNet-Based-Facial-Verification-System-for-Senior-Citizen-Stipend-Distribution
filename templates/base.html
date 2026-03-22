@@ -19,12 +19,8 @@
   <div class="container-fluid px-3">
 
     <a class="navbar-brand" href="{% url 'beneficiaries:dashboard' %}">
-      <!-- Replace with official system logo (recommended: 32x32 or 40x40 px PNG/SVG) -->
-      <div style="width:36px; height:36px; background:var(--qc-gold); border-radius:6px; flex-shrink:0;
-                  display:flex; align-items:center; justify-content:center; font-size:0.7rem;
-                  color:#1a4c8c; font-weight:700; letter-spacing:-0.02em; line-height:1; text-align:center;">
-        LOGO
-      </div>
+      <img src="{% static 'img/Quezon_City.svg.png' %}" alt="Quezon City Logo"
+           style="width:36px; height:36px; object-fit:contain; flex-shrink:0; border-radius:4px;">
       <span>
         FANS-C
         <span class="brand-sub">Facial Verification System &mdash; Quezon City</span>
