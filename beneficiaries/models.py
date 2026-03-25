@@ -1,9 +1,32 @@
+"""
+Beneficiary data models for FANS-C.
+
+Beneficiary        — core record for each senior citizen; includes personal info,
+                     address, status, consent flag, and offline-sync tracking fields.
+Representative     — authorised representative who may claim on behalf of a beneficiary.
+                     Representatives have their own face embedding for biometric verification.
+
+Offline-sync fields (is_synced, sync_error, last_synced_at) are managed by
+beneficiaries/sync.py and the `sync_beneficiaries` management command. See those files
+for the full offline-first sync architecture.
+"""
 from django.db import models
 from django.conf import settings
 import uuid
 
 
 class Beneficiary(models.Model):
+    """
+    Core record for a senior citizen enrolled in the Quezon City stipend programme.
+
+    Status lifecycle:
+      pending  → active  (after registration review and face enrollment)
+      active   → inactive (suspended by admin)
+      active   → deceased (recorded upon notification)
+
+    is_eligible_to_claim returns True only for STATUS_ACTIVE beneficiaries with consent.
+    Only active beneficiaries appear in verification search results.
+    """
     STATUS_ACTIVE = 'active'
     STATUS_INACTIVE = 'inactive'
     STATUS_DECEASED = 'deceased'
@@ -59,6 +82,25 @@ class Beneficiary(models.Model):
         related_name='deactivated_beneficiaries',
     )
     deactivated_reason = models.TextField(blank=True)
+
+    # Offline-first sync tracking
+    # False = record created locally and not yet sent to the central server.
+    # True  = record has been successfully synced to the central API.
+    # This field is managed by beneficiaries/sync.py and the sync_beneficiaries command.
+    is_synced = models.BooleanField(
+        default=False,
+        db_index=True,
+        help_text='True when this record has been synced to the central server.',
+    )
+    sync_error = models.TextField(
+        blank=True,
+        help_text='Last sync error message, if any. Cleared on successful sync.',
+    )
+    last_synced_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text='Timestamp of the last successful sync to the central server.',
+    )
 
     profile_picture = models.ImageField(
         upload_to='beneficiaries/profile_pics/',

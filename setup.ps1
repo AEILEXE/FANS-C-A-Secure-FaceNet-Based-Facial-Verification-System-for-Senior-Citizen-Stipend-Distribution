@@ -1,130 +1,384 @@
-# ============================================================
-# FANS-C Setup Script — PowerShell
-# Run this ONCE to set up the project from scratch.
-# ============================================================
-# REQUIREMENTS BEFORE RUNNING:
-#   1. Python 3.11 installed (NOT 3.12 or 3.13)
-#      Download: https://www.python.org/downloads/release/python-3119/
-#   2. Git (optional, only needed if you cloned the repo)
-#   3. This script must be run from the project root folder:
-#        D:\FANS\FANS-C-A-Secure-FaceNet-Based-Facial-Verification-System-...
-# ============================================================
-# HOW TO RUN (from the project root in PowerShell):
-#   Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
-#   .\setup.ps1
-# ============================================================
+#Requires -Version 5.1
+<#
+.SYNOPSIS
+    FANS-C Complete Setup Script for Windows.
+    Run ONCE after cloning or copying the project to a new device.
 
-$ErrorActionPreference = "Stop"
+.DESCRIPTION
+    Automates the entire FANS-C setup:
+      - Checks Python 3.11 (required for TensorFlow 2.13)
+      - Warns if project path is too long for Windows
+      - Creates the .venv virtual environment
+      - Upgrades pip safely
+      - Installs numpy 1.24.3 FIRST (must precede scipy and tensorflow)
+      - Installs tensorflow-cpu 2.13.1
+      - Installs all remaining requirements
+      - Auto-creates .env from .env.example if missing
+      - Auto-generates a secure Django SECRET_KEY if missing
+      - Auto-generates EMBEDDING_ENCRYPTION_KEY (Fernet) if missing
+      - Runs all database migrations
+      - Initialises system configuration
+      - Creates the default admin account
+      - Collects static files
+      - Runs the system health check
 
-Write-Host ""
-Write-Host "======================================" -ForegroundColor Cyan
-Write-Host "  FANS-C Setup Script" -ForegroundColor Cyan
-Write-Host "======================================" -ForegroundColor Cyan
-Write-Host ""
+.PARAMETER SkipStaticFiles
+    Skip the collectstatic step (useful for development restarts).
 
-# ── Step 1: Verify Python 3.11 ───────────────────────────────────────────────
-Write-Host "[1/8] Checking Python version..." -ForegroundColor Yellow
-$pyVersion = python --version 2>&1
-Write-Host "      Found: $pyVersion"
+.PARAMETER SkipAdminCreate
+    Skip creating the default admin user (use if admin already exists).
 
-if ($pyVersion -notmatch "3\.11") {
+.EXAMPLE
+    .\setup.ps1
+    .\setup.ps1 -SkipStaticFiles
+    .\setup.ps1 -SkipAdminCreate -SkipStaticFiles
+#>
+
+param(
+    [switch]$SkipStaticFiles,
+    [switch]$SkipAdminCreate
+)
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+
+# ---------------------------------------------------------------------------
+# Helper functions
+# ---------------------------------------------------------------------------
+
+function Write-Step {
+    param([int]$Step, [string]$Text)
     Write-Host ""
-    Write-Host "ERROR: Python 3.11 is required." -ForegroundColor Red
-    Write-Host "       Found: $pyVersion" -ForegroundColor Red
-    Write-Host "       Download Python 3.11 from: https://www.python.org/downloads/release/python-3119/" -ForegroundColor Red
-    Write-Host "       During install: check 'Add Python to PATH'" -ForegroundColor Red
-    exit 1
+    Write-Host "  [$Step] $Text" -ForegroundColor Cyan
 }
-Write-Host "      OK" -ForegroundColor Green
 
-# ── Step 2: Enable long paths (Windows) ──────────────────────────────────────
-Write-Host "[2/8] Enabling Windows long path support..." -ForegroundColor Yellow
-try {
-    $regPath = "HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem"
-    $current = (Get-ItemProperty -Path $regPath -Name "LongPathsEnabled" -ErrorAction SilentlyContinue).LongPathsEnabled
-    if ($current -ne 1) {
-        New-ItemProperty -Path $regPath -Name "LongPathsEnabled" -Value 1 -PropertyType DWORD -Force | Out-Null
-        Write-Host "      Enabled." -ForegroundColor Green
+function Write-OK   { param([string]$msg) Write-Host "      [OK]   $msg" -ForegroundColor Green }
+function Write-Warn { param([string]$msg) Write-Host "      [WARN] $msg" -ForegroundColor Yellow }
+function Write-Fail {
+    param([string]$msg)
+    Write-Host "      [FAIL] $msg" -ForegroundColor Red
+}
+
+function Invoke-Checked {
+    <#
+    .SYNOPSIS Run a command in the project root; exit if it fails.
+    #>
+    param([string]$Exe, [string[]]$Arguments)
+    $joined = "$Exe $($Arguments -join ' ')"
+    Write-Host "      > $joined" -ForegroundColor DarkGray
+    & $Exe @Arguments
+    if ($LASTEXITCODE -ne 0) {
+        Write-Fail "Command failed (exit code $LASTEXITCODE): $joined"
+        exit $LASTEXITCODE
+    }
+}
+
+function Update-EnvValue {
+    <#
+    .SYNOPSIS
+        Write $Key=$Value into the .env file.
+        If the key already has a non-empty value, leave it unchanged.
+        If it exists with an empty value, replace it.
+        If it is absent, append it.
+    #>
+    param([string]$EnvPath, [string]$Key, [string]$Value)
+    $raw = Get-Content $EnvPath -Raw -Encoding UTF8
+
+    if ($raw -match "(?m)^${Key}=.+") {
+        # Key exists and already has a value — do not overwrite
+        return $false
+    }
+    if ($raw -match "(?m)^${Key}=\s*$") {
+        # Key present but empty — replace the whole line
+        $escaped = [regex]::Escape($Value)
+        $raw = $raw -replace "(?m)^${Key}=\s*$", "${Key}=${Value}"
     } else {
-        Write-Host "      Already enabled." -ForegroundColor Green
+        # Key missing entirely — append
+        if (-not $raw.EndsWith("`n")) { $raw += "`n" }
+        $raw += "${Key}=${Value}`n"
+    }
+    Set-Content $EnvPath $raw -Encoding UTF8 -NoNewline
+    return $true
+}
+
+# ---------------------------------------------------------------------------
+# Banner
+# ---------------------------------------------------------------------------
+Clear-Host
+Write-Host ""
+Write-Host "  ================================================================" -ForegroundColor DarkCyan
+Write-Host "   FANS-C  |  FaceNet Facial Verification System  |  Setup v2    " -ForegroundColor Cyan
+Write-Host "  ================================================================" -ForegroundColor DarkCyan
+Write-Host ""
+Write-Host "  Project : $PSScriptRoot" -ForegroundColor DarkGray
+Write-Host "  Date    : $(Get-Date -Format 'yyyy-MM-dd HH:mm')" -ForegroundColor DarkGray
+Write-Host ""
+
+$projectRoot = $PSScriptRoot
+Set-Location $projectRoot
+
+# ---------------------------------------------------------------------------
+# Step 1: Path length check
+# ---------------------------------------------------------------------------
+Write-Step 1 "Checking project path length..."
+
+$pathLen = $projectRoot.Length
+if ($pathLen -gt 80) {
+    Write-Warn "Project path is $pathLen characters long."
+    Write-Warn "TensorFlow's wheel contains deeply nested paths that can exceed"
+    Write-Warn "Windows's default 260-character limit, causing silent failures."
+    Write-Host ""
+    Write-Host "  RECOMMENDATION: Move the project to a short path, for example:" -ForegroundColor Yellow
+    Write-Host "    C:\FANSC   or   D:\FANS" -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "  Alternatively, enable long-path support (requires Admin PowerShell):" -ForegroundColor Yellow
+    Write-Host '    New-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem" `' -ForegroundColor DarkGray
+    Write-Host '        -Name "LongPathsEnabled" -Value 1 -PropertyType DWORD -Force' -ForegroundColor DarkGray
+    Write-Host ""
+    $cont = Read-Host "  Continue anyway? (y/N)"
+    if ($cont -notmatch '^[yY]') {
+        Write-Host "  Setup cancelled. Move the project and retry." -ForegroundColor Yellow
+        exit 0
+    }
+    Write-Warn "Continuing with long path — install may fail. Retry from a shorter path if so."
+} else {
+    Write-OK "Path length is $pathLen characters (safe)"
+}
+
+# Attempt to enable long paths silently (requires admin; non-fatal if it fails)
+try {
+    $regPath = 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem'
+    $cur = (Get-ItemProperty $regPath -Name LongPathsEnabled -ErrorAction SilentlyContinue).LongPathsEnabled
+    if ($cur -ne 1) {
+        New-ItemProperty $regPath -Name LongPathsEnabled -Value 1 -PropertyType DWORD -Force | Out-Null
+        Write-OK "Windows long-path support enabled in registry"
+    } else {
+        Write-OK "Windows long-path support already enabled"
     }
 } catch {
-    Write-Host "      Could not set registry (run as Administrator to enable this)." -ForegroundColor Yellow
-    Write-Host "      Continuing — long path issues may occur during TensorFlow install." -ForegroundColor Yellow
+    Write-Warn "Could not enable long-path registry key (not running as Administrator)."
+    Write-Warn "If TensorFlow install fails with path errors, run PowerShell as Admin and retry."
 }
 
-# ── Step 3: Create virtual environment ───────────────────────────────────────
-Write-Host "[3/8] Creating virtual environment (.venv)..." -ForegroundColor Yellow
-if (Test-Path ".venv") {
-    Write-Host "      .venv already exists — skipping creation." -ForegroundColor Yellow
+# ---------------------------------------------------------------------------
+# Step 2: Python 3.11 check
+# ---------------------------------------------------------------------------
+Write-Step 2 "Checking Python 3.11..."
+
+$pythonExeGlobal = $null
+
+# Prefer the py launcher so we can explicitly request 3.11
+foreach ($candidate in @('py -3.11', 'python3.11', 'python')) {
+    try {
+        $verOut = (& cmd /c "$candidate --version 2>&1").Trim()
+        if ($verOut -match 'Python\s+3\.11\.') {
+            $pythonExeGlobal = $candidate
+            Write-OK "Found $verOut  (via: $candidate)"
+            break
+        }
+    } catch { }
+}
+
+if (-not $pythonExeGlobal) {
+    Write-Fail "Python 3.11.x not found on this system."
+    Write-Host ""
+    Write-Host "  tensorflow-cpu 2.13.x requires Python 3.11 exactly." -ForegroundColor Yellow
+    Write-Host "  Python 3.12 / 3.13 produce a DLL load error at runtime." -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "  Download Python 3.11.9 from:" -ForegroundColor Yellow
+    Write-Host "    https://www.python.org/downloads/release/python-3119/" -ForegroundColor Cyan
+    Write-Host "  During installation, check 'Add Python to PATH'." -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "  After installation, re-run this script." -ForegroundColor Yellow
+    exit 1
+}
+
+# ---------------------------------------------------------------------------
+# Step 3: Create virtual environment
+# ---------------------------------------------------------------------------
+Write-Step 3 "Setting up virtual environment..."
+
+$venvDir      = Join-Path $projectRoot '.venv'
+$venvPython   = Join-Path $venvDir 'Scripts\python.exe'
+$venvPip      = Join-Path $venvDir 'Scripts\pip.exe'
+$venvActivate = Join-Path $venvDir 'Scripts\Activate.ps1'
+
+if (Test-Path $venvDir) {
+    Write-OK ".venv already exists — skipping creation"
 } else {
-    python -m venv .venv
-    Write-Host "      Created." -ForegroundColor Green
-}
-
-# ── Step 4: Activate virtual environment ─────────────────────────────────────
-Write-Host "[4/8] Activating .venv..." -ForegroundColor Yellow
-& ".venv\Scripts\Activate.ps1"
-Write-Host "      Activated." -ForegroundColor Green
-
-# ── Step 5: Upgrade pip ───────────────────────────────────────────────────────
-Write-Host "[5/8] Upgrading pip..." -ForegroundColor Yellow
-python -m pip install --upgrade pip --quiet
-Write-Host "      Done." -ForegroundColor Green
-
-# ── Step 6: Install numpy first (must precede scipy + tensorflow) ─────────────
-Write-Host "[6/8] Installing numpy 1.24.4 first (required before scipy/tensorflow)..." -ForegroundColor Yellow
-pip install "numpy==1.24.4" --quiet
-Write-Host "      Done." -ForegroundColor Green
-
-# ── Step 7: Install all requirements ─────────────────────────────────────────
-Write-Host "[7/8] Installing requirements (this may take 5-15 minutes)..." -ForegroundColor Yellow
-Write-Host "      tensorflow-cpu downloads ~350MB. Please be patient." -ForegroundColor Yellow
-Write-Host "      keras-facenet downloads ~90MB weights on first model load." -ForegroundColor Yellow
-pip install -r requirements.txt
-Write-Host "      Done." -ForegroundColor Green
-
-# ── Step 8: Django setup ──────────────────────────────────────────────────────
-Write-Host "[8/8] Setting up Django..." -ForegroundColor Yellow
-
-# Copy .env if missing
-if (-not (Test-Path ".env")) {
-    if (Test-Path ".env.example") {
-        Copy-Item ".env.example" ".env"
-        Write-Host "      Copied .env.example -> .env" -ForegroundColor Green
-        Write-Host "      IMPORTANT: Edit .env and set EMBEDDING_ENCRYPTION_KEY" -ForegroundColor Yellow
-    } else {
-        Write-Host "      No .env found. Create one from .env.example." -ForegroundColor Yellow
+    Write-Host "      Creating .venv ..." -ForegroundColor DarkGray
+    & cmd /c "$pythonExeGlobal -m venv .venv"
+    if ($LASTEXITCODE -ne 0) {
+        Write-Fail "Failed to create .venv. Check Python installation."
+        exit 1
     }
+    Write-OK ".venv created"
 }
 
-# Generate encryption key if not set
-$envContent = Get-Content ".env" -Raw -ErrorAction SilentlyContinue
-if ($envContent -notmatch "EMBEDDING_ENCRYPTION_KEY=.+") {
-    Write-Host "      Generating EMBEDDING_ENCRYPTION_KEY..." -ForegroundColor Yellow
-    python manage.py generate_key 2>&1 | Tee-Object -Variable keyOutput
-    Write-Host "      $keyOutput" -ForegroundColor Green
+if (-not (Test-Path $venvPython)) {
+    Write-Fail ".venv appears incomplete — $venvPython not found."
+    Write-Warn "Delete the .venv folder and re-run this script."
+    exit 1
 }
 
-# Run migrations
-Write-Host "      Running migrations..." -ForegroundColor Yellow
-python manage.py migrate
+# ---------------------------------------------------------------------------
+# Step 4: Upgrade pip
+# ---------------------------------------------------------------------------
+Write-Step 4 "Upgrading pip..."
+Invoke-Checked $venvPython @('-m', 'pip', 'install', '--upgrade', 'pip', '--quiet')
+Write-OK "pip upgraded"
 
-# Collect static files
-Write-Host "      Collecting static files..." -ForegroundColor Yellow
-python manage.py collectstatic --noinput --quiet
+# ---------------------------------------------------------------------------
+# Step 5: Install dependencies in correct order
+# ---------------------------------------------------------------------------
+Write-Step 5 "Installing Python dependencies..."
+Write-Host "      tensorflow-cpu is large (~200-350 MB). First install may take 5-15 min." -ForegroundColor DarkGray
+Write-Host ""
 
+# 5a — numpy FIRST (scipy and tensorflow inspect it at install time)
+Write-Host "      [5a] numpy 1.24.3 ..." -ForegroundColor DarkGray
+Invoke-Checked $venvPip @('install', 'numpy==1.24.3', '--quiet')
+Write-OK "numpy 1.24.3 installed"
+
+# 5b — tensorflow-cpu next (installs Keras, protobuf, etc.)
+Write-Host "      [5b] tensorflow-cpu 2.13.1 ..." -ForegroundColor DarkGray
+Invoke-Checked $venvPip @('install', 'tensorflow-cpu==2.13.1', '--quiet')
+Write-OK "tensorflow-cpu 2.13.1 installed"
+
+# 5c — remainder from requirements.txt
+# Use --no-deps for numpy/tensorflow lines already installed to avoid re-resolution
+Write-Host "      [5c] Remaining requirements ..." -ForegroundColor DarkGray
+Invoke-Checked $venvPip @('install', '-r', 'requirements.txt', '--quiet')
+Write-OK "All dependencies installed"
+
+# ---------------------------------------------------------------------------
+# Step 6: Create .env from .env.example
+# ---------------------------------------------------------------------------
+Write-Step 6 "Configuring .env file..."
+
+$envFile    = Join-Path $projectRoot '.env'
+$envExample = Join-Path $projectRoot '.env.example'
+
+if (-not (Test-Path $envFile)) {
+    if (Test-Path $envExample) {
+        Copy-Item $envExample $envFile
+        Write-OK ".env created from .env.example"
+    } else {
+        Write-Fail ".env.example is missing — cannot create .env"
+        exit 1
+    }
+} else {
+    Write-OK ".env already exists"
+}
+
+# ---------------------------------------------------------------------------
+# Step 7: Auto-generate Django SECRET_KEY if missing/default
+# ---------------------------------------------------------------------------
+Write-Step 7 "Verifying SECRET_KEY..."
+
+$envRaw = Get-Content $envFile -Raw -Encoding UTF8
+$needsKey = ($envRaw -match '(?m)^SECRET_KEY\s*=\s*$') -or
+            ($envRaw -match '(?m)^SECRET_KEY\s*=\s*your-secret-key')
+
+if ($needsKey) {
+    $secretKey = & $venvPython -c @"
+import secrets, string
+chars = string.ascii_letters + string.digits + '!@#$%^&*(-_=+)'
+print(''.join(secrets.choice(chars) for _ in range(50)))
+"@
+    $changed = Update-EnvValue $envFile 'SECRET_KEY' $secretKey
+    if ($changed) {
+        Write-OK "SECRET_KEY generated and saved to .env"
+    }
+} else {
+    Write-OK "SECRET_KEY already set"
+}
+
+# ---------------------------------------------------------------------------
+# Step 8: Auto-generate EMBEDDING_ENCRYPTION_KEY if missing
+# ---------------------------------------------------------------------------
+Write-Step 8 "Verifying EMBEDDING_ENCRYPTION_KEY..."
+
+$envRaw = Get-Content $envFile -Raw -Encoding UTF8
+if ($envRaw -match '(?m)^EMBEDDING_ENCRYPTION_KEY\s*=\s*$') {
+    $fernetKey = & $venvPython -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+    $changed = Update-EnvValue $envFile 'EMBEDDING_ENCRYPTION_KEY' $fernetKey
+    if ($changed) {
+        Write-OK "EMBEDDING_ENCRYPTION_KEY generated and saved to .env"
+        Write-Host ""
+        Write-Warn "IMPORTANT: Back up your .env file securely."
+        Write-Warn "This key encrypts all stored face embeddings."
+        Write-Warn "Losing it will make registered face data permanently unreadable."
+        Write-Warn "On another device, use the SAME key from this .env file."
+        Write-Host ""
+    }
+} else {
+    Write-OK "EMBEDDING_ENCRYPTION_KEY already set"
+}
+
+# ---------------------------------------------------------------------------
+# Step 9: Database migrations
+# ---------------------------------------------------------------------------
+Write-Step 9 "Running database migrations..."
+Invoke-Checked $venvPython @('manage.py', 'migrate', '--noinput')
+Write-OK "Migrations applied"
+
+# ---------------------------------------------------------------------------
+# Step 10: Initialise system configuration
+# ---------------------------------------------------------------------------
+Write-Step 10 "Initialising system configuration..."
+Invoke-Checked $venvPython @('manage.py', 'init_config')
+Write-OK "System config initialised"
+
+# ---------------------------------------------------------------------------
+# Step 11: Create default admin user
+# ---------------------------------------------------------------------------
+if ($SkipAdminCreate) {
+    Write-Step 11 "Skipping admin user creation (-SkipAdminCreate)"
+} else {
+    Write-Step 11 "Creating default admin user..."
+    Invoke-Checked $venvPython @('manage.py', 'create_admin')
+    Write-OK "Admin user ready"
+}
+
+# ---------------------------------------------------------------------------
+# Step 12: Collect static files
+# ---------------------------------------------------------------------------
+if ($SkipStaticFiles) {
+    Write-Step 12 "Skipping static file collection (-SkipStaticFiles)"
+} else {
+    Write-Step 12 "Collecting static files..."
+    Invoke-Checked $venvPython @('manage.py', 'collectstatic', '--noinput', '--clear', '--quiet')
+    Write-OK "Static files collected"
+}
+
+# ---------------------------------------------------------------------------
+# Step 13: System health check
+# ---------------------------------------------------------------------------
+Write-Step 13 "Running system health check..."
 Write-Host ""
-Write-Host "======================================" -ForegroundColor Green
-Write-Host "  Setup complete!" -ForegroundColor Green
-Write-Host "======================================" -ForegroundColor Green
+& $venvPython manage.py check_system
 Write-Host ""
-Write-Host "Next steps:" -ForegroundColor Cyan
-Write-Host "  1. Create admin user:" -ForegroundColor Cyan
-Write-Host "       python manage.py create_admin" -ForegroundColor White
-Write-Host "  2. Start the server:" -ForegroundColor Cyan
-Write-Host "       .\run.ps1" -ForegroundColor White
-Write-Host "  3. Open in browser:  http://127.0.0.1:8000/" -ForegroundColor Cyan
+
+# ---------------------------------------------------------------------------
+# Done
+# ---------------------------------------------------------------------------
 Write-Host ""
-Write-Host "  To run the system again later, just use:  .\run.ps1" -ForegroundColor Cyan
+Write-Host "  ================================================================" -ForegroundColor DarkCyan
+Write-Host "   Setup Complete!" -ForegroundColor Green
+Write-Host "  ================================================================" -ForegroundColor DarkCyan
+Write-Host ""
+Write-Host "  To start the server:" -ForegroundColor White
+Write-Host "    .\run.ps1" -ForegroundColor Cyan
+Write-Host ""
+Write-Host "  Or manually:" -ForegroundColor White
+Write-Host "    .\.venv\Scripts\Activate.ps1" -ForegroundColor Cyan
+Write-Host "    python manage.py runserver" -ForegroundColor Cyan
+Write-Host ""
+Write-Host "  Default admin credentials:" -ForegroundColor White
+Write-Host "    URL      : http://127.0.0.1:8000/" -ForegroundColor Cyan
+Write-Host "    Username : admin" -ForegroundColor Yellow
+Write-Host "    Password : Admin@1234" -ForegroundColor Yellow
+Write-Host ""
+Write-Host "  CHANGE THE DEFAULT PASSWORD IMMEDIATELY AFTER FIRST LOGIN." -ForegroundColor Red
 Write-Host ""

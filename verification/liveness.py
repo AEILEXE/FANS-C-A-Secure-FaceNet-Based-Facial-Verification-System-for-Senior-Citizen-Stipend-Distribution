@@ -6,7 +6,7 @@ Two-layer approach:
 2. Head movement challenge: user performs a random movement verified via MediaPipe
    on the client side. The server receives challenge_completed=True/False from client.
 
-In assisted rollout / pilot mode (LIVENESS_REQUIRED=False in settings), liveness failure is
+In Assisted Rollout Mode (LIVENESS_REQUIRED=False in settings), liveness failure is
 recorded and included in the audit log but does NOT block face matching. Set LIVENESS_REQUIRED=True
 for strict enforcement in full production deployment.
 

@@ -1,16 +1,23 @@
 /**
  * Verification flow controller — FANS-C.
  *
- * Flow:
- *  1. Start camera (640x480 preferred)
- *  2. Capture frame -> server anti-spoof + quality check -> show face guidance
- *  3. Head movement challenge (client-side via MediaPipe, auto-accepts after 5s timer)
- *  4. Show "Process Verification" button
- *  5. Capture sharpest frame from a 7-frame burst -> submit to server for FaceNet comparison
- *  6. Server returns decision -> redirect to result page
+ * Risk-Based Flow
+ * ───────────────
+ * The visible flow for most beneficiary self-claims is:
+ *   1. Align Face  →  2. Capture & Verify  →  3. Process Verification  →  4. Result
  *
- * Demo mode (LIVENESS_REQUIRED=false): liveness failure never blocks verification.
- * Retry mode: allows up to MAX_RETRY_ATTEMPTS additional attempts before fallback.
+ * The head-movement liveness challenge is only shown when a risk condition is detected:
+ *   • REQUIRE_LIVENESS_CHALLENGE = true  (representative claim — always required)
+ *   • anti-spoof score < 0.30           (suspicious texture / spoof signal)
+ *   • face quality check failed         (poor lighting, blur, etc.)
+ *   • isRetry = true                    (previous attempt failed — escalate security)
+ *
+ * Backend liveness logging runs on every attempt regardless of the visible challenge.
+ * In strict mode (LIVENESS_REQUIRED = true), a failed liveness check blocks the attempt.
+ * In Assisted Rollout mode (LIVENESS_REQUIRED = false), failures are logged but non-blocking.
+ *
+ * Retry logic: server allows up to MAX_RETRY_ATTEMPTS attempts.
+ * All retries force the liveness challenge (isRetry = true).
  */
 
 document.addEventListener('DOMContentLoaded', async () => {
@@ -25,6 +32,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   const step1Msg        = document.getElementById('step1Msg');
   const step2Icon       = document.getElementById('step2Icon');
   const step2Msg        = document.getElementById('step2Msg');
+  const step2Label      = document.getElementById('step2Label');
   const livenessScoreBox    = document.getElementById('livenessScoreBox');
   const livenessScoreVal    = document.getElementById('livenessScoreVal');
   const livenessScoreBar    = document.getElementById('livenessScoreBar');
@@ -35,6 +43,14 @@ document.addEventListener('DOMContentLoaded', async () => {
   const statusPanel         = document.getElementById('statusPanel');
   const guidancePanel       = document.getElementById('guidancePanel');
   const qualityIndicator    = document.getElementById('qualityIndicator');
+
+  // Step progress dots (1–4)
+  const stepDots = [null,
+    document.getElementById('step_dot_1'),
+    document.getElementById('step_dot_2'),
+    document.getElementById('step_dot_3'),
+    document.getElementById('step_dot_4'),
+  ];
 
   let livenessData = {
     passed: false,
@@ -47,7 +63,21 @@ document.addEventListener('DOMContentLoaded', async () => {
   let currentChallenge = CHALLENGE;
   let _qualityPollTimer = null;
 
+  // Tracks whether this is a retry attempt (previous attempt score was too low).
+  // Retries always trigger the full liveness challenge regardless of anti-spoof score.
+  let isRetry = false;
+
+  // ── Progress dot helper ───────────────────────────────────────────────────────
+  function activateDot(n) {
+    for (let i = 1; i <= 4; i++) {
+      if (!stepDots[i]) continue;
+      stepDots[i].style.background = i <= n ? '#1a4c8c' : '#c7d7fa';
+      stepDots[i].style.color      = i <= n ? 'white'   : '#1a4c8c';
+    }
+  }
+
   // ── Start Camera ─────────────────────────────────────────────────────────────
+  activateDot(1);
   const camResult = await startCamera(video);
   if (!camResult.success) {
     step1Icon.innerHTML = iconX();
@@ -56,7 +86,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     return;
   }
   startBtn.disabled = false;
-  showGuidance('Center your face in the oval, look at the camera, and click Start.', 'info');
+  showGuidance('Center your face in the oval, look at the camera, and click Capture &amp; Verify.', 'info');
 
   // ── MediaPipe (optional) ─────────────────────────────────────────────────────
   let mpAvailable = false;
@@ -114,8 +144,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     clearGuidance();
     clearRetryAlerts();
     stopQualityPreview();
+    activateDot(2);
 
-    // Step 1: Server-side anti-spoofing + quality check
+    // ── Step 1: Server-side anti-spoofing + quality check ────────────────────
+    // This runs on every attempt regardless of whether the challenge is shown.
+    // Result is logged to the VerificationAttempt record even in assisted rollout mode.
     step1Icon.innerHTML = iconSpinner();
     step1Msg.textContent = 'Checking face\u2026';
 
@@ -160,7 +193,8 @@ document.addEventListener('DOMContentLoaded', async () => {
       showGuidance(buildFaceGuidance(livenessApiResult.reason || ''), 'warning');
       startBtn.style.display = '';
       startBtn.disabled = false;
-      startBtn.innerHTML = '<i class="bi bi-arrow-repeat me-1"></i> Retry';
+      startBtn.innerHTML = '<i class="bi bi-camera me-1"></i> Capture &amp; Verify';
+      activateDot(1);
       startQualityPreview();
       return;
     }
@@ -180,91 +214,120 @@ document.addEventListener('DOMContentLoaded', async () => {
       if (faceBorder) faceBorder.style.borderColor = 'rgba(234,179,8,0.85)';
     }
 
-    // Step 2: Head movement challenge
-    step2Icon.innerHTML = iconSpinner();
-    step2Msg.textContent = 'Follow the on-screen challenge\u2026';
-    if (challengeBox) challengeBox.style.display = '';
-    if (challengeText) challengeText.textContent = CHALLENGE_DISPLAY;
+    // ── Decide whether to show the liveness challenge ────────────────────────
+    // The challenge is only presented when a risk condition is met.
+    // Low threshold (0.30) catches obvious spoofs while avoiding false triggers on
+    // elderly faces that naturally score lower due to skin texture differences.
+    const antiSpoofSuspicious = livenessData.anti_spoof_score < 0.30;
+    const qualityPoor         = livenessApiResult.face_quality_ok === false;
+    const needsChallenge      = REQUIRE_LIVENESS_CHALLENGE || antiSpoofSuspicious || qualityPoor || isRetry;
 
-    if (mpAvailable) LivenessTracker.setBaseline();
-
-    // Animate timer bar (5 seconds)
-    if (challengeTimer) {
-      challengeTimer.style.width = '100%';
-      challengeTimer.style.transition = 'none';
-      await sleep(20);
-      challengeTimer.style.transition = 'width 5s linear';
-      challengeTimer.style.width = '0%';
-    }
-
-    // Poll for movement completion — auto-accepts after 5s for accessibility
-    let challengeCompleted = false;
-    await new Promise((resolve) => {
-      let elapsed = 0;
-      const iv = setInterval(() => {
-        elapsed += 200;
-        if (mpAvailable && LivenessTracker.checkChallenge(currentChallenge)) {
-          challengeCompleted = true;
-          clearInterval(iv);
-          resolve();
-          return;
-        }
-        if (elapsed >= 5000) {
-          challengeCompleted = true; // auto-accept — accessibility for seniors
-          clearInterval(iv);
-          resolve();
-        }
-      }, 200);
-    });
-
-    livenessData.challenge_completed = challengeCompleted;
-    if (challengeBox) challengeBox.style.display = 'none';
-    clearGuidance();
-
-    step2Icon.innerHTML = iconCheck();
-    step2Msg.textContent = challengeCompleted ? 'Challenge completed' : 'Challenge auto-accepted (timer)';
-
-    livenessData.passed = livenessApiResult.anti_spoof_passed && challengeCompleted;
-
-    // Compute final combined liveness score client-side (matches server formula):
-    //   0.6 * anti_spoof_score  +  0.4 * challenge_completed
-    // This is the correct final score — the server only returned the anti-spoof portion.
-    const finalLivenessScore = Math.min(
-      0.6 * (livenessData.anti_spoof_score || 0) + 0.4 * (challengeCompleted ? 1.0 : 0.0),
-      1.0
-    );
-    livenessData.liveness_score = finalLivenessScore;
-
-    // Show score bar with the FINAL combined score
-    if (livenessScoreBox) {
-      livenessScoreBox.style.display = '';
-      const sp = Math.min(pct(finalLivenessScore), 100);
-      if (livenessScoreVal) livenessScoreVal.textContent = `${sp}%`;
-      if (livenessScoreBar) {
-        livenessScoreBar.style.width = `${sp}%`;
-        livenessScoreBar.className = `progress-bar ${sp >= 60 ? 'bg-success' : sp >= 30 ? 'bg-warning' : 'bg-danger'}`;
+    if (needsChallenge) {
+      // ── Risk-triggered: show the full head movement challenge ────────────
+      let challengeReason = '';
+      if (REQUIRE_LIVENESS_CHALLENGE) {
+        challengeReason = 'Representative claim &mdash; liveness verification is required.';
+      } else if (isRetry) {
+        challengeReason = 'Previous attempt failed &mdash; please complete the liveness check to continue.';
+      } else if (antiSpoofSuspicious) {
+        challengeReason = `Anti-spoof score low (${pct(livenessData.anti_spoof_score)}%) &mdash; liveness verification required.`;
+      } else if (qualityPoor) {
+        challengeReason = 'Image quality concern detected &mdash; please complete the liveness check.';
       }
-    }
 
-    // Show liveness summary with anti-spoof detail
-    const antiSpoof = pct(livenessData.anti_spoof_score);
-    if (livenessData.passed) {
-      showLivenessCard(true, `Liveness check passed. Anti-spoof: ${antiSpoof}%, Challenge: done.`);
-    } else if (!livenessApiResult.passed) {
-      showLivenessCard(false,
-        LIVENESS_REQUIRED
-          ? `Anti-spoofing score too low (${antiSpoof}%). Verification will be denied.`
-          : `Anti-spoofing score low (${antiSpoof}%) \u2014 continuing in demo mode. Real deployment requires a higher score.`
+      if (step2Label) step2Label.textContent = 'Liveness Challenge';
+      step2Icon.innerHTML = iconSpinner();
+      step2Msg.textContent = 'Follow the on-screen challenge\u2026';
+      if (challengeReason) showGuidance(challengeReason, 'warning');
+      if (challengeBox) challengeBox.style.display = '';
+      if (challengeText) challengeText.textContent = CHALLENGE_DISPLAY;
+
+      if (mpAvailable) LivenessTracker.setBaseline();
+
+      // Animate timer bar (5 seconds) — auto-accepts for accessibility
+      if (challengeTimer) {
+        challengeTimer.style.width = '100%';
+        challengeTimer.style.transition = 'none';
+        await sleep(20);
+        challengeTimer.style.transition = 'width 5s linear';
+        challengeTimer.style.width = '0%';
+      }
+
+      // Poll for movement completion — auto-accepts after 5s for senior accessibility
+      let challengeCompleted = false;
+      await new Promise((resolve) => {
+        let elapsed = 0;
+        const iv = setInterval(() => {
+          elapsed += 200;
+          if (mpAvailable && LivenessTracker.checkChallenge(currentChallenge)) {
+            challengeCompleted = true;
+            clearInterval(iv);
+            resolve();
+            return;
+          }
+          if (elapsed >= 5000) {
+            challengeCompleted = true;
+            clearInterval(iv);
+            resolve();
+          }
+        }, 200);
+      });
+
+      livenessData.challenge_completed = challengeCompleted;
+      if (challengeBox) challengeBox.style.display = 'none';
+      clearGuidance();
+
+      step2Icon.innerHTML = iconCheck();
+      step2Msg.textContent = challengeCompleted ? 'Challenge completed' : 'Challenge auto-accepted (timer)';
+
+      livenessData.passed = livenessApiResult.anti_spoof_passed && challengeCompleted;
+
+      // Final combined score: 0.6 × anti_spoof + 0.4 × challenge_completed
+      const finalLivenessScore = Math.min(
+        0.6 * (livenessData.anti_spoof_score || 0) + 0.4 * (challengeCompleted ? 1.0 : 0.0),
+        1.0
       );
+      livenessData.liveness_score = finalLivenessScore;
+
+      showLivenessScoreBar(finalLivenessScore);
+
+      const antiSpoof = pct(livenessData.anti_spoof_score);
+      if (livenessData.passed) {
+        showLivenessCard(true, `Liveness check passed. Anti-spoof: ${antiSpoof}%, Challenge: done.`);
+      } else if (!livenessApiResult.passed) {
+        showLivenessCard(false,
+          LIVENESS_REQUIRED
+            ? `Anti-spoofing score too low (${antiSpoof}%). Verification will be denied.`
+            : `Anti-spoofing score low (${antiSpoof}%) \u2014 continuing in assisted rollout mode. Real deployment requires a higher score.`
+        );
+      } else {
+        showLivenessCard(false,
+          LIVENESS_REQUIRED
+            ? 'Head movement challenge not completed. Verification will be denied.'
+            : 'Head movement not detected \u2014 challenge auto-accepted. Proceeding.'
+        );
+      }
+
     } else {
-      showLivenessCard(false,
-        LIVENESS_REQUIRED
-          ? 'Head movement challenge not completed. Verification will be denied.'
-          : 'Head movement not detected \u2014 challenge auto-accepted. Proceeding.'
-      );
+      // ── Fast path: no visible challenge needed ───────────────────────────
+      // The anti-spoof check passed and no risk conditions were triggered.
+      // liveness_score and challenge_completed are passed to the server for logging.
+      if (step2Label) step2Label.textContent = 'Liveness Check';
+      step2Icon.innerHTML = iconCheck();
+      step2Msg.textContent = 'No challenge required \u2014 anti-spoof passed';
+
+      livenessData.challenge_completed = false;
+      livenessData.passed = livenessApiResult.anti_spoof_passed !== false;
+      // Score reflects anti-spoof only (no challenge component added)
+      livenessData.liveness_score = livenessData.anti_spoof_score;
+
+      showLivenessScoreBar(livenessData.anti_spoof_score);
+      showLivenessCard(true, `Anti-spoof check passed (score: ${pct(livenessData.anti_spoof_score)}%). No liveness challenge needed.`);
+      clearGuidance();
     }
 
-    // Show verify button
+    // ── Show verify button ────────────────────────────────────────────────────
+    activateDot(3);
     verifyBtn.style.display = '';
     if (!livenessData.passed && !LIVENESS_REQUIRED) {
       verifyBtn.innerHTML = '<i class="bi bi-shield-exclamation me-1"></i> Process Verification (Liveness Warning)';
@@ -286,6 +349,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (processingOverlay) processingOverlay.style.display = '';
     clearGuidance();
     stopQualityPreview();
+    activateDot(4);
 
     // Capture best-quality frame from a 7-frame burst
     const imageData = await captureFrameHighQuality(video, captureCanvas, 7, 70);
@@ -317,6 +381,8 @@ document.addEventListener('DOMContentLoaded', async () => {
       }
 
       if (result.decision === 'retry') {
+        // Score was below threshold — the next attempt always requires the full challenge
+        isRetry = true;
         currentChallenge = result.new_challenge || CHALLENGE;
         clearRetryAlerts();
         showRetryAlert(result.message, result.new_challenge_display, result.score, result.threshold, result.attempt_number, result.max_retries);
@@ -329,7 +395,7 @@ document.addEventListener('DOMContentLoaded', async () => {
           passed: false, anti_spoof_score: 0, liveness_score: 0,
           face_detected: false, challenge_completed: false,
         };
-        // Reset liveness step indicators
+        // Reset step indicators to waiting state
         step1Icon.innerHTML = '<i class="bi bi-hourglass-split text-muted"></i>';
         step1Msg.textContent = 'Waiting\u2026';
         step2Icon.innerHTML = '<i class="bi bi-hourglass-split text-muted"></i>';
@@ -337,6 +403,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (livenessScoreBox) livenessScoreBox.style.display = 'none';
         if (livenessResultEl) livenessResultEl.style.display = 'none';
         if (faceBorder) faceBorder.style.borderColor = 'rgba(255,255,255,0.65)';
+        activateDot(1);
         startQualityPreview();
         return;
       }
@@ -428,6 +495,17 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   // ── UI Helpers ───────────────────────────────────────────────────────────────
+  function showLivenessScoreBar(score) {
+    if (!livenessScoreBox) return;
+    livenessScoreBox.style.display = '';
+    const sp = Math.min(pct(score), 100);
+    if (livenessScoreVal) livenessScoreVal.textContent = `${sp}%`;
+    if (livenessScoreBar) {
+      livenessScoreBar.style.width = `${sp}%`;
+      livenessScoreBar.className = `progress-bar ${sp >= 60 ? 'bg-success' : sp >= 30 ? 'bg-warning' : 'bg-danger'}`;
+    }
+  }
+
   function showLivenessCard(passed, msg) {
     if (!livenessResultEl) return;
     livenessResultEl.style.display = '';

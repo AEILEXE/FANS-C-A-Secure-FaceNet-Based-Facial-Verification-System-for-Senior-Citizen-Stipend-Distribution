@@ -1,3 +1,41 @@
+"""
+Verification views — FANS-C (FaceNet-Based Verification System).
+
+This module implements the core stipend verification workflow:
+
+1. verify_select     — Staff searches for a beneficiary by name or ID.
+2. verify_start      — Loads the camera capture page; initialises the session with a
+                       random liveness challenge and claimant type (beneficiary or representative).
+3. verify_check_liveness — AJAX endpoint called immediately after the staff clicks
+                       "Capture & Verify". Runs server-side anti-spoofing (texture analysis)
+                       and face quality check. Result is logged on every attempt.
+                       Does NOT gate the face match — that decision is made by the client
+                       using the risk-based logic in verify.js.
+4. verify_submit     — Main verification endpoint. Receives the captured frame plus
+                       liveness data from the client, runs FaceNet face matching, and
+                       returns a decision: verified / manual_review / retry / fallback.
+
+Risk-Based Liveness Strategy
+──────────────────────────────
+The head-movement liveness challenge is NOT shown for every verification (it would frustrate
+elderly beneficiaries). Instead, verify.js triggers the challenge only when a risk condition
+is detected: low anti-spoof score, poor image quality, a retry attempt, or a representative
+claim. Backend liveness logging is always on regardless of the visible challenge.
+
+Decision Flow (verify_submit)
+──────────────────────────────
+  strict mode (LIVENESS_REQUIRED=True) + liveness failed  →  denied immediately
+  face match score >= threshold                            →  verified (+ ClaimRecord created)
+  score in review band [threshold * 0.85, threshold)      →  manual_review
+  score < review band AND retries remain                  →  retry (new challenge)
+  retries exhausted                                        →  fallback (ID-based verification)
+  possible lookalike (another beneficiary within
+    LOOKALIKE_BAND of the target score)                    →  escalated to manual_review
+
+Multi-template matching (compare_with_all_embeddings) uses the best score across all
+stored FaceEmbedding / AdditionalFaceEmbedding records for the beneficiary. This helps
+seniors whose appearance has changed since initial registration.
+"""
 import json
 import base64
 import uuid
@@ -91,6 +129,19 @@ def verify_select(request):
 
 @login_required
 def verify_start(request, pk):
+    """
+    Load the camera capture page for a specific beneficiary.
+
+    Responsibilities:
+    - Guard against ineligible beneficiaries (inactive, deceased, pending).
+    - Guard against birthday-bonus events for ineligible birth months.
+    - Prevent duplicate claims for the same stipend event.
+    - Route representative claims (verifies the representative's face, not the beneficiary's).
+    - Generate a unique session ID and random liveness challenge.
+    - Pass require_liveness_challenge to the template so JS knows whether the
+      head-movement challenge is always required (True for rep claims) or risk-based
+      (False for self-claims — JS decides dynamically from anti-spoof + quality signals).
+    """
     beneficiary = get_object_or_404(Beneficiary, pk=pk)
 
     # Guard: only active beneficiaries can claim
@@ -186,6 +237,9 @@ def verify_start(request, pk):
         liveness_required = _get_liveness_required()
         demo_mode = _get_demo_mode()
         using_mock = is_using_mock_model()
+        # Representative claims always require the visible liveness challenge — higher-risk
+        # since a third party is claiming on the beneficiary's behalf.
+        require_liveness_challenge = True
         return render(request, 'verification/verify_capture.html', {
             'beneficiary': beneficiary,
             'representative': rep,
@@ -195,6 +249,7 @@ def verify_start(request, pk):
             'claimant_type': claimant_type,
             'liveness_required': liveness_required,
             'demo_mode': demo_mode,
+            'require_liveness_challenge': require_liveness_challenge,
             'active_event': active_event,
             'is_birthday_event': False,
             'using_mock': using_mock,
@@ -225,6 +280,10 @@ def verify_start(request, pk):
     is_birthday_event = (
         active_event and active_event.event_type == StipendEvent.EVENT_TYPE_BIRTHDAY
     )
+    # Beneficiary self-claims use the risk-based fast path: the liveness challenge
+    # is only triggered by the client when a risk condition is detected (low anti-spoof
+    # score, poor image quality, or a retry attempt). Pre-set to False here; JS decides.
+    require_liveness_challenge = False
     return render(request, 'verification/verify_capture.html', {
         'beneficiary': beneficiary,
         'session_id': session_id,
@@ -233,6 +292,7 @@ def verify_start(request, pk):
         'claimant_type': claimant_type,
         'liveness_required': liveness_required,
         'demo_mode': demo_mode,
+        'require_liveness_challenge': require_liveness_challenge,
         'active_event': active_event,
         'is_birthday_event': is_birthday_event,
         'using_mock': using_mock,
@@ -245,7 +305,26 @@ def verify_start(request, pk):
 @login_required
 @require_POST
 def verify_check_liveness(request):
-    """Server-side anti-spoofing + liveness check. Does NOT gate verification."""
+    """
+    Server-side anti-spoofing + quality check — called immediately after capture.
+
+    This endpoint runs on EVERY verification attempt. It is called by verify.js
+    as step 1 ("Anti-Spoof Check") before the main face match submit.
+
+    What it does:
+    - Decodes the JPEG frame sent from the browser.
+    - Runs face detection (RetinaFace → MTCNN → OpenCV cascade fallback).
+    - Computes a texture-based anti-spoof score (Laplacian + LBP + Sobel).
+    - Runs a face quality assessment (sharpness, brightness, contrast, glare).
+    - Returns face_detected, anti_spoof_passed, anti_spoof_score, face_quality_ok.
+
+    What it does NOT do:
+    - It does not compute the FaceNet embedding.
+    - It does not gate the verification — the client (verify.js) decides whether
+      to trigger the head-movement challenge based on the returned scores.
+
+    The result is logged later as part of the VerificationAttempt record in verify_submit.
+    """
     try:
         data = json.loads(request.body)
         image_data = data.get('image', '')
@@ -304,6 +383,28 @@ def verify_check_liveness(request):
 @login_required
 @require_POST
 def verify_submit(request):
+    """
+    Main verification endpoint — face matching and final decision.
+
+    Called when the staff clicks "Process Verification" after the camera capture.
+    Receives the best-quality frame from a 7-frame burst plus liveness data from the client.
+
+    Processing pipeline:
+    1. Validate session (anti-CSRF, session expiry guard).
+    2. Decode the JPEG frame and compute the 128-d FaceNet embedding.
+    3. Compare against stored embedding(s) — multi-template best score.
+    4. Evaluate the score against the threshold and make a decision.
+    5. Run lookalike detection if the score would pass (prevents twin/family fraud).
+    6. Persist the VerificationAttempt and write an AuditLog entry.
+    7. Return the decision as JSON; client redirects to the result page.
+
+    Decision outcomes:
+      verified       — score >= threshold; ClaimRecord created if a StipendEvent is active.
+      manual_review  — score in review band, or lookalike detected.
+      retry          — score failed but retries remain; new challenge issued.
+      fallback       — all retries exhausted; redirects to ID-based fallback flow.
+      denied         — strict liveness failed or face processing error.
+    """
     session_data = request.session.get('verification_session')
     if not session_data:
         return JsonResponse({'success': False, 'error': 'Verification session expired. Please start again.'})
@@ -702,6 +803,13 @@ def verify_submit(request):
 def _log_verify(request, beneficiary, decision, attempt_number,
                 liveness_passed, score, threshold, claimant_type, reason,
                 stipend_event=None, all_scores=None):
+    """
+    Write a structured AuditLog entry for a completed verification attempt.
+
+    Captures the full decision context — score, threshold, liveness result, template
+    breakdown, and demo_mode flag — so administrators can audit each decision later.
+    all_scores contains per-template similarity scores for multi-template beneficiaries.
+    """
     AuditLog.log(
         action=AuditLog.ACTION_VERIFY,
         user=request.user,

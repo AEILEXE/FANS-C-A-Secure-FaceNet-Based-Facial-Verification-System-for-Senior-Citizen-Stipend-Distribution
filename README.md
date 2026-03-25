@@ -281,7 +281,7 @@ fans_rep_face_embeddings     Encrypted FaceNet embedding for each representative
 fans_face_embeddings         Primary encrypted embedding per beneficiary
 fans_additional_face_embeds  Extra templates (added via face update workflow)
 
-fans_verification_attempts   Raw attempt log: scores, decision, liveness, threshold, pilot flag
+fans_verification_attempts   Raw attempt log: scores, decision, liveness, threshold, assisted rollout flag
 fans_claim_records           Canonical payout record (one per beneficiary per event normally)
 fans_stipend_events          Payout calendar with payout windows
 
@@ -480,7 +480,7 @@ score < review_band        → NOT_VERIFIED / DENIED
 If the decision is VERIFIED, a secondary check runs against all other beneficiaries. `check_duplicate_face()` is called with `threshold = max(score - LOOKALIKE_BAND, threshold * 0.85)` and `exclude_beneficiary_id` set to the current beneficiary. If any other beneficiary's stored embedding scores above this lookalike threshold, the decision is escalated to MANUAL_REVIEW and an `ACTION_DUPLICATE_FACE` entry is written to the AuditLog with the matched beneficiary's ID, name, and score.
 
 **Saving and responding**
-The `VerificationAttempt` record is saved with all collected signals: similarity score, liveness results, anti-spoof score, face quality, threshold used, attempt number, session ID, pilot mode flag, and the final decision and reason string. The response JSON includes the decision and a redirect URL to the result page.
+The `VerificationAttempt` record is saved with all collected signals: similarity score, liveness results, anti-spoof score, face quality, threshold used, attempt number, session ID, assisted rollout mode flag, and the final decision and reason string. The response JSON includes the decision and a redirect URL to the result page.
 
 ---
 
@@ -645,7 +645,7 @@ FANS-C is designed for two operational tiers that can be toggled entirely throug
 
 ### Tier 1 — Assisted Rollout (Current Configuration)
 
-Suitable for: controlled piloting, supervised evaluation, staff training, capstone demonstration.
+Suitable for: controlled evaluation, supervised deployment, staff training, and demonstration.
 
 ```
 DEMO_MODE=True          # Accommodating threshold (0.60); liveness non-blocking
@@ -700,89 +700,125 @@ The admin Threshold Configuration page (`/verification/config/`) shows the activ
 
 ### Prerequisites
 
-- **Python 3.11 only** — Python 3.12 and 3.13 are not compatible with TensorFlow 2.13.x. See [Critical Notes](#critical-notes).
-- Git
-- A short project path (e.g., `D:\FANS`) — required to avoid Windows path length limits during TensorFlow installation. See [Critical Notes](#critical-notes).
+| Requirement | Notes |
+|---|---|
+| **Python 3.11** | Python 3.12 and 3.13 are NOT supported by TensorFlow 2.13.x. [Download Python 3.11.9](https://www.python.org/downloads/release/python-3119/) |
+| **Short project path** | Use `C:\FANSC` or `D:\FANS`. Paths longer than ~80 characters can cause TensorFlow install failures on Windows. |
+| **PowerShell 5.1+** | Included with Windows 10/11. Right-click Start → "Windows PowerShell". |
 
-### Step 1 — Clone the repository
+---
 
+### Quickstart (Recommended) — One-Command Setup
+
+Copy or clone the project to a short path (e.g., `D:\FANS\fans-c`), then open PowerShell in that folder and run:
+
+```powershell
+# Allow the setup script to run (one-time)
+Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+
+# Run the full automated setup
+.\setup.ps1
 ```
-git clone <repo-url> D:\FANS\fans-c
-cd D:\FANS\fans-c
+
+`setup.ps1` handles everything automatically:
+
+1. Checks Python 3.11
+2. Warns if the project path is too long
+3. Creates `.venv` virtual environment
+4. Upgrades pip
+5. Installs `numpy==1.24.3` first (required before TensorFlow)
+6. Installs `tensorflow-cpu==2.13.1`
+7. Installs all remaining dependencies from `requirements.txt`
+8. Creates `.env` from `.env.example`
+9. Generates and writes `SECRET_KEY` automatically
+10. Generates and writes `EMBEDDING_ENCRYPTION_KEY` automatically
+11. Runs all database migrations
+12. Initialises system configuration
+13. Creates the default admin user (`admin` / `Admin@1234`)
+14. Collects static files
+15. Runs a system health check
+
+**After setup, start the server with:**
+
+```powershell
+.\run.ps1
 ```
 
-### Step 2 — Create a virtual environment using Python 3.11
+Then open: `http://127.0.0.1:8000/`
 
-```
+**Change the default admin password immediately after first login.**
+
+---
+
+### Manual Setup (Alternative)
+
+If you prefer not to use the PowerShell scripts:
+
+```powershell
+# 1. Create and activate virtual environment (must use Python 3.11)
 py -3.11 -m venv .venv
-.venv\Scripts\activate
-```
+.venv\Scripts\Activate.ps1
 
-Confirm the correct Python is active:
-```
-python --version
-```
-Expected output: `Python 3.11.x`
-
-### Step 3 — Install dependencies
-
-```
+# 2. Upgrade pip
 python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
-```
 
-> TensorFlow installation may take several minutes. Use `python -m pip` rather than bare `pip` to ensure the correct environment's pip is used. See [Critical Notes](#critical-notes).
+# 3. Install numpy FIRST (must precede tensorflow and scipy)
+pip install numpy==1.24.3
 
-### Step 4 — Create the environment file
+# 4. Install tensorflow-cpu
+pip install tensorflow-cpu==2.13.1
 
-Create a file named `.env` in the project root with the following content:
+# 5. Install remaining dependencies
+pip install -r requirements.txt
 
-```
-SECRET_KEY=replace-with-a-secure-random-key-before-deployment
-DEBUG=True
-USE_SQLITE=True
-EMBEDDING_ENCRYPTION_KEY=
-DEMO_MODE=True
-LIVENESS_REQUIRED=False
-VERIFICATION_THRESHOLD=0.75
-DEMO_THRESHOLD=0.60
-ANTI_SPOOF_THRESHOLD=0.15
-MAX_RETRY_ATTEMPTS=1
-```
+# 6. Create .env from template
+Copy-Item .env.example .env
+# Edit .env — set SECRET_KEY and generate EMBEDDING_ENCRYPTION_KEY:
+python manage.py generate_key   # copy the output into .env
 
-> **EMBEDDING_ENCRYPTION_KEY:** Leave blank during development. A temporary key is generated per server restart, which means registered embeddings become unreadable after a restart. For a stable key, run:
-> ```
-> python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
-> ```
-> Paste the output into `.env` before registering any beneficiaries.
-
-### Step 5 — Apply migrations
-
-```
+# 7. Run migrations
 python manage.py migrate
-```
 
-### Step 6 — Create an admin user
+# 8. Initialise system config
+python manage.py init_config
 
-```
-python manage.py createsuperuser
-```
+# 9. Create admin user
+python manage.py create_admin
 
-Then log in and set the user's role to `admin` via the Django admin at `/admin/` or the User Management page.
-
-### Step 7 — Collect static files
-
-```
+# 10. Collect static files
 python manage.py collectstatic --noinput
-```
 
-### Step 8 — Run the server
-
-```
+# 11. Start server
 python manage.py runserver
 ```
 
-Open `http://localhost:8000/dashboard/` and log in.
+---
+
+### Setting Up on Another Device
+
+1. Copy the project folder to the new device (to a short path, e.g., `C:\FANSC`).
+2. **Copy your `.env` file** from the original device — it contains the `EMBEDDING_ENCRYPTION_KEY` that all stored face embeddings depend on.
+3. Open PowerShell in the project root and run:
+   ```powershell
+   Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+   .\setup.ps1 -SkipAdminCreate
+   ```
+   (`-SkipAdminCreate` skips creating a second admin since users are already in the database.)
+4. Start with `.\run.ps1`.
+
+> **Critical:** If the `EMBEDDING_ENCRYPTION_KEY` is different from the original device, all registered face embeddings will be unreadable. Always transfer the entire `.env` file — never re-generate the key on a second device.
+
+---
+
+### Verifying the Installation
+
+Run the health check at any time:
+
+```powershell
+.\.venv\Scripts\python.exe manage.py check_system
+```
+
+This checks: Python version, TensorFlow, keras-facenet, OpenCV, scipy, numpy, encryption key validity, database connection, and pending migrations.
 
 ---
 
@@ -865,19 +901,29 @@ When a beneficiary's appearance changes significantly:
 
 ## Configuration Reference
 
+**Core settings:**
+
 | Variable | Default | Description |
 |---|---|---|
-| `SECRET_KEY` | — | Django secret key. Must be a long random string. Never commit to version control. |
+| `SECRET_KEY` | — | Django secret key. Must be a long random string. Never commit to version control. Auto-generated by `setup.ps1`. |
 | `DEBUG` | `True` | Django debug mode. Set to `False` in production. |
 | `USE_SQLITE` | `True` | Use SQLite. Set to `False` and configure `DB_*` vars for PostgreSQL. |
-| `EMBEDDING_ENCRYPTION_KEY` | (generated) | Fernet key for embedding encryption. Leave blank to auto-generate (not stable across restarts). |
-| `DEMO_MODE` | `True` | Pilot / Assisted Rollout Mode — uses a more accommodating threshold and makes liveness non-blocking. Set to `False` for full enforcement. |
-| `LIVENESS_REQUIRED` | `False` | If `True`, liveness failure blocks verification entirely (full enforcement). Set `False` for assisted rollout. |
-| `VERIFICATION_THRESHOLD` | `0.75` | Cosine similarity threshold for full enforcement mode. |
-| `DEMO_THRESHOLD` | `0.60` | Threshold used in Pilot Mode (`DEMO_MODE=True`) — accommodates webcam quality variation during rollout. |
-| `ANTI_SPOOF_THRESHOLD` | `0.15` | Texture anti-spoofing threshold (0.0–1.0). Lower = more permissive. |
-| `MAX_RETRY_ATTEMPTS` | `1` | Number of face verification retries before fallback. |
-| `LOOKALIKE_BAND` | `0.05` | If another beneficiary scores within this distance of the matching score, escalate to manual review. |
+| `EMBEDDING_ENCRYPTION_KEY` | — | Fernet key for embedding encryption. **Required.** Auto-generated by `setup.ps1`. Back up securely. |
+| `DEMO_MODE` | `True` | Assisted Rollout Mode — uses `DEMO_THRESHOLD` (0.60) and makes liveness non-blocking. Set to `False` for full strict enforcement. |
+| `LIVENESS_REQUIRED` | `False` | If `True`, liveness failure blocks verification entirely. Set `False` for Assisted Rollout Mode. |
+| `VERIFICATION_THRESHOLD` | `0.75` | Cosine similarity threshold for strict enforcement mode (`DEMO_MODE=False`). |
+| `DEMO_THRESHOLD` | `0.60` | Threshold used in Assisted Rollout Mode — accommodates webcam quality variation during rollout. |
+| `ANTI_SPOOF_THRESHOLD` | `0.15` | Texture anti-spoofing threshold (0.0–1.0). Lower = more permissive. Raise to 0.30–0.50 in strict production. |
+| `MAX_RETRY_ATTEMPTS` | `2` | Number of face verification retries before the ID fallback path is offered. |
+
+**Offline sync settings:**
+
+| Variable | Default | Description |
+|---|---|---|
+| `SYNC_API_URL` | _(empty)_ | Central server API base URL. Leave blank for offline-only / standalone operation. |
+| `SYNC_API_KEY` | _(empty)_ | Bearer token for the central server. Keep secret. |
+| `SYNC_TIMEOUT` | `30` | HTTP timeout in seconds for each sync request. |
+| `SYNC_BATCH_SIZE` | `50` | Maximum records sent per sync run. |
 
 **Database variables (PostgreSQL only):**
 
@@ -911,6 +957,157 @@ MAX_RETRY_ATTEMPTS=2
 
 ---
 
+## Assisted Rollout Mode
+
+### What Is It?
+
+Assisted Rollout Mode (`DEMO_MODE=True`, `LIVENESS_REQUIRED=False`) is a deliberately lenient configuration designed for the **initial deployment phase** of the system. It allows the system to serve real users without blocking legitimate seniors who fail the liveness challenge — which can happen due to webcam quality, lighting, or age-related limited head movement.
+
+### Why It Exists
+
+When deploying a biometric system for the first time:
+- False negatives (blocking a real person) have high social cost — a senior citizen denied their stipend.
+- Liveness detection accuracy depends heavily on the specific webcam, lighting, and facial features of the population.
+- Collecting real-world data in permissive mode builds the evidence needed to calibrate thresholds and liveness enforcement confidently before strict enforcement begins.
+
+### What It Does
+
+| Setting | Assisted Rollout Mode | Strict Mode |
+|---|---|---|
+| `DEMO_MODE` | `True` | `False` |
+| `LIVENESS_REQUIRED` | `False` | `True` |
+| Similarity threshold | 0.60 (`DEMO_THRESHOLD`) | 0.75 (`VERIFICATION_THRESHOLD`) |
+| Liveness failure | Logged, **does not block** verification | **Blocks** verification (denied) |
+| UI badge | "ASSISTED" shown on result | No badge |
+
+### UI Display
+
+When Assisted Rollout Mode is active:
+- The verification result screen shows an **"ASSISTED"** badge next to the decision.
+- The Threshold Configuration page shows the mode clearly under "Assisted Rollout Mode".
+- The liveness section of the config page shows "Assisted Rollout — non-blocking (logged only)".
+
+### Audit and Logging
+
+Every verification attempt records:
+- `liveness_score` — combined texture + challenge score (0–1)
+- `liveness_passed` — whether the check technically passed
+- `anti_spoof_score` — texture analysis score
+- `demo_mode_active` — whether Assisted Rollout Mode was active at the time
+
+These fields are always populated, regardless of mode. The mode flag allows retrospective analysis of data collected during rollout.
+
+### Threshold Configuration
+
+Thresholds are controlled by `.env` variables:
+- `DEMO_THRESHOLD=0.60` — threshold used in Assisted Rollout Mode (adjustable 0.50–0.70)
+- `VERIFICATION_THRESHOLD=0.75` — threshold used in strict mode (adjustable 0.70–0.85)
+- `ANTI_SPOOF_THRESHOLD=0.15` — texture score required to pass liveness (adjustable)
+
+Administrators can also adjust the active threshold live via **Admin > Threshold Configuration** without restarting the server.
+
+### Transition to Strict Mode
+
+Transition from Assisted Rollout Mode to strict enforcement when:
+1. You have at least 2–4 weeks of real verification data.
+2. The false negative rate (real people being denied) is consistently below 5%.
+3. The anti-spoofing score distribution shows clear separation between real and spoofed faces.
+
+**Steps to enable strict mode:**
+
+```
+# In .env:
+DEMO_MODE=False
+LIVENESS_REQUIRED=True
+VERIFICATION_THRESHOLD=0.75   # adjust based on observed score distribution
+ANTI_SPOOF_THRESHOLD=0.25     # raise if webcam quality is reliable
+```
+
+Restart the server after changing these values. Monitor the verification logs for the first week to catch any unexpected denials.
+
+### Risks of Keeping Assisted Rollout Mode Indefinitely
+
+- The lower threshold (0.60 vs 0.75) slightly increases the risk of a face match false accept.
+- Liveness is not enforced, so a determined attacker with a high-quality printed photo could potentially pass anti-spoofing if the printed texture score is above 0.15.
+- Recommended maximum duration in Assisted Rollout Mode: 60 days from first live deployment.
+
+### Error Handling
+
+Liveness detection failures never crash the system. If liveness detection encounters an unexpected error:
+- The error is logged to the server console.
+- The verification continues with `liveness_passed=False` and `liveness_score=0.0`.
+- In Assisted Rollout Mode, the verification is not blocked.
+- In strict mode, the attempt is denied with reason "Liveness check error."
+
+---
+
+## Offline-First Operation and Sync
+
+### How It Works
+
+The system operates fully offline — no internet connection is required for:
+- Beneficiary registration
+- Face capture and embedding storage
+- Stipend claim verification
+- Audit logging
+
+All data is stored locally in SQLite. Each beneficiary record has an `is_synced` field (default: `False`) that tracks whether the record has been sent to the central server.
+
+### Enabling Sync
+
+Configure the central server endpoint in `.env`:
+
+```
+SYNC_API_URL=https://central.fans-c.gov.ph/api
+SYNC_API_KEY=your-secret-bearer-token
+SYNC_TIMEOUT=30
+SYNC_BATCH_SIZE=50
+```
+
+### Running Sync
+
+**Automatically:** `run.ps1` triggers a background sync on every server start (if `SYNC_API_URL` is configured).
+
+**Manually:**
+```powershell
+.\.venv\Scripts\python.exe manage.py sync_beneficiaries
+.\.venv\Scripts\python.exe manage.py sync_beneficiaries --force    # skip connectivity check
+.\.venv\Scripts\python.exe manage.py sync_beneficiaries --batch 100
+```
+
+**Programmatically:**
+```python
+from beneficiaries.sync import is_online, sync_all
+
+if is_online():
+    result = sync_all()
+    print(result)  # {'synced': 5, 'failed': 0, 'skipped': 0}
+```
+
+### Retry Logic
+
+- Failed sync attempts are not marked as synced; they remain `is_synced=False`.
+- The error message is stored in `sync_error` on the record.
+- The next sync run retries all failed records automatically.
+- Records are retried indefinitely until they succeed (or are manually resolved).
+
+### Encryption Key Sharing
+
+The `EMBEDDING_ENCRYPTION_KEY` encrypts face embeddings **before** they leave this device. The central server must use the **same key** to decrypt and use the received embeddings.
+
+**Transfer procedure:**
+1. Copy the `.env` file from the source device to the central server (or all workstations).
+2. Do NOT re-generate the key — all existing embeddings will become unreadable.
+3. Transfer via USB or encrypted channel — never plain email.
+
+### Conflict Prevention
+
+Records use UUIDs as primary keys. The central API should treat a duplicate UUID as an upsert (update) rather than an error. This prevents duplicate records when a record is re-sent after a partial network failure.
+
+The `beneficiary_id` field (e.g., `BEN-2025-00001`) is also unique and can be used for cross-device deduplication.
+
+---
+
 ## Face Recognition Status
 
 The face recognition model is loaded via **keras-facenet**, which wraps the FaceNet architecture in a Keras-compatible interface backed by TensorFlow.
@@ -932,15 +1129,15 @@ Go to **Admin > Threshold Configuration** (`/verification/config/`). The "Face R
 
 A red banner also appears on the Verification screen whenever mock mode is active.
 
-**Difference between Pilot Mode and Mock Model:**
+**Difference between Assisted Rollout Mode and Mock Model:**
 
 | Setting | Effect |
 |---|---|
-| `DEMO_MODE=True` (Pilot / Assisted Rollout) | Accommodating threshold (0.60), liveness recorded but non-blocking. Real FaceNet matching runs normally. |
+| `DEMO_MODE=True` (Assisted Rollout) | Accommodating threshold (0.60), liveness recorded but non-blocking. Real FaceNet matching runs normally. |
 | `DEMO_MODE=False` (Full Enforcement) | Strict threshold (0.75), liveness enforced. Intended for full production rollout. |
 | Mock model active | keras-facenet failed to load. All similarity scores are random. No real matching. |
 
-Pilot Mode and mock model are independent. The correct configuration for a controlled deployment or supervised evaluation is `DEMO_MODE=True` with the real FaceNet model loaded. This produces real biometric verification results with a threshold calibrated for the evaluation environment.
+Assisted Rollout Mode and mock model are independent. The correct configuration for a controlled deployment or supervised evaluation is `DEMO_MODE=True` with the real FaceNet model loaded. This produces real biometric verification results with a threshold calibrated for the evaluation environment.
 
 ---
 
@@ -1034,8 +1231,9 @@ static/
 | beneficiaries | 0001 | Initial beneficiary model |
 | beneficiaries | 0002 | Senior citizen ID, valid ID fields |
 | beneficiaries | 0003 | Lifecycle: deceased status, deactivated_at/by/reason |
-| beneficiaries | 0004 | Representative model (fans_representatives) |
-| beneficiaries | 0005 | RepresentativeFaceEmbedding model |
+| beneficiaries | 0004 | profile_picture field on Beneficiary |
+| beneficiaries | 0005 | Representative model (fans_representatives) |
+| beneficiaries | 0006 | Offline sync fields: is_synced, sync_error, last_synced_at |
 | logs | 0001 | AuditLog model |
 | logs | 0002 | Add 'update' action choice for record edits |
 | verification | 0001 | FaceEmbedding, VerificationAttempt, SystemConfig |
@@ -1087,6 +1285,21 @@ If the key is left blank, a temporary key is generated each time the server star
 
 ## Troubleshooting
 
+### setup.ps1 says "running scripts is disabled"
+
+**Symptom:**
+```
+.\setup.ps1 cannot be loaded because running scripts is disabled on this system.
+```
+
+**Fix:** Run this once in PowerShell (no admin required):
+```powershell
+Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+```
+Then retry `.\setup.ps1`.
+
+---
+
 ### DLL load failure when importing TensorFlow
 
 **Symptom:**
@@ -1096,12 +1309,24 @@ DLL load failed while importing _pywrap_tensorflow_lite_metrics_wrapper: The spe
 
 **Cause:** Python version mismatch. The venv was created with Python 3.12 or 3.13.
 
-**Fix:**
+**Fix (using setup.ps1):**
+```powershell
+Remove-Item -Recurse -Force .venv
+.\setup.ps1
+```
+
+**Fix (manual):**
 1. Delete the `.venv` folder.
 2. Install Python 3.11 from python.org.
 3. Confirm: `py -3.11 --version`
 4. Recreate the venv: `py -3.11 -m venv .venv`
-5. Activate and reinstall: `.venv\Scripts\activate` then `python -m pip install -r requirements.txt`
+5. Activate and reinstall using the correct order:
+   ```powershell
+   .venv\Scripts\Activate.ps1
+   pip install numpy==1.24.3
+   pip install tensorflow-cpu==2.13.1
+   pip install -r requirements.txt
+   ```
 
 ---
 
@@ -1137,10 +1362,10 @@ or numpy-related attribute errors on import.
 **Cause:** numpy version is too new for the installed TensorFlow version.
 
 **Fix:**
+```powershell
+pip install numpy==1.24.3
 ```
-python -m pip install "numpy>=1.23.5,<1.25.0"
-```
-TensorFlow 2.13 requires numpy below 1.25.
+TensorFlow 2.13 requires numpy < 2.0. The pinned version `numpy==1.24.3` in `requirements.txt` is the correct version.
 
 ---
 
@@ -1166,13 +1391,18 @@ when running `pip install`.
 
 **Cause:** The `.venv` folder contains hardcoded absolute paths to the original location. Moving the project folder invalidates all these paths.
 
-**Fix:** Delete the `.venv` folder entirely and recreate it from the new location:
+**Fix:** Delete the `.venv` folder and re-run setup from the new location:
+```powershell
+Remove-Item -Recurse -Force .venv
+.\setup.ps1
 ```
-cd D:\FANS\fans-c
+Or manually:
+```powershell
 py -3.11 -m venv .venv
-.venv\Scripts\activate
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
+.venv\Scripts\Activate.ps1
+pip install numpy==1.24.3
+pip install tensorflow-cpu==2.13.1
+pip install -r requirements.txt
 ```
 
 ---

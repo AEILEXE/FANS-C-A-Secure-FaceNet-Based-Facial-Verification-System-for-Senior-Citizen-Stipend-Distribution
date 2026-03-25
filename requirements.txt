@@ -4,66 +4,65 @@
 #
 # PYTHON VERSION: Python 3.11 ONLY.
 # Python 3.12 and 3.13 are NOT supported by tensorflow-cpu 2.13.x.
-# You will see "DLL load failed importing _pywrap_tensorflow_*" on 3.12/3.13.
+# You will see a DLL load error at import time on 3.12/3.13.
 # Download Python 3.11: https://www.python.org/downloads/release/python-3119/
 #
-# CHECK YOUR VERSION FIRST:
-#   python --version     <- must show 3.11.x
-#
 # WINDOWS LONG PATH WARNING:
-# If pip install fails with OSError or "file not found" on TensorFlow,
-# your project path is too long. Move to a short path like D:\FANS
-# and re-run pip install.  Also enable long paths:
-#   In PowerShell (Admin): New-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem" -Name "LongPathsEnabled" -Value 1 -PropertyType DWORD -Force
+# If pip fails with OSError or "file not found" on TensorFlow,
+# your project path is too long. Move to a short path such as C:\FANSC
+# or D:\FANS and re-run. You can also enable long-path support:
+#   (Admin PowerShell) New-ItemProperty -Path
+#   "HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem"
+#   -Name "LongPathsEnabled" -Value 1 -PropertyType DWORD -Force
 #
-# INSTALL ORDER:
-#   1. pip install numpy==1.24.4
-#   2. pip install -r requirements.txt
-#   (numpy must come first because scipy and tensorflow check it at install time)
+# INSTALL ORDER (handled automatically by setup.ps1):
+#   1. pip install numpy==1.24.3           <- MUST come first
+#   2. pip install tensorflow-cpu==2.13.1  <- second
+#   3. pip install -r requirements.txt     <- everything else
 # ============================================================
 
-# ── Web Framework ─────────────────────────────────────────
-Django>=4.2,<5.0
-python-dotenv>=1.0.0
-whitenoise>=6.6.0
-djangorestframework>=3.14.0
+# ── Web Framework ──────────────────────────────────────────
+Django==4.2.21
+python-dotenv==1.0.1
+whitenoise==6.9.0
+djangorestframework==3.16.0
 
-# ── Image & Crypto ────────────────────────────────────────
-Pillow>=10.0.0,<11.0.0
-cryptography>=41.0.0,<44.0.0
+# ── Image & Crypto ─────────────────────────────────────────
+Pillow==10.4.0
+cryptography==43.0.3
 
-# ── Numerical ─────────────────────────────────────────────
-# numpy 1.24.x is required:
+# ── Numerical ──────────────────────────────────────────────
+# numpy 1.24.3 is required:
 #   - tensorflow 2.13 requires numpy < 2.0
 #   - scipy 1.11.x requires numpy >= 1.21
-# Do NOT let scipy upgrade numpy to 2.x — it will break TensorFlow.
-numpy==1.24.4
+# Do NOT allow pip to upgrade numpy to 2.x — it breaks TensorFlow.
+numpy==1.24.3
 
-# scipy is needed by keras-facenet (it uses scipy.spatial.distance).
-# Pin to a version compatible with numpy 1.24.4 and Python 3.11.
-scipy>=1.10.0,<1.12.0
+# scipy is used by keras-facenet (scipy.spatial.distance).
+# Pin to a version compatible with numpy 1.24.3 and Python 3.11.
+scipy==1.11.4
 
-# ── Computer Vision ───────────────────────────────────────
-opencv-python>=4.8.0,<4.12.0
+# ── Computer Vision ────────────────────────────────────────
+opencv-python==4.10.0.84
 
-# ── Face Recognition ─────────────────────────────────────
-# tensorflow-cpu 2.13.x: CPU-only, no GPU/CUDA required.
-# REQUIRES Python 3.10 or 3.11. Will NOT work on Python 3.12+.
-tensorflow-cpu>=2.13.0,<2.14.0
+# ── Face Recognition ───────────────────────────────────────
+# tensorflow-cpu 2.13.1: CPU-only build, no GPU/CUDA required.
+# REQUIRES Python 3.10 or 3.11 only.
+tensorflow-cpu==2.13.1
 
-# keras-facenet: Downloads ~90 MB FaceNet weights on first use.
+# keras-facenet: wrapper that downloads ~90 MB FaceNet weights on first use.
 # Requires tensorflow and scipy.
-keras-facenet>=0.3.2
+keras-facenet==0.3.2
 
-# mtcnn: Face detector used by keras-facenet internally.
-mtcnn>=0.1.1
+# mtcnn: face detector used by keras-facenet internally.
+mtcnn==1.0.0
 
-# ── Optional: RetinaFace face detector ───────────────────
-# The app falls back to OpenCV Haar cascade if absent.
-# Comment out if this fails to install on Windows.
+# ── Optional: RetinaFace face detector ─────────────────────
+# Falls back to OpenCV Haar cascade if absent.
+# Uncomment if retinaface installs cleanly on your system.
 # retinaface>=0.0.13
 
-# ── Optional: PostgreSQL driver ──────────────────────────
-# Only needed if USE_SQLITE=False in .env.
-# Safe to leave commented out for SQLite capstone demos.
+# ── Optional: PostgreSQL driver ────────────────────────────
+# Only required when USE_SQLITE=False in .env.
+# Leave commented out for the default SQLite configuration.
 # psycopg2-binary>=2.9.9

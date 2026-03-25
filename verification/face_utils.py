@@ -1,19 +1,45 @@
 """
-Face processing utilities: RetinaFace detection + alignment, FaceNet embeddings,
-embedding encryption/decryption.
+Face processing utilities — FANS-C.
 
-Key design decisions:
-- _align_face_similarity uses a 4-DOF similarity transform (rotation+scale+translation)
-  mapping detected eye landmarks to canonical positions in a 160x160 output. This is the
-  standard MTCNN/FaceNet pre-processing and ensures consistent crops regardless of face
-  distance, head tilt, or camera resolution.
-- get_embedding converts BGR->RGB, applies CLAHE for contrast normalisation, resizes to
-  160x160, and lets keras-facenet apply its own per-image whitening (prewhiten). We also
-  L2-normalize the output.
-- Preprocessing is identical for registration and verification, ensuring comparable embeddings.
-- CLAHE (Contrast Limited Adaptive Histogram Equalization) is applied to the L channel in
-  LAB colour space before FaceNet input. This significantly improves accuracy for low-light
-  webcam captures, dark skin tones, and poorly lit barangay offices.
+Covers: face detection + alignment, FaceNet embedding generation, embedding
+encryption/decryption, multi-template comparison, and duplicate/lookalike detection.
+
+Key design decisions
+─────────────────────
+Face detection hierarchy
+  1. RetinaFace  — highest accuracy, deeplearning-based; used when available.
+  2. MTCNN       — reliable CNN detector; fallback if RetinaFace is not installed.
+  3. OpenCV Haar cascade — lightweight, CPU-only; last resort for resource-constrained
+     machines or when the other detectors fail.
+
+Alignment (_align_face_similarity)
+  A 4-DOF similarity transform (rotation + scale + translation) maps the detected eye
+  landmarks to canonical positions in a 160×160 output crop. This is the standard
+  MTCNN/FaceNet preprocessing step and ensures consistent crops regardless of face
+  distance, head tilt, or camera resolution. Both registration and verification use the
+  same transform so embeddings are directly comparable.
+
+CLAHE preprocessing
+  Applied to the L channel in LAB colour space before the FaceNet embedding step.
+  This lifts shadows and improves contrast for low-light barangay offices, dark skin
+  tones, and cameras with poor auto-exposure, without distorting hue or saturation.
+  clipLimit=2.0 is conservative — visible improvement without over-sharpening artifacts.
+
+FaceNet embedding (keras-facenet)
+  128-d L2-normalised vectors. Cosine similarity = dot product of two unit vectors,
+  range [−1, 1]; in practice well-aligned frontal faces score 0.6–0.95 for the same
+  person. Multi-template matching (compare_with_all_embeddings) returns the best score
+  across all stored templates (primary + additional). This compensates for appearance
+  changes in older beneficiaries since initial registration.
+
+Embedding encryption
+  Each embedding is JSON-serialised, then encrypted with Fernet (AES-128-CBC + HMAC-SHA256).
+  The EMBEDDING_ENCRYPTION_KEY must be the same on all devices that share a database.
+  See .env.example for key sharing instructions in multi-device deployments.
+
+Lookalike/twin detection (check_duplicate_face)
+  Used during registration to flag possible duplicates and during verification to
+  escalate near-matches to manual review (LOOKALIKE_BAND=0.05 by default).
 """
 import io
 import os
