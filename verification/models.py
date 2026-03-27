@@ -183,6 +183,28 @@ class RepresentativeFaceEmbedding(models.Model):
 
 
 class VerificationAttempt(models.Model):
+    """
+    Immutable audit record for a single face verification attempt.
+
+    One record is created per submit regardless of outcome. Never deleted — the full
+    history is preserved for audit and compliance purposes.
+
+    Decision values:
+      verified       — FaceNet similarity score >= threshold; ClaimRecord created.
+      not_verified   — Score below threshold; retries may follow.
+      manual_review  — Score in the review band, or a lookalike was detected.
+                       Requires administrator action before stipend is released.
+      denied         — Blocked by strict liveness failure, model not loaded,
+                       or face processing error.
+
+    Liveness fields (liveness_passed, liveness_score, anti_spoof_score,
+    head_movement_completed) are always populated from client-reported values, even
+    in Assisted Rollout Mode where a low score is non-blocking. This allows analysis
+    of the liveness calibration data across real-world captures.
+
+    demo_mode_active records whether Assisted Rollout Mode was active at the time
+    of the attempt, so historical records remain interpretable after the mode changes.
+    """
     DECISION_VERIFIED = 'verified'
     DECISION_NOT_VERIFIED = 'not_verified'
     DECISION_MANUAL_REVIEW = 'manual_review'

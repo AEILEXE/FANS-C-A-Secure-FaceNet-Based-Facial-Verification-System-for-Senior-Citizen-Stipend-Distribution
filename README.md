@@ -26,12 +26,15 @@
 12. [Usage Guide](#usage-guide)
 13. [Configuration Reference](#configuration-reference)
 14. [Face Recognition Status](#face-recognition-status)
-15. [Limitations and Known Constraints](#limitations-and-known-constraints)
-16. [Future Improvements](#future-improvements)
-17. [Project Structure](#project-structure)
-18. [Migrations Reference](#migrations-reference)
-19. [Critical Notes](#critical-notes)
-20. [Troubleshooting](#troubleshooting)
+15. [Risk-Based Verification Flow](#risk-based-verification-flow)
+16. [Assisted Rollout Mode](#assisted-rollout-mode)
+17. [Offline-First Operation and Sync](#offline-first-operation-and-sync)
+18. [Limitations and Known Constraints](#limitations-and-known-constraints)
+19. [Future Improvements](#future-improvements)
+20. [Project Structure](#project-structure)
+21. [Migrations Reference](#migrations-reference)
+22. [Critical Notes](#critical-notes)
+23. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -67,8 +70,8 @@ The system is functional and secure for controlled deployment. It has been devel
 
 **Biometric verification**
 - FaceNet-based face recognition using 128-dimensional L2-normalized embeddings
-- Two-layer liveness detection: texture anti-spoofing and MediaPipe head movement challenge
-- Burst capture (5 frames, sharpest selected by Laplacian variance) for reliable frame quality
+- Risk-based liveness detection: server-side texture anti-spoofing runs on every attempt; the visible head-movement challenge is shown only when a risk condition is detected (low anti-spoof score, poor image quality, representative claim, or retry attempt)
+- Burst capture (7 frames, sharpest selected by Laplacian variance) for reliable frame quality
 - CLAHE histogram equalization to normalize lighting across captures
 - Multi-template matching: compare live face against all stored embeddings and take the best score
 
@@ -146,13 +149,21 @@ Identity comparison uses cosine similarity between the live embedding and the st
 
 The threshold is configurable at runtime via the admin interface without a server restart.
 
-### Liveness Detection — Two-Layer
+### Liveness Detection — Risk-Based Two-Layer
 
-**Layer 1 — Texture anti-spoofing:** Analyzes the frequency content of the face image to detect characteristics of printed photos or screen displays. Photographs and screens have different texture statistics from real skin. The result is a continuous score (0.0–1.0); the configurable `ANTI_SPOOF_THRESHOLD` determines the pass/fail boundary.
+**Layer 1 — Texture anti-spoofing (always runs):** After the staff clicks "Capture & Verify", the server immediately runs a texture analysis on the captured frame using Laplacian variance, local variance (LBP proxy), and Sobel edge density. Photographs and screens have different frequency-domain statistics from real skin. The result is a continuous score (0.0–1.0); the configurable `ANTI_SPOOF_THRESHOLD` determines the pass/fail boundary. This runs on every attempt and is always logged.
 
-**Layer 2 — MediaPipe head movement challenge:** The client-side `liveness.js` module uses the MediaPipe Face Mesh model (running in the browser) to track 3D facial landmark positions across frames. The user is prompted to perform a random directional head movement (left, right, up, or down). The system measures angular displacement from the neutral position; a displacement exceeding `CHALLENGE_THRESHOLD_DEG` (12 degrees) in the required direction confirms the user is a live, present, cooperating person rather than a static photograph.
+**Layer 2 — MediaPipe head movement challenge (risk-triggered):** The visible challenge is only shown when a risk condition is detected:
+- Anti-spoof score is below 0.30 (suspicious texture — possible photo/screen)
+- Face quality check failed (poor lighting, blur, or glare)
+- Claimant is a representative (always required — higher-risk third-party claim)
+- This is a retry attempt (previous face match failed — escalate security)
 
-Both layers produce independent signals. In assisted rollout mode (`LIVENESS_REQUIRED=False`), failures are recorded in the audit log but do not block face matching. In full enforcement mode (`LIVENESS_REQUIRED=True`), a liveness failure immediately denies the attempt before face matching runs.
+When triggered, `liveness.js` uses MediaPipe Face Mesh in the browser to measure angular head displacement. A displacement exceeding 12 degrees in the required direction (left/right/up/down) confirms the user is live. A 5-second timer auto-accepts for senior citizens with limited mobility.
+
+For normal beneficiary self-claims where the anti-spoof score is acceptable and quality is good, the challenge is skipped entirely. The UX is simply: Align Face → Capture → Processing → Result.
+
+Both layers produce independent signals. In Assisted Rollout Mode (`LIVENESS_REQUIRED=False`), failures are recorded in the audit log but do not block face matching. In strict mode (`LIVENESS_REQUIRED=True`), a liveness failure immediately denies the attempt before face matching runs.
 
 ### Embedding Storage — Fernet Encryption
 
@@ -170,7 +181,7 @@ The UI uses Bootstrap 5 with a custom Quezon City government portal theme (deep 
 
 - `webcam.js` — camera initialization, 640×480 resolution, burst capture, Laplacian-based sharpness scoring
 - `liveness.js` — MediaPipe Face Mesh integration, head movement angle tracking, challenge evaluation
-- `verify.js` — orchestrates the full verification flow: liveness check → burst capture → sharpness selection → POST to server
+- `verify.js` — orchestrates the risk-based verification flow: capture → anti-spoof check → conditional liveness challenge (only when risk conditions are met) → burst capture → POST to server
 
 ---
 
@@ -200,7 +211,7 @@ Beneficiary record created (status = Pending)
 Staff captures face via webcam
         |
         v
-[Client: burst 5 frames → select sharpest by Laplacian variance]
+[Client: burst 7 frames → select sharpest by Laplacian variance]
         |
         v
 [Server: RetinaFace detect → 4-DOF align → CLAHE → FaceNet 128-d]
@@ -226,15 +237,28 @@ Beneficiary status = Active → eligible to claim
 Staff searches beneficiary → selects claimant type (Beneficiary / Representative)
         |
         v
-[Client: MediaPipe challenge + texture anti-spoof → liveness result]
+[Client: captures frame → "Capture & Verify" button]
         |
         v
-[Client: burst 5 frames → select sharpest → POST to /verification/submit/]
+[Server: verify_check_liveness — anti-spoof texture score + face quality check (always runs)]
         |
         v
-[Server: liveness check]
+[Client: risk evaluation]
         |
-        +-- LIVENESS_REQUIRED=True and failed --> Denied (immediate)
+        +-- REQUIRE_LIVENESS_CHALLENGE (rep claim) OR anti-spoof < 0.30 OR
+        |   poor quality OR retry attempt:
+        |       → show head movement challenge (user tilts head)
+        |
+        +-- Otherwise (normal fast path):
+        |       → skip visible challenge, proceed directly to "Process Verification"
+        |
+        v
+[Client: burst 7 frames → select sharpest → POST to /verification/submit/]
+        |
+        v
+[Server: verify_submit — liveness enforcement check]
+        |
+        +-- LIVENESS_REQUIRED=True and liveness_passed=False --> Denied (immediate)
         |
         v
 [Server: RetinaFace detect → 4-DOF align → CLAHE → FaceNet 128-d embedding]
@@ -362,11 +386,18 @@ Verification is the core runtime workflow — the process that determines whethe
 **The capture session**
 - The selected beneficiary (and representative, if applicable) is loaded with a unique session ID
 - The active StipendEvent (if today falls within any payout window) is automatically detected and stored in the session
-- A random head movement challenge direction is assigned (left, right, up, or down)
-- The client runs liveness checks while the staff member prompts the beneficiary to look at the camera
+- A random head movement challenge direction is pre-assigned (left, right, up, or down) but only shown if a risk condition is triggered
+- For most beneficiary self-claims, the visible flow is simply: **Align Face → Capture & Verify → Process Verification → Result**
+
+**Risk-based liveness triggering**
+The head-movement challenge is shown only when one of these conditions is detected:
+- The server's anti-spoof score is below 0.30 (suspicious texture)
+- The image quality check fails (blur, poor lighting, glare)
+- The claimant is a representative (always required)
+- This is a retry attempt after a previous failed face match
 
 **Submitting the result**
-- The client selects the sharpest frame from the burst and POSTs it to the server along with liveness signals
+- The client selects the sharpest frame from a 7-frame burst and POSTs it to the server along with liveness signals
 - The server runs the full verification pipeline (see [Verification Pipeline — Technical](#verification-pipeline--technical))
 - The decision is recorded as a `VerificationAttempt`
 
@@ -428,18 +459,29 @@ This section describes the exact sequence of operations from image receipt to de
 
 ### 1. Client-Side (Browser)
 
-**Burst capture**
-`webcam.js` holds the `MediaStream` from `getUserMedia` at 640×480 resolution. During verification, a burst of 5 JPEG frames is captured at short intervals. Each frame is evaluated for sharpness using a JavaScript implementation of the Laplacian variance method (sum of squared second derivatives of luminance). The frame with the highest variance score — indicating the sharpest edges — is selected for submission. Blurry or motion-affected frames are automatically discarded.
+**Step 1 — Anti-spoof check (always runs)**
+When the staff clicks "Capture & Verify", `verify.js` captures a frame and POSTs it to `verify_check_liveness`. The server returns: `face_detected`, `anti_spoof_passed`, `anti_spoof_score` (0–1), and `face_quality_ok`. This runs on every attempt regardless of outcome.
 
-**Liveness evaluation**
-`liveness.js` runs MediaPipe Face Mesh in the browser, loading the WASM-backed model locally. The 468 3D facial landmarks are tracked across frames. The angular displacement of the face normal vector from the neutral forward-facing position is computed in the required challenge direction. A displacement exceeding `CHALLENGE_THRESHOLD_DEG` (12 degrees) within the challenge window marks the movement as completed. In parallel, the texture anti-spoofing analysis is applied to a center crop of the face region using frequency-domain statistics.
+**Step 2 — Risk evaluation (in browser)**
+`verify.js` evaluates whether the visible liveness challenge is needed:
+- `REQUIRE_LIVENESS_CHALLENGE = true` (set by server for representative claims) → always show challenge
+- `anti_spoof_score < 0.30` → suspicious — show challenge
+- `face_quality_ok = false` → poor image — show challenge
+- `isRetry = true` → previous attempt failed — show challenge
+- Otherwise → skip challenge, proceed directly to "Process Verification"
+
+**Step 3 — Head movement challenge (conditional)**
+When triggered, `liveness.js` loads MediaPipe Face Mesh (WASM, runs locally in the browser) and tracks 468 3D facial landmarks. The angular displacement from the neutral head position is measured in the required direction (left/right/up/down). A displacement exceeding 12 degrees marks the challenge as completed. A 5-second auto-accept timer ensures accessibility for seniors with limited mobility.
+
+**Step 4 — Burst capture and submit**
+`webcam.js` captures a burst of 7 JPEG frames. Each frame is evaluated for sharpness using a JavaScript Laplacian variance estimate. The sharpest frame is selected and POSTed to `verify_submit`.
 
 The client submits:
 - `image_data` — base64-encoded JPEG of the selected sharpest frame
-- `liveness_passed` — boolean (both layers must pass)
-- `liveness_score` — anti-spoof texture score (float)
-- `anti_spoof_score` — anti-spoof score (float)
-- `challenge_completed` — head movement challenge result (boolean)
+- `liveness_passed` — boolean (anti-spoof passed; challenge passed if it was shown)
+- `liveness_score` — combined score (0.6 × anti_spoof + 0.4 × challenge_completed)
+- `anti_spoof_score` — texture analysis score (float)
+- `challenge_completed` — head movement result (false if challenge was skipped)
 
 ### 2. Server-Side (Django View — `verify_submit`)
 
@@ -533,13 +575,15 @@ FANS-C implements multiple independent layers of protection against stipend frau
 
 The core control: releasing a stipend requires the physical presence of the enrolled face. A cosine similarity threshold of 0.60 (assisted rollout) or 0.75 (full enforcement) means the presented face must closely match the stored embedding. This cannot be bypassed by presenting a different person, a deceased person's ID card, or a photograph (subject to the liveness layer below).
 
-### 2. Two-Layer Liveness Detection
+### 2. Risk-Based Liveness Detection
 
-A photograph or video replay of the beneficiary's face is rejected by:
-- **Texture anti-spoofing:** printed photos and screen displays have frequency-domain texture statistics that differ from real skin, detected via the anti-spoof score
-- **MediaPipe head movement challenge:** a random directional challenge that a static photograph or pre-recorded video cannot pass
+A photograph or video replay of the beneficiary's face is detected by two independent layers:
+- **Texture anti-spoofing (always runs):** printed photos and screen displays have frequency-domain texture statistics that differ from real skin. An anti-spoof score below 0.30 automatically triggers the full liveness challenge.
+- **MediaPipe head movement challenge (risk-triggered):** a random directional challenge that a static photograph or pre-recorded video cannot pass. Triggered when anti-spoof is suspicious, quality is poor, the claimant is a representative, or the attempt is a retry.
 
-In full enforcement mode, failure of either layer immediately denies the attempt before any face matching runs.
+The challenge is not shown for every verification by design — doing so would frustrate elderly beneficiaries. Instead, the system escalates to the full challenge precisely when the risk signal warrants it. Backend liveness logging runs on every attempt regardless of whether the challenge was visible.
+
+In strict mode (`LIVENESS_REQUIRED=True`), failure of either layer immediately denies the attempt before face matching runs.
 
 ### 3. Duplicate Face Detection at Registration
 
@@ -865,13 +909,15 @@ Free-text ID types are not accepted.
 
 1. Go to **Verify** and search by name or beneficiary ID.
 2. Select who is claiming: **Beneficiary** (face scan) or **Representative** (biometric face scan — one button per active enrolled representative).
-3. If claiming as beneficiary:
-   - Liveness check runs (texture + head movement challenge).
-   - A burst of 5 frames is captured; the sharpest is submitted for face matching.
+3. If claiming as beneficiary — risk-based flow:
+   - Click **Capture & Verify**. The server runs a background anti-spoof check.
+   - **Normal path (most cases):** If the anti-spoof check passes and image quality is good, the head-movement challenge is skipped. A burst of 7 frames is captured and the sharpest is submitted for face matching.
+   - **Risk-triggered path:** If the anti-spoof score is low, image quality is poor, or this is a retry attempt, a head-movement challenge appears before submission.
    - Result: **Verified**, **Manual Review**, or **Not Verified**.
-   - After one failed retry, the system offers an ID Fallback path (beneficiaries only).
+   - On failure, the system offers a retry (up to `MAX_RETRY_ATTEMPTS`). After retries are exhausted, an ID Fallback path is offered (beneficiaries only). All retries always trigger the liveness challenge.
 4. If claiming as representative:
-   - The same liveness check and FaceNet face matching runs — but against the representative's enrolled face, not the beneficiary's.
+   - The liveness challenge **always runs** (representative claims are always risk-flagged).
+   - FaceNet face matching runs against the representative's enrolled face, not the beneficiary's.
    - ID-only verification is **blocked** for representatives; they must pass biometric face verification.
    - Deactivated representatives are blocked from claiming.
 5. Result is recorded and linked to the active stipend event. The claim record stores which representative performed the claim.
@@ -954,6 +1000,67 @@ DEMO_THRESHOLD=0.60
 ANTI_SPOOF_THRESHOLD=0.15
 MAX_RETRY_ATTEMPTS=2
 ```
+
+---
+
+## Risk-Based Verification Flow
+
+### Why Not Show the Liveness Challenge Every Time?
+
+The head-movement liveness challenge (tilt head left/right/up/down) is effective at detecting spoofing — but asking an elderly senior citizen to perform it on every single verification creates unnecessary friction:
+
+- Many seniors have limited neck mobility due to age or health conditions.
+- The 5-second auto-accept timer helps, but the challenge still adds time and stress.
+- A face match alone is strong biometric proof when anti-spoofing also passes.
+
+The risk-based approach applies a proportionate response: use the minimum friction needed to achieve the required security level.
+
+### When the Challenge Is Shown
+
+| Condition | Reason |
+|---|---|
+| Anti-spoof score < 0.30 | Texture suggests a printed photo or screen — escalate |
+| Image quality check failed | Poor lighting or blur — face match may be unreliable; challenge confirms liveness |
+| Representative claim | Third-party claim always requires extra verification |
+| Retry attempt | Previous face match failed — score was borderline; liveness adds a second signal |
+
+### When the Challenge Is Skipped (Fast Path)
+
+| Condition | Why it is safe to skip |
+|---|---|
+| Anti-spoof score ≥ 0.30 and quality OK | Server-side texture check passed — live face confirmed |
+| Beneficiary self-claim | Claimant is the enrolled person themselves |
+| First attempt | No prior failure signals |
+
+### What Happens in Each Path
+
+**Fast path (most beneficiary self-claims):**
+```
+[Click "Capture & Verify"]
+→ Anti-spoof check: PASSED
+→ Step 2: "No challenge required — anti-spoof passed" ✓
+→ [Click "Process Verification"]
+→ Face match → result
+```
+
+**Risk-triggered path:**
+```
+[Click "Capture & Verify"]
+→ Anti-spoof check: low score (< 0.30)
+→ Step 2: "Liveness Challenge" shown — "Tilt your whole head slowly to the LEFT"
+→ Challenge completed (or auto-accepted after 5s)
+→ [Click "Process Verification"]
+→ Face match → result
+```
+
+### Backend Logging — Always On
+
+Regardless of which path the user sees, the server:
+- Always runs the anti-spoof texture check.
+- Always records `anti_spoof_score`, `liveness_score`, `liveness_passed`, and `challenge_completed` in the `VerificationAttempt` record.
+- Always writes a full `AuditLog` entry.
+
+This means the liveness data is complete for audit and analysis, even when the visible challenge was skipped.
 
 ---
 
@@ -1159,7 +1266,7 @@ Assisted Rollout Mode and mock model are independent. The correct configuration 
 
 - **Single-server deployment assumed.** The current architecture uses a single `SystemConfig` record for the threshold. For multi-server deployments behind a load balancer, PostgreSQL and a cache layer would be required to keep the threshold consistent across instances.
 
-- **Client-side liveness can be bypassed technically.** Liveness signals (`liveness_passed`, `challenge_completed`) are submitted by the client and trusted by the server. A technically capable attacker who can intercept and modify the HTTP request could submit `liveness_passed=True` regardless of the actual video. Fully server-side liveness evaluation would require streaming the video frames to the server rather than just the final image. This is a known limitation of browser-based liveness systems.
+- **Client-side liveness can be bypassed technically.** Liveness signals (`liveness_passed`, `challenge_completed`) are submitted by the client and trusted by the server. A technically capable attacker who can intercept and modify the HTTP request could submit `liveness_passed=True` regardless of the actual video. The server-side texture anti-spoofing runs independently and cannot be faked by the client, but the challenge boolean can be. Fully server-side liveness evaluation would require streaming the video frames to the server rather than just the final image. This is a known limitation of browser-based liveness systems.
 
 ---
 
@@ -1211,7 +1318,7 @@ static/
   js/
     webcam.js               Camera utility: 640×480, burst capture, Laplacian sharpness
     liveness.js             MediaPipe Face Mesh head movement tracking
-    verify.js               Verification flow controller: liveness → capture → submit
+    verify.js               Risk-based verification flow: capture → anti-spoof → conditional challenge → submit
     register.js             Registration face capture controller
     address_cascades.js     Province/municipality/barangay cascading dropdowns
   data/

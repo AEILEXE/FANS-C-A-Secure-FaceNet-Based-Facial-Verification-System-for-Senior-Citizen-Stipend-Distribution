@@ -1,16 +1,40 @@
 """
-Liveness detection module.
+Liveness detection module — FANS-C.
 
-Two-layer approach:
-1. Anti-spoofing: texture/frequency analysis to detect printed photos or screens.
-2. Head movement challenge: user performs a random movement verified via MediaPipe
-   on the client side. The server receives challenge_completed=True/False from client.
+Two-layer approach
+───────────────────
+1. Anti-spoofing (server-side, always runs)
+   Texture analysis on the captured face image: Laplacian variance, local variance
+   (LBP proxy), and Sobel edge density. Returns a score in [0, 1]. Scores below the
+   ANTI_SPOOF_THRESHOLD (default 0.15) are flagged as suspicious. This runs on every
+   attempt and is always logged, regardless of whether the visible challenge is shown.
 
-In Assisted Rollout Mode (LIVENESS_REQUIRED=False in settings), liveness failure is
-recorded and included in the audit log but does NOT block face matching. Set LIVENESS_REQUIRED=True
-for strict enforcement in full production deployment.
+   NOTE: This is a heuristic suitable for webcam captures. For higher-security
+   deployments, replace compute_texture_score() with a trained CNN anti-spoofing model
+   (e.g. Silent-Face-Anti-Spoofing) for proper Presentation Attack Detection (PAD).
 
-Server-side head movement threshold: 12 degrees (matches liveness.js CHALLENGE_THRESHOLD_DEG).
+2. Head movement challenge (client-side, risk-triggered)
+   The user is asked to tilt their head in a random direction (left/right/up/down).
+   Pose estimation uses MediaPipe Face Mesh in the browser (static/js/liveness.js).
+   The server receives challenge_completed=True/False; it trusts the client report
+   because the challenge is a usability/accessibility layer, not the primary security gate.
+
+   In the risk-based flow, this challenge is only shown when a risk condition is detected
+   (low anti-spoof score, poor image quality, representative claim, or retry attempt).
+   The 5-second auto-accept timer ensures the challenge is accessible for senior citizens
+   who may have limited range of motion.
+
+Operating modes
+────────────────
+Assisted Rollout Mode (LIVENESS_REQUIRED=False, the default):
+  Liveness result is recorded in the VerificationAttempt but does NOT block face matching.
+  Use this during initial deployment to calibrate thresholds against real-world captures.
+
+Strict Mode (LIVENESS_REQUIRED=True):
+  A failed liveness check immediately denies the attempt before face matching runs.
+
+Server-side threshold: 12 degrees (must match CHALLENGE_THRESHOLD_DEG in liveness.js).
+Combined liveness score formula: 0.6 × anti_spoof_score + 0.4 × challenge_completed.
 """
 import numpy as np
 import cv2
