@@ -35,6 +35,53 @@
 21. [Migrations Reference](#migrations-reference)
 22. [Critical Notes](#critical-notes)
 23. [Troubleshooting](#troubleshooting)
+24. [Centralized Deployment Architecture](#centralized-deployment-architecture)
+    - [Architecture Overview](#architecture-overview)
+    - [Why Centralized, Not Separate Local Databases](#why-centralized-not-separate-local-databases)
+    - [Deployment Modes Compared](#deployment-modes-compared)
+    - [Setting Up Centralized Deployment](#setting-up-centralized-deployment)
+    - [Reverse Proxy with nginx](#reverse-proxy-with-nginx)
+    - [Offline Sync as Fallback](#offline-sync-as-fallback)
+    - [Defense-Ready Architecture Explanation](#defense-ready-architecture-explanation)
+25. [Barangay LAN Deployment Guide](#barangay-lan-deployment-guide)
+    - [Why This Architecture Fits a Barangay](#why-this-architecture-fits-a-barangay)
+    - [Recommended Setup for a Barangay Office](#recommended-setup-for-a-barangay-office)
+    - [Step-by-Step: Setting Up the Central Server](#step-by-step-setting-up-the-central-server)
+    - [Client Device Access](#client-device-access)
+    - [Local Network Access Flow](#local-network-access-flow)
+    - [Offline Fallback Behavior](#offline-fallback-behavior)
+    - [Admin Account Creation](#admin-account-creation)
+    - [Security Notes](#security-notes)
+    - [Backup and Maintenance](#backup-and-maintenance)
+    - [Development vs Production Mode](#development-vs-production-mode)
+    - [Defense Notes: Why Centralized LAN](#defense-notes-why-centralized-lan-is-the-right-architecture)
+26. [Secure HTTPS LAN Deployment](#secure-https-lan-deployment)
+    - [Why HTTPS Is Required for Camera Access](#why-https-is-required-for-camera-access)
+    - [Recommended Stack: Waitress + Caddy](#recommended-stack-waitress--caddy)
+    - [How Requests Flow](#how-requests-flow)
+    - [Why fans-barangay.local Instead of a Raw IP](#why-fans-barangaylocal-instead-of-a-raw-ip)
+    - [Step-by-Step: Secure Windows LAN Deployment](#step-by-step-secure-windows-lan-deployment)
+    - [Hostname Resolution: fans-barangay.local](#hostname-resolution-fans-barangaylocal)
+    - [Django Settings for HTTPS Behind Caddy](#django-settings-for-https-behind-caddy)
+    - [Verifying Camera Access from a Client Device](#verifying-camera-access-from-a-client-device)
+    - [Insecure Browser Flags Are Not the Answer](#insecure-browser-flags-are-not-the-answer)
+    - [Security Notes for HTTPS Deployment](#security-notes-for-https-deployment)
+    - [Defense Notes: Why This Stack](#defense-notes-why-this-stack)
+27. [Windows .exe Packaging and Distribution](#windows-exe-packaging-and-distribution)
+    - [Overview](#packaging-overview)
+    - [How the Launcher Works](#how-the-launcher-works)
+    - [Files Added for Packaging](#files-added-for-packaging)
+    - [Build Prerequisites](#build-prerequisites)
+    - [Step 1 — Build the .exe](#step-1--build-the-exe)
+    - [Step 2 — Test the Packaged App](#step-2--test-the-packaged-app)
+    - [Step 3 — Build the Installer](#step-3--build-the-installer)
+    - [Step 4 — Distribute to Another Machine](#step-4--distribute-to-another-machine)
+    - [What Is and Is Not Bundled](#what-is-and-is-not-bundled)
+    - [Keras-FaceNet Model Weights](#keras-facenet-model-weights)
+    - [onedir vs onefile](#onedir-vs-onefile)
+    - [TensorFlow and PyInstaller Caveats](#tensorflow-and-pyinstaller-caveats)
+    - [Common Packaging Problems and Fixes](#common-packaging-problems-and-fixes)
+    - [Limitations of the Packaged Version](#limitations-of-the-packaged-version)
 
 ---
 
@@ -778,7 +825,7 @@ Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
 10. Generates and writes `EMBEDDING_ENCRYPTION_KEY` automatically
 11. Runs all database migrations
 12. Initialises system configuration
-13. Creates the default admin user (`admin` / `Admin@1234`)
+13. Prompts to create the admin account via `python manage.py createsuperuser` (interactive — you choose the credentials)
 14. Collects static files
 15. Runs a system health check
 
@@ -826,8 +873,8 @@ python manage.py migrate
 # 8. Initialise system config
 python manage.py init_config
 
-# 9. Create admin user
-python manage.py create_admin
+# 9. Create admin user (interactive -- you will be prompted for username and password)
+python manage.py createsuperuser
 
 # 10. Collect static files
 python manage.py collectstatic --noinput
@@ -1148,19 +1195,55 @@ Liveness detection failures never crash the system. If liveness detection encoun
 
 ---
 
-## Offline-First Operation and Sync
+## Hybrid Centralized + Offline Fallback Sync
 
-### How It Works
+### Architecture overview
 
-The system operates fully offline — no internet connection is required for:
-- Beneficiary registration
-- Face capture and embedding storage
-- Stipend claim verification
-- Audit logging
+FANS-C is designed **primarily for centralized LAN deployment** where all staff workstations write directly to a shared PostgreSQL database over a local network. No synchronization is needed in this configuration — all data lives on one authoritative server from the moment it is entered.
 
-All data is stored locally in SQLite. Each beneficiary record has an `is_synced` field (default: `False`) that tracks whether the record has been sent to the central server.
+The offline sync pipeline exists as a **fallback** for barangay outreach scenarios where a workstation temporarily loses access to the central server (power outage, physical relocation, network disruption). Registrations captured offline are stored locally and pushed to the central server once connectivity is restored.
 
-### Enabling Sync
+| Mode | When used | Data location | Sync needed? |
+|---|---|---|---|
+| **Centralized (primary)** | Normal LAN operation | Central PostgreSQL | No |
+| **Offline fallback** | Workstation loses LAN access | Local SQLite | Yes — on reconnect |
+
+### Sync state machine
+
+Every `Beneficiary` record carries a `sync_status` field that progresses through four states:
+
+```
+[created offline]
+        │
+        ▼
+  pending_sync  ──── HTTP 200/201 ──►  synced        (accepted)
+        │
+        ├──── HTTP 409 ──────────────►  sync_conflict  (admin review)
+        │
+        └──── HTTP 400/422 ──────────►  sync_rejected  (admin review)
+
+  sync_conflict ──── admin retry ──►  pending_sync
+  sync_rejected ──── admin retry ──►  pending_sync
+```
+
+| State | Meaning | Action |
+|---|---|---|
+| `pending_sync` | Record created locally, not yet accepted by central server | Retried on every sync run |
+| `synced` | Central server accepted (HTTP 200/201) | No action needed |
+| `sync_conflict` | Server returned 409 — conflicting record already on server | Admin must review at `/sync/conflicts/` |
+| `sync_rejected` | Server returned 400/422 — payload invalid | Admin must review at `/sync/conflicts/` |
+
+Transient network failures (5xx, timeout) leave the record at `pending_sync` and it is retried on the next run. Only 409 and 4xx responses permanently change the state, because those indicate server-side decisions that require human review.
+
+### Offline-device audit trail
+
+When a registration is saved on an offline workstation, `sync.mark_created()` stamps:
+- `offline_device` — hostname of the workstation (from `socket.gethostname()`)
+- `sync_status = 'pending_sync'`
+
+When sync is attempted, `sync_attempted_at` is updated regardless of outcome. This means the audit log always shows *which device created the record*, *when it was created*, *when sync was attempted*, and *what the server said*.
+
+### Enabling sync (offline fallback mode)
 
 Configure the central server endpoint in `.env`:
 
@@ -1171,7 +1254,9 @@ SYNC_TIMEOUT=30
 SYNC_BATCH_SIZE=50
 ```
 
-### Running Sync
+Leave `SYNC_API_URL` empty in centralized deployment — the sync pipeline stays dormant.
+
+### Running sync
 
 **Automatically:** `run.ps1` triggers a background sync on every server start (if `SYNC_API_URL` is configured).
 
@@ -1184,34 +1269,63 @@ SYNC_BATCH_SIZE=50
 
 **Programmatically:**
 ```python
-from beneficiaries.sync import is_online, sync_all
+from beneficiaries.sync import is_online, sync_all, pending_count, conflict_count
 
 if is_online():
     result = sync_all()
-    print(result)  # {'synced': 5, 'failed': 0, 'skipped': 0}
+    # result = {'synced': 5, 'failed': 0, 'conflicts': 1, 'rejected': 0, 'skipped': 0}
 ```
 
-### Retry Logic
+Exit codes from the management command:
+- `0` — all records synced cleanly
+- `1` — transient failures (will retry automatically)
+- `2` — conflicts or rejections present (requires admin review)
 
-- Failed sync attempts are not marked as synced; they remain `is_synced=False`.
-- The error message is stored in `sync_error` on the record.
-- The next sync run retries all failed records automatically.
-- Records are retried indefinitely until they succeed (or are manually resolved).
+### Admin conflict review
 
-### Encryption Key Sharing
+Records in `sync_conflict` or `sync_rejected` appear in the admin queue at:
 
-The `EMBEDDING_ENCRYPTION_KEY` encrypts face embeddings **before** they leave this device. The central server must use the **same key** to decrypt and use the received embeddings.
+```
+/dashboard/sync/conflicts/
+```
+
+For each record, the admin can:
+
+| Action | Effect | When to use |
+|---|---|---|
+| **Retry Sync** | Resets to `pending_sync`; re-sent on next sync run | Conflict was transient or central record was since deleted |
+| **Accept Local** | Marks as `synced`; local record treated as authoritative | Admin confirms local capture is correct, central copy should be disregarded |
+| **Reject Permanently** | Keeps `sync_rejected`; record retained for audit only | Local data was invalid or a true duplicate |
+
+Every admin decision is logged in the audit log with the admin's name, timestamp, beneficiary ID, device hostname, and review notes.
+
+### What operations are allowed offline
+
+| Operation | Offline allowed? | Notes |
+|---|---|---|
+| Register new beneficiary | Yes | Queued as `pending_sync` |
+| Capture face embedding | Yes | Encrypted locally |
+| Stipend verification | Yes | Runs against local embedding store |
+| Claim recording | Yes | Stored locally |
+| Admin approval (registrations) | Yes | If admin is on the same workstation |
+| Sync conflict review | No | Requires access to central server data to make informed decision |
+
+### Encryption key sharing
+
+`EMBEDDING_ENCRYPTION_KEY` encrypts face embeddings before they leave the device. The central server must use the **same key** to decrypt and match received embeddings.
 
 **Transfer procedure:**
-1. Copy the `.env` file from the source device to the central server (or all workstations).
-2. Do NOT re-generate the key — all existing embeddings will become unreadable.
-3. Transfer via USB or encrypted channel — never plain email.
+1. Copy the key value from the source device's `.env` to the central server's `.env`.
+2. Do **not** re-generate the key — all existing embeddings will become unreadable.
+3. Transfer via USB or an encrypted channel — never plain email or chat.
 
-### Conflict Prevention
+### Defense-ready explanation
 
-Records use UUIDs as primary keys. The central API should treat a duplicate UUID as an upsert (update) rather than an error. This prevents duplicate records when a record is re-sent after a partial network failure.
+FANS-C addresses a real tension in Philippine government field operations: rural barangays often have unreliable internet, but stipend distribution cannot stop when the network goes down. The system resolves this by treating the central server as authoritative for all normal operations (centralized LAN mode) while providing a structured offline fallback that does not silently corrupt data.
 
-The `beneficiary_id` field (e.g., `BEN-2025-00001`) is also unique and can be used for cross-device deduplication.
+The four-state sync machine (pending → synced / conflict / rejected) ensures that offline-captured records are never silently merged with central data. A conflict means a human must decide which version is correct — the system does not guess. A rejection means the data failed central validation — again, a human reviews rather than the record being silently discarded.
+
+Per-device attribution (`offline_device`, `sync_attempted_at`) provides a complete audit trail: regulators can see exactly which barangay workstation captured each record, when it was captured, when sync was attempted, and what the central server said. This satisfies data governance requirements for government social protection programs.
 
 ---
 
@@ -1340,9 +1454,13 @@ static/
 | beneficiaries | 0003 | Lifecycle: deceased status, deactivated_at/by/reason |
 | beneficiaries | 0004 | profile_picture field on Beneficiary |
 | beneficiaries | 0005 | Representative model (fans_representatives) |
-| beneficiaries | 0006 | Offline sync fields: is_synced, sync_error, last_synced_at |
+| beneficiaries | 0006 | Offline sync fields: sync_error, last_synced_at (is_synced now replaced by 0008) |
+| beneficiaries | 0007 | Partial unique index on senior_citizen_id (non-empty values only) |
+| beneficiaries | 0008 | Replace is_synced bool with sync_status CharField (4-state machine); add offline_device, sync_attempted_at |
 | logs | 0001 | AuditLog model |
 | logs | 0002 | Add 'update' action choice for record edits |
+| logs | 0003 | Add face_update, manual_verify, claim, special_claim, register_approved/rejected, duplicate_face actions |
+| logs | 0004 | Add sync_accepted, sync_conflict, sync_rejected audit actions |
 | verification | 0001 | FaceEmbedding, VerificationAttempt, SystemConfig |
 | verification | 0002 | claimant_type, decision_reason on VerificationAttempt |
 | verification | 0003 | StipendEvent model, stipend_event FK, face_quality_score |
@@ -1547,3 +1665,1573 @@ python manage.py migrate
 ```
 
 All migrations are included in the repository. Running `makemigrations` is not needed unless you add new model fields yourself.
+
+---
+
+## Centralized Deployment Architecture
+
+This section describes the recommended real-world deployment of FANS-C for a barangay or multi-office environment where multiple staff members operate the system simultaneously from different devices.
+
+---
+
+### Architecture Overview
+
+```
+                          +----------------------------+
+  Staff Station A  -----> |                            |
+  (browser / LAN)         |   Central Django Server    |
+                          |   (one Python process,     |
+  Staff Station B  -----> |    gunicorn + nginx)       |
+  (browser / LAN)         |                            |
+                          +------------+---------------+
+  Admin Workstation -----> |           |
+  (browser / LAN)         |           v
+                          |   Shared PostgreSQL DB     |
+                          |   (single source of truth) |
+                          +----------------------------+
+```
+
+**One server. One database. All clients connect to the same backend through a web browser.** This is the same pattern used by every major web application: Django is the server, PostgreSQL is the database, and staff workstations are just browsers.
+
+- Person 1 (Staff Station A) registers a beneficiary.
+- Person 2 (Staff Station B) verifies that beneficiary in the next room.
+- Person 3 (Admin Workstation) reviews pending manual approvals from any device.
+- All three see the same live data because they are all hitting the same database.
+
+---
+
+### Why Centralized, Not Separate Local Databases
+
+Each workstation running its own SQLite database is not suitable for real simultaneous multi-user operation:
+
+| Problem | Separate local SQLite databases | Centralized PostgreSQL |
+|---|---|---|
+| Person 1 registers, Person 2 cannot see it | Yes — data is trapped on Person 1's machine | No — shared DB, visible immediately |
+| Duplicate beneficiary IDs across stations | Yes — each generates IDs independently | No — single sequence, database-locked |
+| Duplicate claim records (two stations, one event) | Yes — no shared lock | No — row-locked transaction prevents it |
+| Audit trail is split across machines | Yes — no single log | No — one audit log for all actions |
+| Admin approval visible to all staff | No — approvals on one machine only | Yes |
+| Conflict resolution required | Yes — merge conflicts, sync errors | No — no merge, one truth |
+
+**The offline-first sync architecture (SYNC_API_URL, sync_beneficiaries command) exists for edge deployments** where workstations genuinely cannot connect to a network — for example, a barangay distribution event in a location with no internet. It is not the recommended primary mode when a LAN or internet connection is available. For anything beyond a single-operator installation, centralized deployment is the correct choice.
+
+---
+
+### Deployment Modes Compared
+
+| Mode | Database | Who can use it | When to use |
+|---|---|---|---|
+| **Local development** | SQLite on dev machine | 1 developer | Writing and testing code |
+| **Standalone workstation** | SQLite, local | 1 staff operator | Single-device barangay with no LAN |
+| **Centralized (recommended)** | Shared PostgreSQL | All staff, all devices | Normal barangay operation with LAN or internet |
+| **Offline sync (fallback)** | Local SQLite + push sync | 1 offline operator | Remote distribution event, no network |
+
+---
+
+### Setting Up Centralized Deployment
+
+**Requirements on the server machine:**
+
+- Python 3.11
+- PostgreSQL 14+ (or 15/16)
+- gunicorn (`pip install gunicorn`)
+- nginx (strongly recommended for media serving and HTTPS)
+
+**Step 1 — Install dependencies**
+
+```bash
+pip install -r requirements.txt
+```
+
+`psycopg2-binary` is now included in `requirements.txt` and will be installed automatically.
+
+**Step 2 — Create the PostgreSQL database**
+
+```sql
+CREATE USER fans_user WITH PASSWORD 'choose_a_strong_password';
+CREATE DATABASE fans_db OWNER fans_user;
+```
+
+**Step 3 — Configure `.env` on the server**
+
+Copy `.env.example` to `.env` and edit for production:
+
+```
+SECRET_KEY=<generate with: python -c "import secrets; print(secrets.token_urlsafe(50))">
+DEBUG=False
+ALLOWED_HOSTS=192.168.1.50,fans-c.yourdomain.gov.ph
+
+USE_SQLITE=False
+DB_NAME=fans_db
+DB_USER=fans_user
+DB_PASSWORD=choose_a_strong_password
+DB_HOST=localhost
+DB_PORT=5432
+CONN_MAX_AGE=60
+
+EMBEDDING_ENCRYPTION_KEY=<generate with: python manage.py generate_key>
+
+# If using HTTPS through nginx:
+CSRF_TRUSTED_ORIGINS=https://fans-c.yourdomain.gov.ph
+SECURE_PROXY_SSL_HEADER=HTTP_X_FORWARDED_PROTO,https
+USE_X_FORWARDED_HOST=True
+```
+
+**Step 4 — Initialize the database**
+
+```bash
+python manage.py migrate
+python manage.py collectstatic --noinput
+```
+
+**Step 5 — Create the admin account**
+
+Use Django's built-in interactive command. Do not use `create_admin` with any default or hardcoded password in production — credentials must be chosen at setup time by the person responsible for the deployment.
+
+```bash
+python manage.py createsuperuser
+```
+
+You will be prompted for a username, email address, and password. Choose a strong password and record it securely. This account controls access to all beneficiary records and admin functions.
+
+**Step 6 — Run with gunicorn**
+
+```bash
+gunicorn fans.wsgi:application \
+    --bind 127.0.0.1:8000 \
+    --workers 3 \
+    --timeout 120
+```
+
+Use `--workers 3` as a starting point. Each worker handles one request at a time; with 3 workers, 3 staff stations can submit verifications simultaneously without queuing.
+
+For a production server, run gunicorn as a systemd service so it restarts automatically:
+
+```ini
+# /etc/systemd/system/fans-c.service
+[Unit]
+Description=FANS-C Gunicorn
+After=network.target
+
+[Service]
+User=www-data
+WorkingDirectory=/srv/fans-c
+ExecStart=/srv/fans-c/.venv/bin/gunicorn fans.wsgi:application \
+    --bind 127.0.0.1:8000 --workers 3 --timeout 120
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+```
+
+---
+
+### Reverse Proxy with nginx
+
+nginx sits in front of gunicorn and handles:
+- HTTPS termination (TLS certificates via Let's Encrypt or a government CA)
+- Static file serving (faster than Django/WhiteNoise for high-traffic deployments)
+- Media file serving (profile pictures, face capture frames)
+
+**Minimal nginx config:**
+
+```nginx
+server {
+    listen 443 ssl;
+    server_name fans-c.yourdomain.gov.ph;
+
+    ssl_certificate     /etc/letsencrypt/live/fans-c.yourdomain.gov.ph/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/fans-c.yourdomain.gov.ph/privkey.pem;
+
+    # Static files — served directly by nginx, not through Django
+    location /static/ {
+        alias /srv/fans-c/staticfiles/;
+        expires 7d;
+    }
+
+    # Media files — profile pictures, face captures
+    location /media/ {
+        alias /srv/fans-c/media/;
+    }
+
+    # Everything else goes to gunicorn
+    location / {
+        proxy_pass         http://127.0.0.1:8000;
+        proxy_set_header   Host $host;
+        proxy_set_header   X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto $scheme;
+        proxy_read_timeout 120s;
+    }
+}
+
+# Redirect plain HTTP to HTTPS
+server {
+    listen 80;
+    server_name fans-c.yourdomain.gov.ph;
+    return 301 https://$host$request_uri;
+}
+```
+
+**Why media files must not be served through Django in production:**
+
+Profile pictures and face capture images can be several hundred KB each. Routing them through the Python WSGI process ties up a gunicorn worker for the duration of the file transfer, reducing the number of verification requests the server can handle in parallel. nginx serves files from disk directly, releasing the worker immediately.
+
+In local development (`DEBUG=True`), Django serves media automatically. In production (`DEBUG=False`), the `urlpatterns` no longer include media routes and nginx takes over.
+
+---
+
+### Offline Sync as Fallback
+
+The offline sync feature (`SYNC_API_URL`, `sync_beneficiaries` management command) remains in the codebase as a secondary option for edge scenarios:
+
+- A registration team operates from a remote location with no network.
+- Registrations are stored locally (SQLite) and pushed to the central server when connectivity is restored.
+
+**This is not the primary multi-user mode.** In the centralized architecture, all workstations connect directly to the shared PostgreSQL database — no sync is required because there is only one database.
+
+If offline sync is used alongside centralized deployment, the central server's `EMBEDDING_ENCRYPTION_KEY` must be identical to the offline workstation's key. Keys that differ make face embeddings from the offline device permanently unreadable on the server.
+
+---
+
+### Defense-Ready Architecture Explanation
+
+**Why centralized deployment is better for real multi-user use:**
+
+A centralized architecture means there is exactly one database, one source of truth. Every read and write from every staff station goes to the same place at the same time. This eliminates an entire category of problems:
+
+- A beneficiary registered by one staff member is immediately visible to another — no sync lag, no "not found" errors because the record is still on the registering machine.
+- A stipend claim recorded by one station is immediately visible to the admin approval queue on another station.
+- The audit log is unified: every action by every user appears in one chronological sequence.
+- Race conditions on duplicate claims are resolved at the database level through row-level locking (`SELECT FOR UPDATE`), not through application-level merge logic.
+
+**Why separate local SQLite databases are not suitable for simultaneous operations:**
+
+SQLite is a file-based embedded database. It has no network server component. Each machine running its own SQLite file has its own completely independent copy of the data. To share data, records must be exported, transmitted, and merged — the offline sync workflow. Merge introduces conflict risk: two machines can independently create a beneficiary with the same sequential ID, two machines can independently mark the same event as claimed for the same beneficiary, and audit logs must be manually reconciled. None of these problems exist in a centralized deployment.
+
+SQLite is entirely appropriate for single-operator use and local development. The moment a second operator on a second machine needs to see live data from the first operator, a shared database server is the correct solution.
+
+**Why offline sync should be fallback, not primary multi-user mode:**
+
+Offline sync was designed for the specific scenario of a distribution event at a location with no network access. It is not designed for an office with two staff members who both need to register and verify beneficiaries at the same time. Operating two offline nodes concurrently and merging them later requires careful conflict resolution and creates windows where one node has stale data. The centralized model avoids this entirely: if the network is available, use it and share one database. Offline sync is the plan B for when the network genuinely is not available.
+
+---
+
+## Barangay LAN Deployment Guide
+
+This is the practical, operator-focused guide for setting up FANS-C in a real barangay office using a centralized LAN architecture. It is written for the person responsible for the initial setup, and assumes a barangay office environment with a local Wi-Fi network or wired switch.
+
+**Architecture in one sentence:** One machine in the barangay office runs the FANS-C server. All other staff devices open a browser and navigate to that machine's address over HTTPS. No software installation is needed on client devices.
+
+> **Camera access requires HTTPS.** Browsers only allow webcam access (`getUserMedia`) from a secure context — that means `https://` or `localhost`. A plain `http://192.168.x.x` URL will block the camera on client devices. For the server itself this is not an issue (it is localhost), but for any other device on the LAN it must be HTTPS. See the [Secure HTTPS LAN Deployment](#secure-https-lan-deployment) section for the full setup guide. This plain-HTTP guide covers basic connectivity; the HTTPS guide is what to follow for real deployment.
+
+> **This is the recommended production deployment for any barangay with two or more staff members, or any setup where a shared database is required.** The offline sync mode and the Windows .exe packaging are alternative paths for specific edge scenarios — not the primary deployment model.
+
+---
+
+### Why This Architecture Fits a Barangay
+
+| Concern | Why centralized LAN is the right answer |
+|---|---|
+| Multiple staff members need to see the same data | One server, one database — everyone sees the same records in real time |
+| Installing full Python / Django / TensorFlow on every computer is impractical | Only the server machine needs the software; other devices just use a browser |
+| Face embeddings and beneficiary records must not be duplicated | A single shared database eliminates the risk of conflicting or out-of-sync records |
+| Internet connectivity may be unreliable | LAN operates entirely within the office network — no internet required for daily use |
+| Audit trail must be centralized | One server produces one audit log covering all staff actions from all devices |
+| Updates must be consistent | Update once on the server; all connected browsers get the updated system immediately |
+
+---
+
+### Recommended Setup for a Barangay Office
+
+```
+  [Barangay Server Machine]             [Staff Laptop / Tablet / Desktop]
+    One PC or laptop in the office        Any device with a web browser
+    Runs Waitress + Caddy + FaceNet       No installation needed
+    Holds the database and media          Open browser -> https://fans-barangay.local
+    Connected to office Wi-Fi / LAN       Log in and work normally (camera enabled)
+
+  [Second Staff Device]
+    Same as above -- just a browser
+    Connects via https://fans-barangay.local (hostname resolves to server IP)
+```
+
+All data stays on the server machine inside the office network. No data is sent to the internet during normal operation.
+
+**Preferred access URL:** `https://fans-barangay.local`
+The server LAN IP (e.g. `192.168.1.77`) is used internally and during plain-HTTP fallback testing only. See [Secure HTTPS LAN Deployment](#secure-https-lan-deployment) for full setup.
+
+---
+
+### Step-by-Step: Setting Up the Central Server
+
+This is done once on the machine that will act as the server. After this is done, no other machine needs to be configured.
+
+**Prerequisites on the server machine:**
+
+- Windows 10 / 11 (or Ubuntu Linux)
+- Python 3.11 — TensorFlow does not support Python 3.12 or later
+- Git (optional, for cloning the repository)
+
+**Step 1 — Get the project files on the server**
+
+Copy the project folder to the server machine (via USB, shared folder, or git clone):
+
+```
+D:\FANS\FANS-C\   (or any path you choose)
+```
+
+**Step 2 — Create the virtual environment and install dependencies**
+
+Open Command Prompt or PowerShell in the project folder:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\activate
+pip install -r requirements.txt
+```
+
+The first run downloads TensorFlow and all dependencies. This requires internet and may take several minutes.
+
+**Step 3 — Find the server's LAN IP address**
+
+In Command Prompt on the server machine:
+
+```
+ipconfig
+```
+
+Look for **IPv4 Address** under your active network adapter (Wi-Fi or Ethernet). Example:
+
+```
+IPv4 Address . . . . . . . . . . : 192.168.1.77
+```
+
+Write this down. This is the address that other devices will use to connect.
+
+**Step 4 — Configure the environment file**
+
+Copy `.env.example` to `.env` and open it in Notepad:
+
+```powershell
+Copy-Item .env.example .env
+notepad .env
+```
+
+Set these values (minimum required for LAN deployment):
+
+```
+# Replace with a strong random string:
+#   python -c "import secrets; print(secrets.token_urlsafe(50))"
+SECRET_KEY=<generated value>
+
+# Barangay server: include the LAN IP and localhost
+# Replace 192.168.1.77 with the actual IP from Step 3
+ALLOWED_HOSTS=192.168.1.77,localhost,127.0.0.1
+
+DEBUG=False
+
+# SQLite is appropriate for a single-server barangay deployment
+USE_SQLITE=True
+
+# Generate with: python manage.py generate_key
+# BACK THIS UP -- losing this key means all face data is unreadable
+EMBEDDING_ENCRYPTION_KEY=<generated value>
+
+# Leave empty -- offline sync is not needed in centralized LAN mode
+SYNC_API_URL=
+```
+
+Generate the encryption key:
+
+```powershell
+python manage.py generate_key
+```
+
+Copy the output and paste it into `.env` as `EMBEDDING_ENCRYPTION_KEY`.
+
+**Step 5 — Initialize the database**
+
+```powershell
+python manage.py migrate
+python manage.py collectstatic --noinput
+```
+
+**Step 6 — Create the admin account**
+
+```powershell
+python manage.py createsuperuser
+```
+
+You will be prompted for:
+- **Username** (e.g., `barangay_admin` or the administrator's name)
+- **Email address**
+- **Password** — choose a strong password and store it securely
+
+This is the account that controls all admin functions. Do not use a simple or shared password.
+
+**Step 7 — Start the server**
+
+For Assisted Rollout (recommended during initial deployment):
+
+```powershell
+python manage.py runserver 0.0.0.0:8000
+```
+
+The `0.0.0.0` makes Django listen on all network interfaces so other devices on the LAN can connect. Leave this terminal window open while the system is in use.
+
+For a more stable production setup (optional):
+
+```powershell
+pip install waitress
+waitress-serve --listen=0.0.0.0:8000 fans.wsgi:application
+```
+
+**Step 8 — Verify LAN access from another device**
+
+On another device connected to the same Wi-Fi or network switch:
+
+1. Open a web browser
+2. Go to `http://192.168.1.77:8000` (replace with the server IP from Step 3)
+3. The FANS-C login page should appear
+
+If the page does not load, check that:
+- The server's Windows Firewall allows inbound connections on port 8000
+- Both devices are on the same Wi-Fi network or connected to the same switch
+- `ALLOWED_HOSTS` in `.env` includes the server's LAN IP
+
+**Windows Firewall rule (if needed):**
+
+```powershell
+# Run as Administrator
+netsh advfirewall firewall add rule `
+  name="FANS-C Django Server" `
+  dir=in action=allow protocol=TCP localport=8000
+```
+
+---
+
+### Client Device Access
+
+Client devices need **no installation at all**. They only need a web browser and a connection to the same office network.
+
+**Steps for a staff member:**
+
+1. Connect to the barangay office Wi-Fi (or plug in the network cable)
+2. Open a web browser (Chrome, Edge, or Firefox)
+3. Go to `https://fans-barangay.local` — the FANS-C login page should appear
+4. Log in with the username and password assigned by the administrator
+
+If `fans-barangay.local` does not resolve yet (hostname not configured), use the plain-HTTP fallback `http://192.168.1.77:8000` for basic connectivity testing. Camera capture will not work over plain HTTP on client devices — HTTPS is required. See [Hostname Resolution: fans-barangay.local](#hostname-resolution-fans-barangaylocal) for setup.
+
+**VS Code, Python, and the terminal are not needed on client machines.**
+
+Staff members access the system through the browser only. The developer tools (VS Code, Python environment, command line) are only needed on the server machine for initial setup and maintenance tasks. Normal daily operations — registering beneficiaries, running verifications, processing claims — all happen through the browser.
+
+---
+
+### Local Network Access Flow
+
+```
+  Staff Device (browser)
+          |
+          | https://fans-barangay.local  (LAN -- no internet needed)
+          |
+          v
+  Central Server Machine (one PC in the barangay office)
+    [Caddy -- HTTPS termination, TLS certificate, port 443]
+          |
+          | plain HTTP, 127.0.0.1:8000 (internal only)
+          v
+    [Waitress -- WSGI server]
+          |
+          v
+    [Django application -- FaceNet pipeline]
+          |
+          v
+    [SQLite database, encrypted face embeddings, media files]
+```
+
+Everything runs on the server machine. Client devices send HTTPS requests and display results. No biometric data passes to the internet. The LAN is entirely self-contained within the barangay office. Caddy handles TLS so Django itself never needs to deal with certificates.
+
+---
+
+### Offline Fallback Behavior
+
+The offline sync feature (`SYNC_API_URL` in `.env`) is designed for edge cases where a device cannot reach the central server — for example, a mobile registration team operating at a remote distribution site with no network.
+
+**In normal barangay office LAN operation, offline sync is not enabled and is not needed.** All staff devices connect directly to the central server through the browser. Leave `SYNC_API_URL` empty in `.env`.
+
+When offline sync is used (fallback only):
+
+- Records are stored locally on the disconnected device as **provisional data**
+- When connectivity is restored, records are pushed to the central server via the sync command
+- The central server validates records before accepting them
+- Conflicting records (duplicate IDs, duplicate claims for the same event) are flagged for manual review in the conflict queue
+- Offline records are never treated as final until the central server has validated them
+
+Offline sync adds operational complexity and conflict-resolution overhead. Enable it only when a device genuinely cannot be networked to the LAN.
+
+---
+
+### Admin Account Creation
+
+**Always use `python manage.py createsuperuser` for deployment.** This is Django's built-in secure admin creation command.
+
+```powershell
+python manage.py createsuperuser
+```
+
+Why this matters:
+
+- The command prompts for credentials interactively — they are never stored in code, scripts, or source control
+- Django's full password validation suite runs (minimum length, complexity, common-password check)
+- The password is hashed with PBKDF2 before storage — it is never stored as plain text
+- The person setting up the system chooses the password at setup time, not a developer months earlier
+
+**What not to do:**
+
+- Do not hardcode a password in any script or config file (e.g., `--password Admin123`)
+- Do not commit a script that calls `create_admin` with a default password
+- Do not share a single admin account among multiple users — create individual accounts
+
+After creating the first admin account, additional staff accounts can be created through the Django admin panel at `/admin/` or through the system's user management interface.
+
+---
+
+### Security Notes
+
+1. **Change the admin password immediately after setup.** If the initial password was communicated to someone during setup, change it before regular operation begins.
+
+2. **Keep `.env` secure.** The `EMBEDDING_ENCRYPTION_KEY` in `.env` encrypts every stored face embedding. If this key is lost or changed, all enrolled beneficiaries must re-register from scratch. Never transmit `.env` over plain email — use a USB drive or an encrypted message.
+
+3. **Set `DEBUG=False` on the deployed server.** With `DEBUG=True`, Django shows detailed error pages that expose source code and internal settings to anyone who triggers an error. Always set `DEBUG=False` in `.env` on any server that is accessible to staff.
+
+4. **Lock the server machine screen when unattended.** The server machine holds all biometric data. Enable Windows automatic screen lock or set a short screensaver lock time.
+
+5. **Use individual accounts for each staff member.** Do not share login credentials. Individual accounts ensure the audit log identifies which staff member performed each action.
+
+6. **Keep the server machine on a trusted internal network only.** For a barangay office, the server should be on the local Wi-Fi or wired switch. Caddy listens on port 443 (HTTPS). Waitress listens on `127.0.0.1:8000` (internal only — not accessible from outside the server machine). Do not expose either port to the internet.
+
+---
+
+### Backup and Maintenance
+
+**What to back up (on the server machine):**
+
+| File / Folder | Why | How often |
+|---|---|---|
+| `.env` | Contains the encryption key — losing this makes all face data permanently unreadable | Once after setup; after any key change |
+| `db.sqlite3` | The main database — all beneficiary records, claims, and audit logs | Daily |
+| `media/` | Uploaded photos and face capture references | Daily |
+
+**Simple daily backup (run on the server machine at end of each working day):**
+
+```powershell
+# Run in the project folder
+$date = Get-Date -Format 'yyyyMMdd'
+Copy-Item db.sqlite3 "D:\Backups\db_$date.sqlite3"
+xcopy media "D:\Backups\media_$date" /E /I /Q
+```
+
+Or copy `db.sqlite3`, `media\`, and `.env` to a USB drive after each session.
+
+**Restarting Django after the server machine reboots:**
+
+Django (via Waitress) does not start automatically after a reboot by default. To restart:
+
+```powershell
+cd D:\FANS\FANS-C
+.\.venv\Scripts\activate
+waitress-serve --listen=127.0.0.1:8000 fans.wsgi:application
+```
+
+Caddy also needs to be running — if installed as a Windows service (see the Secure HTTPS section) it starts automatically. If not, restart it with:
+
+```powershell
+caddy run --config D:\FANS\FANS-C\Caddyfile
+```
+
+For automatic startup on Windows boot, use Windows Task Scheduler or install both Waitress (via `nssm`) and Caddy as Windows services so they restart after reboot without manual intervention.
+
+**Applying updates:**
+
+When the source code is updated (bug fixes, new features):
+
+1. Pull or copy the updated files to the server machine
+2. Activate the virtual environment and run `pip install -r requirements.txt` if requirements changed
+3. Run `python manage.py migrate` to apply any new database migrations
+4. Run `python manage.py collectstatic --noinput` if static files changed
+5. Restart Django
+
+Client devices need no changes — they will automatically use the updated system when they next open the browser.
+
+---
+
+### Development vs Production Mode
+
+| Context | Command / setup | Notes |
+|---|---|---|
+| Developer testing on own machine | `python manage.py runserver` | `localhost` only; camera works because it is a secure context |
+| Basic LAN connectivity test (no camera) | `python manage.py runserver 0.0.0.0:8000` | Plain HTTP; camera blocked on client devices |
+| Barangay production deployment (recommended) | Waitress on `127.0.0.1:8000` + Caddy HTTPS on port 443 | Camera works on all LAN devices; access via `https://fans-barangay.local` |
+
+**VS Code is a developer tool, not a daily operator tool.**
+
+- **Developers** use VS Code, Python, the terminal, and `manage.py` commands to build, maintain, and debug the system
+- **Barangay staff** open a browser, navigate to the server IP, log in, and work normally
+- After initial setup, the server machine runs Django in the background and staff devices use the system through the browser — no terminal, no VS Code, no Python commands
+
+The only time a terminal is needed on the server machine after setup is to restart Django after a reboot, or to apply software updates.
+
+---
+
+### Defense Notes: Why Centralized LAN Is the Right Architecture
+
+**For the academic reviewer or panel evaluator:** This section explains the architectural reasoning for the design choices.
+
+The FANS-C system uses a standard web application architecture: one Django server process, one shared database, browser-based clients. This is not an architectural shortcut or a simplification — it is the correct architecture for a multi-user application that requires a consistent shared state.
+
+**Why not install a full copy of the system on every device?**
+
+Installing Python, TensorFlow, Django, and a local database on every staff laptop would require:
+- Significant technical expertise to set up and maintain on each machine
+- Manual data synchronization between devices (with conflict resolution)
+- Separate backup management for each machine
+- Coordinated updates applied to every device separately
+
+None of these problems exist with a centralized server. One machine runs the software; all others use a browser.
+
+**Why is browser-based client access appropriate for a barangay setting?**
+
+Every modern device — laptop, tablet, or desktop — ships with a web browser. The browser is the universal client interface. A staff member needs no technical knowledge to use the system: they open a browser and navigate to an IP address. This is the same model used by Philippine government information systems, banking portals, hospital management systems, and every major web application.
+
+**Why is offline sync restricted to fallback only?**
+
+Offline sync was designed for a specific scenario: a registration team at a remote location with no network. It is not designed for simultaneous multi-user operation in an office where a network is available. Running two offline nodes concurrently creates windows where each node has stale data, and merging them later requires conflict resolution. The centralized model eliminates this entirely: if the network is available, there is one database and no merge step.
+
+**Comparison:**
+
+| Criterion | Full install on every device | Centralized LAN (this system) |
+|---|---|---|
+| Data consistency | Each device has its own database; data diverges over time | One database, one source of truth |
+| Duplicate claim prevention | Requires distributed coordination | Row-level lock on one database enforces it |
+| Audit trail completeness | Split across every device | One unified audit log |
+| Software updates | Must be applied to every device | Update once on the server |
+| Encryption key management | Keys must be identical and managed on every device | One key, one server |
+| Staff training | Each staff member needs to manage their own Python environment | Open browser, enter IP, log in |
+
+---
+
+## Secure HTTPS LAN Deployment
+
+This section covers the recommended production deployment for a barangay office: Django served by Waitress behind Caddy as a local HTTPS reverse proxy, accessed by staff devices at `https://fans-barangay.local`.
+
+---
+
+### Why HTTPS Is Required for Camera Access
+
+Browsers enforce a **secure context** rule for sensitive hardware APIs. The `getUserMedia` API — which powers webcam access for face capture — is only available under two conditions:
+
+1. The page is served from `localhost` or `127.0.0.1` (the server machine itself)
+2. The page is served over `https://`
+
+A plain `http://192.168.1.77:8000` URL fails condition 2. The browser will block camera access silently — the verification flow will either show a blank camera or an error, depending on the browser. This is not a bug; it is a deliberate browser security policy that cannot be bypassed through Django configuration.
+
+**This means HTTPS is not optional for a multi-device LAN deployment — it is required for the core biometric capture feature to function.**
+
+The fix is a locally-trusted TLS certificate issued by `mkcert` and served by Caddy. No internet or public CA is needed. Everything is self-contained within the barangay office network.
+
+> **Why not just use the `--unsafely-treat-insecure-origin-as-secure` Chrome flag?**
+> That flag is a temporary developer workaround. It must be set manually on every client device, it is not available on all browsers, it disables other security protections, and it is not appropriate for a production deployment. The correct solution is HTTPS with a locally-trusted certificate, which takes about 10 minutes to set up and works on all browsers without any client-side configuration.
+
+---
+
+### Recommended Stack: Waitress + Caddy
+
+| Component | Role | Why |
+|---|---|---|
+| **Django** | Application server | The FANS-C application logic, database, FaceNet pipeline |
+| **Waitress** | WSGI server | Pure-Python, no compilation needed, reliable on Windows, handles concurrent requests |
+| **Caddy** | Reverse proxy + TLS | Single binary, zero configuration for local HTTPS, handles certificates automatically with mkcert integration |
+| **mkcert** | Local CA + certificate tool | Issues browser-trusted certificates for local hostnames on LAN without internet |
+
+**Why Caddy instead of nginx?**
+
+Caddy is a single `.exe` file with no dependencies. On Windows, nginx requires manual configuration of multiple files, a separate TLS configuration, and does not integrate with `mkcert` as cleanly. For a barangay deployment, Caddy's simplicity is a significant practical advantage. Caddy's `Caddyfile` format is also much easier to understand and audit than nginx config.
+
+**Why Waitress instead of Django's runserver?**
+
+Django's development server (`manage.py runserver`) is explicitly not designed for production use. It handles one request at a time and is not suitable when multiple staff devices submit verification requests simultaneously. Waitress is a simple, reliable WSGI server that handles concurrent requests correctly and runs well inside a Windows environment without compilation.
+
+---
+
+### How Requests Flow
+
+```
+  Staff device browser
+          |
+          | HTTPS request to https://fans-barangay.local (port 443)
+          | TLS certificate issued by local mkcert CA (browser-trusted)
+          |
+          v
+  Caddy (on server machine, listening on 0.0.0.0:443)
+    - Terminates TLS (decrypts HTTPS)
+    - Adds X-Forwarded-Proto: https header
+    - Forwards plain HTTP to Waitress
+          |
+          | Plain HTTP to 127.0.0.1:8000 (internal only, never leaves server)
+          v
+  Waitress (on server machine, listening on 127.0.0.1:8000)
+    - WSGI server, handles concurrent requests
+    - Passes request to Django application
+          |
+          v
+  Django application
+    - Reads X-Forwarded-Proto header (SECURE_PROXY_SSL_HEADER setting)
+    - Sets secure session and CSRF cookies correctly
+    - Runs FaceNet pipeline, queries database, returns response
+          |
+          v
+  Response travels back up the same chain to the browser
+```
+
+Django only ever sees plain HTTP from `127.0.0.1`. It never handles TLS directly. Caddy owns the certificate and encryption. This is the standard reverse-proxy pattern used by virtually every production web deployment.
+
+---
+
+### Why `fans-barangay.local` Instead of a Raw IP
+
+| Criterion | `http://192.168.1.77:8000` | `https://fans-barangay.local` |
+|---|---|---|
+| Camera access on client devices | Blocked (not a secure context) | Works |
+| Memorable for staff | Hard to remember a raw IP | Easy hostname |
+| Survives IP change (DHCP reassignment) | Breaks — all clients must update | Update hosts file once on server side |
+| Certificate issuance | `mkcert` does not issue for raw IPs by default | `mkcert` issues for hostnames cleanly |
+| Looks professional | Raw IP in address bar | Hostname in address bar |
+
+---
+
+### Step-by-Step: Secure Windows LAN Deployment
+
+This is a one-time setup on the server machine. Client devices need only a hosts file entry (or router DNS entry) — no software installation.
+
+#### Prerequisites
+
+- Python 3.11 and project dependencies already installed (see [Barangay LAN Deployment Guide](#step-by-step-setting-up-the-central-server))
+- The project is at `D:\FANS\FANS-C` (or your chosen path)
+- `.env` is configured with `DEBUG=False` and valid `SECRET_KEY` / `EMBEDDING_ENCRYPTION_KEY`
+- Admin account already created with `python manage.py createsuperuser`
+
+#### Step 1 — Install Waitress
+
+```powershell
+.\.venv\Scripts\activate
+pip install waitress
+```
+
+Verify it works:
+
+```powershell
+waitress-serve --listen=127.0.0.1:8000 fans.wsgi:application
+```
+
+You should see `Serving on http://127.0.0.1:8000`. Open `http://127.0.0.1:8000` in a browser on the server machine and confirm the login page loads. Press `Ctrl+C` to stop.
+
+#### Step 2 — Install mkcert
+
+`mkcert` is a small Windows executable that creates a local Certificate Authority and issues TLS certificates that browsers trust automatically (after the CA is installed).
+
+1. Download the latest `mkcert-v*-windows-amd64.exe` from the mkcert releases page
+2. Rename it to `mkcert.exe` and copy it to `C:\Windows\System32\` (or any folder in your PATH)
+3. Open PowerShell **as Administrator** and install the local CA:
+
+```powershell
+mkcert -install
+```
+
+This adds a root certificate to Windows' Trusted Root store and to Firefox's NSS store. You will see a prompt to confirm — click Yes. This step is done once per machine and affects only the local server machine. Client devices are handled separately (see hostname resolution section).
+
+#### Step 3 — Issue a Certificate for `fans-barangay.local`
+
+In PowerShell (does not need to be Administrator):
+
+```powershell
+cd D:\FANS\FANS-C
+mkcert fans-barangay.local 192.168.1.77 localhost 127.0.0.1
+```
+
+Replace `192.168.1.77` with your server's actual LAN IP address.
+
+This creates two files in the current directory:
+
+```
+fans-barangay.local+3.pem       -- the certificate (public)
+fans-barangay.local+3-key.pem   -- the private key (keep this secret)
+```
+
+The `+3` suffix means the certificate covers four names: the hostname, the LAN IP, localhost, and 127.0.0.1.
+
+#### Step 4 — Create a Caddyfile
+
+Create a file named `Caddyfile` (no extension) in the project root (`D:\FANS\FANS-C\Caddyfile`):
+
+```
+fans-barangay.local {
+    tls D:\FANS\FANS-C\fans-barangay.local+3.pem D:\FANS\FANS-C\fans-barangay.local+3-key.pem
+
+    reverse_proxy 127.0.0.1:8000 {
+        header_up X-Forwarded-Proto https
+    }
+}
+```
+
+**What each line does:**
+- `fans-barangay.local` — Caddy listens on port 443 for this hostname
+- `tls ...` — uses the mkcert certificate and key (no automatic certificate fetching, no internet needed)
+- `reverse_proxy 127.0.0.1:8000` — forwards requests to Waitress
+- `header_up X-Forwarded-Proto https` — sets the header Django reads to know the request came over HTTPS
+
+#### Step 5 — Download and Install Caddy
+
+1. Download the latest `caddy_*_windows_amd64.zip` from the Caddy releases page
+2. Extract `caddy.exe` to `C:\Windows\System32\` (or any folder in your PATH)
+3. Verify it works:
+
+```powershell
+caddy version
+```
+
+#### Step 6 — Configure Django `.env` for HTTPS
+
+Open `D:\FANS\FANS-C\.env` and add or update these values:
+
+```
+DEBUG=False
+ALLOWED_HOSTS=fans-barangay.local,192.168.1.77,localhost,127.0.0.1
+
+# Required: Caddy forwards plain HTTP to Django but browser uses https://
+# Without this, Django rejects all form POSTs with HTTP 403 Forbidden
+CSRF_TRUSTED_ORIGINS=https://fans-barangay.local
+
+# Required: tells Django to trust the X-Forwarded-Proto header from Caddy
+# This makes session and CSRF cookies use the Secure flag correctly
+SECURE_PROXY_SSL_HEADER=HTTP_X_FORWARDED_PROTO,https
+
+# Required: use the Host header from Caddy (fans-barangay.local), not 127.0.0.1
+USE_X_FORWARDED_HOST=True
+```
+
+#### Step 7 — Open Windows Firewall for Port 443
+
+```powershell
+# Run as Administrator
+netsh advfirewall firewall add rule `
+  name="FANS-C Caddy HTTPS" `
+  dir=in action=allow protocol=TCP localport=443
+```
+
+Port 8000 does **not** need a firewall rule — Waitress binds to `127.0.0.1:8000` (loopback only) so it is not reachable from outside the server machine.
+
+#### Step 8 — Start Waitress and Caddy
+
+Open two PowerShell windows on the server machine:
+
+**Window 1 — Start Waitress:**
+
+```powershell
+cd D:\FANS\FANS-C
+.\.venv\Scripts\activate
+waitress-serve --listen=127.0.0.1:8000 fans.wsgi:application
+```
+
+**Window 2 — Start Caddy:**
+
+```powershell
+cd D:\FANS\FANS-C
+caddy run --config Caddyfile
+```
+
+You should see Caddy output similar to:
+
+```
+{"level":"info","msg":"serving initial configuration"}
+{"level":"info","msg":"serving","address":"fans-barangay.local:443"}
+```
+
+#### Step 9 — Test on the Server Machine
+
+Open a browser on the server machine and go to `https://fans-barangay.local`. You should see the FANS-C login page with a valid padlock (no certificate warning) because the mkcert CA was installed on this machine in Step 2. Log in and confirm the verification page loads and the camera works.
+
+---
+
+### Hostname Resolution: `fans-barangay.local`
+
+The hostname `fans-barangay.local` must resolve to the server's LAN IP address on every device that needs to connect. There are two ways to do this.
+
+#### Option A — Hosts File (Small Deployment / Demo)
+
+Edit the `hosts` file on each client device. This is the simplest approach and requires no router configuration.
+
+**On Windows client devices (run as Administrator):**
+
+```powershell
+notepad C:\Windows\System32\drivers\etc\hosts
+```
+
+Add this line (replace `192.168.1.77` with your server's actual LAN IP):
+
+```
+192.168.1.77    fans-barangay.local
+```
+
+Save and close. No restart needed — open a new browser tab and go to `https://fans-barangay.local`.
+
+**On Android / iOS clients:**
+
+Android and iOS do not allow direct hosts file editing. Use Option B (router DNS) for mobile devices, or use a third-party DNS app.
+
+For a barangay deployment where clients are primarily Windows PCs or laptops, Option A is sufficient.
+
+#### Option B — Router / Local DNS (Preferred if Available)
+
+If the office router supports custom DNS entries (most modern routers do under Advanced Settings > DNS or Local Hosts):
+
+1. Log in to the router admin panel (usually `192.168.1.1` or `192.168.0.1`)
+2. Find the local DNS or static host mapping section
+3. Add: `fans-barangay.local` → `192.168.1.77`
+4. Save and apply
+
+All devices on the network will now automatically resolve `fans-barangay.local` without any per-device hosts file changes. This is the preferred approach for larger deployments or when client devices change frequently.
+
+#### Installing the mkcert CA on Client Devices
+
+After configuring hostname resolution, client devices also need to trust the mkcert root certificate so the browser shows a padlock instead of a certificate warning.
+
+**Option 1 — Copy and install the mkcert root CA manually (Windows):**
+
+On the server machine, find the mkcert CA certificate:
+
+```powershell
+mkcert -CAROOT
+```
+
+This prints a path like `C:\Users\YourName\AppData\Local\mkcert`. Copy `rootCA.pem` from that folder to each client device (via USB or shared folder).
+
+On each Windows client, run as Administrator:
+
+```powershell
+certutil -addstore -f "Root" rootCA.pem
+```
+
+After this, Chrome and Edge on that client will trust the certificate. Firefox uses its own store — import `rootCA.pem` via Firefox Settings > Privacy & Security > Certificates > Import.
+
+**Option 2 — Use a self-signed certificate and click through the browser warning (demo only):**
+
+If you skip the CA installation, browsers will show a "Your connection is not private" warning. You can click "Advanced" and "Proceed anyway" to continue. This still gives you HTTPS and camera access — the only difference is the visual warning. This is acceptable for a controlled barangay demo but not ideal for regular staff use.
+
+**Note:** This certificate warning only appears because the CA is local (not a public CA like Let's Encrypt). The encryption itself is identical — data is fully encrypted in transit. The warning means "the browser does not recognize who issued this certificate", not "the connection is insecure."
+
+---
+
+### Django Settings for HTTPS Behind Caddy
+
+This is a summary of what must be set in `.env` for the HTTPS deployment to work correctly. All of these settings are already supported by `fans/settings.py` — no code changes are needed.
+
+```
+# Deployment identity
+DEBUG=False
+SECRET_KEY=<strong random value>
+
+# Accept requests for the HTTPS hostname and internal addresses
+ALLOWED_HOSTS=fans-barangay.local,192.168.1.77,localhost,127.0.0.1
+
+# Tell Django to trust HTTPS POST requests coming through Caddy
+# Without this: HTTP 403 on every form submission (login, verification, etc.)
+CSRF_TRUSTED_ORIGINS=https://fans-barangay.local
+
+# Tell Django the real protocol (https) from the X-Forwarded-Proto header
+# Without this: session and CSRF cookies lack the Secure flag
+SECURE_PROXY_SSL_HEADER=HTTP_X_FORWARDED_PROTO,https
+
+# Use the hostname from the forwarded Host header
+USE_X_FORWARDED_HOST=True
+
+# Face embedding security (keep stable across server restarts)
+EMBEDDING_ENCRYPTION_KEY=<Fernet key from: python manage.py generate_key>
+
+# Offline sync disabled for centralized LAN mode
+SYNC_API_URL=
+```
+
+**What each setting does in the HTTPS context:**
+
+| Setting | What happens without it |
+|---|---|
+| `CSRF_TRUSTED_ORIGINS` | Every form POST returns HTTP 403. Login fails. Verification fails. |
+| `SECURE_PROXY_SSL_HEADER` | `SESSION_COOKIE_SECURE` and `CSRF_COOKIE_SECURE` are set based on `not DEBUG`. Without this header setting, Django may not set the `Secure` flag correctly. |
+| `USE_X_FORWARDED_HOST` | Django uses `127.0.0.1` as the host in redirect URLs and error messages instead of `fans-barangay.local`. |
+| `ALLOWED_HOSTS` includes hostname | Django returns HTTP 400 Bad Request for requests arriving with a Host header it does not recognise. |
+
+---
+
+### Verifying Camera Access from a Client Device
+
+After completing the setup, run this checklist from a client device:
+
+1. Hostname resolution: in Command Prompt, run `ping fans-barangay.local` — it should reply from `192.168.1.77`
+2. HTTPS access: open `https://fans-barangay.local` — padlock should appear (no warning, if CA installed)
+3. Login: log in with a staff account — login page should submit without HTTP 403
+4. Verification page: navigate to a beneficiary's verification page
+5. Camera: click the capture button — the browser should request camera permission (not silently block it)
+6. Capture: allow camera access, click Capture and Verify — the face pipeline should run normally
+
+If step 5 fails (camera blocked despite HTTPS): check that the browser address bar shows `https://` and not `http://`. If it shows `http://`, Caddy is not routing the request — confirm `caddy run` is active and the firewall rule for port 443 is in place.
+
+---
+
+### Insecure Browser Flags Are Not the Answer
+
+Some guides suggest using Chrome's `--unsafely-treat-insecure-origin-as-secure` flag to allow camera access on plain HTTP origins. **Do not use this as the production solution.** Here is why:
+
+| Issue | Detail |
+|---|---|
+| Must be set on every client device | No central control — each machine needs a custom browser shortcut |
+| Requires command-line browser launch | Normal shortcuts do not pass flags; staff must use a special shortcut |
+| Not available on Firefox or Safari | Only Chrome/Edge support this flag |
+| Disables other security protections | The flag affects more than just camera access |
+| Not appropriate for real deployment | It signals to any reviewer that the security model is bypassed rather than solved |
+
+The HTTPS + Caddy + mkcert solution described in this section takes approximately the same time to set up and requires no per-client configuration beyond a hosts file entry and a one-time CA installation. It is the correct solution.
+
+---
+
+### Security Notes for HTTPS Deployment
+
+1. **Protect the certificate private key.** The file `fans-barangay.local+3-key.pem` must not be accessible to non-administrator users. Store it in the project folder with restricted permissions. Anyone who obtains this key can impersonate your server to devices that trust the mkcert CA.
+
+2. **The mkcert CA is machine-specific.** The CA keypair in `%LOCALAPPDATA%\mkcert` must be backed up alongside `.env`. If the server machine is replaced, regenerate the CA on the new machine and re-distribute `rootCA.pem` to client devices. Certificates issued by the old CA will not be trusted by the new CA.
+
+3. **Do not use the mkcert CA for anything other than this deployment.** The CA is trusted by all browsers on machines where it is installed. Keep it on the server machine only.
+
+4. **Waitress listens on 127.0.0.1 only.** This is intentional — Waitress is not exposed to the network directly. Only Caddy is. If you change Waitress to listen on `0.0.0.0`, plain HTTP access from other devices becomes possible, bypassing the HTTPS requirement.
+
+5. **Set `DEBUG=False` before starting Caddy.** With `DEBUG=True`, Django's detailed error pages will be visible to all LAN users and will expose internal paths, settings, and code.
+
+---
+
+### Defense Notes: Why This Stack
+
+**For the academic reviewer or panel evaluator:**
+
+**Why HTTPS is architecturally necessary, not just recommended:**
+
+The `getUserMedia` webcam API is gated on a secure context (HTTPS or localhost) by all modern browsers as a W3C specification requirement. This is not a browser quirk that can be configured away — it is a security boundary enforced at the browser level to prevent malicious websites from silently accessing cameras. For a biometric system where camera access is the primary input, HTTPS is a hard requirement for multi-device deployment.
+
+**Why Caddy over nginx for this context:**
+
+Nginx is a capable production reverse proxy but has a steeper configuration curve and no built-in integration with local certificate tools on Windows. Caddy's configuration is a single Caddyfile that a reviewer can read and understand in 30 seconds. For an academic capstone, demonstrating a working secure deployment with minimal configuration is more appropriate than a complex nginx setup.
+
+**Why mkcert over self-signed certificates:**
+
+A manually generated self-signed certificate with `openssl` requires either installing the CA on every client (same as mkcert) or clicking through browser warnings. `mkcert` automates the CA creation and installation and is specifically designed for local development and LAN deployment. It is widely used and its security model (trust limited to machines where the CA is explicitly installed) is appropriate for a controlled barangay environment.
+
+**Why Waitress over Django runserver:**
+
+Django's runserver documentation explicitly states it should not be used in production. It uses a single-threaded request loop which would queue all concurrent verification requests from multiple staff devices. Waitress is a production-grade WSGI server that handles multiple concurrent requests correctly, requires no compilation, and installs with a single `pip install` command.
+
+---
+
+## Windows .exe Packaging and Distribution
+
+This section covers everything needed to package FANS-C as a Windows desktop application that can be installed and launched like standard Windows software  --  no Python installation, no virtual environment activation, no command line required on the target machine.
+
+The existing Django + FaceNet architecture is completely preserved. The packaging layer wraps the running system in a launcher executable and a standard Windows installer.
+
+---
+
+### Packaging Overview
+
+The packaging system has four layers:
+
+| Layer | File | What it does |
+|---|---|---|
+| Launcher | `launcher.py` | Starts Django, runs migrations, opens browser |
+| PyInstaller spec | `fans_c.spec` | Defines what gets bundled into the exe |
+| Build script | `build_exe.ps1` | Automates the full build process |
+| Installer script | `installer/fans_c.iss` | Compiles the Windows installer with Inno Setup |
+
+**User experience after installation:**
+
+1. User runs `FANS-C-Setup.exe` (the installer).
+2. App is installed to `%LocalAppData%\Programs\FANS-C\`.
+3. A Start Menu shortcut and optional desktop shortcut are created.
+4. User creates `.env` in the install directory (one-time setup).
+5. User opens the shortcut -> FANS-C.exe starts -> Django server launches -> browser opens automatically.
+
+---
+
+### How the Launcher Works
+
+`launcher.py` is the entry point for the packaged executable. It runs the following sequence on every launch:
+
+**1. Path setup**
+When frozen by PyInstaller (`sys.frozen == True`), `sys.executable` points to `FANS-C.exe`. All bundled files (Django apps, templates, static files) are in the same directory. `BASE_DIR` is set to that directory so Django's `settings.py` resolves all paths correctly.
+
+**2. Preflight checks**
+Before Django starts, the launcher validates:
+- `.env` exists in the same directory as `FANS-C.exe`
+- `EMBEDDING_ENCRYPTION_KEY` is set and non-empty in `.env`
+- The encryption key is a valid Fernet key (format check)
+
+If any check fails, a user-friendly dialog box is shown explaining what is wrong and how to fix it. No confusing Python tracebacks are shown to end users.
+
+**3. Django setup and migrations**
+- `os.environ['DJANGO_SETTINGS_MODULE']` is set to `fans.settings`.
+- `DEBUG` is forced to `False` in packaged mode so whitenoise serves static files correctly.
+- `django.setup()` initialises the Django application.
+- `migrate --noinput` runs automatically. This creates `db.sqlite3` on the first launch and applies any pending migrations silently.
+
+**4. Server startup**
+- When packaged: **waitress** is used as the WSGI server (see [onedir vs onefile](#onedir-vs-onefile)).
+- When running from source: Django's `runserver --noreload` is used (developer-friendly).
+- The server runs on `http://127.0.0.1:8765/` in a background thread.
+
+Port `8765` was chosen specifically because it avoids conflicts with common development servers (`8000`, `8080`, `3000`, `5000`).
+
+**5. Browser opening**
+The launcher polls `127.0.0.1:8765` every 500 ms until the server responds (up to 90 seconds). This accounts for TensorFlow's slow first-import time (10-20 seconds on average hardware). Once the server is ready, `webbrowser.open()` opens the system in the user's default browser. No fixed sleep  --  it opens exactly when ready.
+
+**6. Keep-alive**
+The main thread waits on the server thread so the process stays alive. When the user closes the console window, the OS terminates all threads.
+
+---
+
+### Files Added for Packaging
+
+```
+launcher.py           --  Windows desktop launcher (entry point)
+fans_c.spec           --  PyInstaller build specification
+build_exe.ps1         --  PowerShell build automation script
+installer/
+  fans_c.iss          --  Inno Setup 6 installer script
+  Output/             --  Created by Inno Setup (contains FANS-C-Setup.exe)
+dist/
+  FANS-C/             --  Created by PyInstaller (the packaged application)
+    FANS-C.exe        --  The launcher executable
+    .env.example      --  Template for user to create .env
+    SETUP.md          --  First-run instructions
+    fans/             --  Django project package
+    accounts/         --  Auth app
+    beneficiaries/    --  Core beneficiary app
+    verification/     --  FaceNet verification app
+    logs/             --  Audit log app
+    templates/        --  Django templates
+    static/           --  Source static files
+    staticfiles/      --  Collected/hashed static files (whitenoise)
+    (+ tensorflow, keras, cv2, and all other dependencies)
+```
+
+---
+
+### Build Prerequisites
+
+The build machine (where you run `build_exe.ps1`) needs:
+
+| Requirement | Version | Notes |
+|---|---|---|
+| Python | 3.11.x | TensorFlow 2.13 requires Python 3.11. Python 3.12+ is not supported. |
+| Project `.venv` |  --  | Run `.\setup.ps1` first if it does not exist |
+| Inno Setup 6 | 6.x | For building the installer only. [Download](https://jrsoftware.org/isdl.php) |
+| UPX | any | Optional. Compresses exe slightly. [Download](https://upx.github.io/) |
+
+PyInstaller and waitress are installed automatically by `build_exe.ps1`  --  you do not need to install them manually.
+
+---
+
+### Step 1  --  Build the .exe
+
+```powershell
+# From the project root, in a normal PowerShell window (not admin required)
+.\build_exe.ps1
+```
+
+**What the build script does:**
+
+1. Verifies Python 3.11 is in `.venv`
+2. Installs `pyinstaller>=6.3` and `waitress>=3.0` into `.venv`
+3. Runs `python manage.py collectstatic --noinput --clear` (updates `staticfiles/`)
+4. Runs `pyinstaller fans_c.spec --noconfirm`
+5. Copies `.env.example` and `SETUP.md` into `dist\FANS-C\`
+
+**Clean rebuild:**
+
+```powershell
+.\build_exe.ps1 -Clean
+```
+
+**Skip collectstatic (faster, when only Python code changed):**
+
+```powershell
+.\build_exe.ps1 -SkipCollectStatic
+```
+
+**Expected build time:**
+
+| Machine | First build | Subsequent builds |
+|---|---|---|
+| Mid-range laptop | 10-20 minutes | 3-7 minutes |
+| Workstation | 5-10 minutes | 2-4 minutes |
+
+The slow part is `collect_all('tensorflow')` which walks thousands of TensorFlow files. PyInstaller caches this between builds.
+
+**Expected output size:** 2-4 GB in `dist\FANS-C\` (mostly TensorFlow and OpenCV DLLs).
+
+---
+
+### Step 2  --  Test the Packaged App
+
+Before building the installer, always test the packaged app locally:
+
+```powershell
+# 1. Create a test .env in the dist folder
+Copy-Item .env.example dist\FANS-C\.env
+
+# 2. Edit dist\FANS-C\.env  --  set EMBEDDING_ENCRYPTION_KEY and SECRET_KEY
+notepad dist\FANS-C\.env
+
+# 3. Run the packaged executable
+.\dist\FANS-C\FANS-C.exe
+```
+
+**What to verify:**
+
+- The console window appears with the FANS-C banner
+- Preflight checks pass (no error dialogs)
+- "Applying database migrations" runs without errors
+- "Server is ready" message appears
+- The browser opens to `http://127.0.0.1:8765/`
+- The login page loads with CSS/JS (no broken styles)
+- Login works and the dashboard loads
+- Camera/webcam works for verification
+
+**If the browser shows unstyled pages:**
+Static files are not being served. Confirm `DEBUG=False` is set (or not overridden) and that `staticfiles/` was populated by `collectstatic`. Check the console for whitenoise errors.
+
+**If the console shows import errors:**
+Add the missing module to `hiddenimports` in `fans_c.spec` and rebuild.
+
+---
+
+### Step 3  --  Build the Installer
+
+After the packaged app works correctly:
+
+**Using the Inno Setup IDE:**
+1. Install Inno Setup 6 from [jrsoftware.org/isdl.php](https://jrsoftware.org/isdl.php)
+2. Open `installer\fans_c.iss` in Inno Setup Compiler
+3. Press **F9** (Build -> Compile)
+4. The installer is created at `installer\Output\FANS-C-Setup.exe`
+
+**Using the command line:**
+```powershell
+& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\fans_c.iss
+```
+
+The installer bundles the entire `dist\FANS-C\` directory (2-4 GB) into a single compressed `.exe` using LZMA solid compression. Expect the installer to be roughly half the size of the dist folder.
+
+---
+
+### Step 4  --  Distribute to Another Machine
+
+**What to give the user:**
+- `FANS-C-Setup.exe` (the installer)
+
+No manual key exchange is needed for a fresh installation.
+The launcher generates a unique `EMBEDDING_ENCRYPTION_KEY` automatically on first run.
+
+---
+
+#### Case A  --  Fresh install (no existing beneficiary data)
+
+1. Run `FANS-C-Setup.exe`. No admin rights required.
+2. Accept the install directory (`%LocalAppData%\Programs\FANS-C\`).
+3. Optionally create a desktop shortcut.
+4. Leave the "Launch FANS-C now" checkbox checked and click Finish.
+5. On first launch, FANS-C creates `.env` automatically with generated keys
+   and shows a confirmation dialog.
+6. On the very first launch, FaceNet model weights (~90 MB) are downloaded to
+   `%USERPROFILE%\.keras\`. Ensure internet access is available that one time.
+
+**Subsequent launches:** No internet required. Everything works offline.
+
+**Back up `.env` after first launch.** It is stored at:
+```
+%LocalAppData%\Programs\FANS-C\.env
+```
+The `EMBEDDING_ENCRYPTION_KEY` in that file is the only way to decrypt face
+embeddings. If it is lost, all registered beneficiaries must re-register.
+
+---
+
+#### Case B  --  Restoring an existing database to a new machine
+
+Use this path when you are migrating an existing deployment (e.g. replacing
+a broken workstation, or setting up a second workstation that shares the same
+beneficiary records).
+
+**What to give the new machine:**
+- `FANS-C-Setup.exe`
+- The `.env` file (or just the `EMBEDDING_ENCRYPTION_KEY` value) from the
+  original installation
+
+**Steps:**
+
+1. Run `FANS-C-Setup.exe`. At the finish page, **uncheck** "Launch FANS-C now".
+2. Copy `db.sqlite3` and `media/` from the original machine to the install
+   directory (`%LocalAppData%\Programs\FANS-C\`).
+3. Open `%LocalAppData%\Programs\FANS-C\.env` in a text editor.
+   - If `.env` was automatically created during install, replace the generated
+     `EMBEDDING_ENCRYPTION_KEY` with the key from the original `.env`.
+   - If `.env` does not exist yet, create it from `.env.example` and paste in
+     the original `EMBEDDING_ENCRYPTION_KEY`.
+4. Launch FANS-C from the Start Menu.
+
+**Why the key must match:** Every face embedding is encrypted with
+`EMBEDDING_ENCRYPTION_KEY` using AES-128 (Fernet). If the key on the new
+machine differs from the key used at registration time, Django can load the
+database but every verification attempt will fail with a decryption error.
+The face data itself is never stored as a plain image.
+
+---
+
+### What Is and Is Not Bundled
+
+| Item | Bundled? | Reason |
+|---|---|---|
+| Django apps (`fans/`, `accounts/`, etc.) | Yes | Required for the application to run |
+| Templates | Yes | Required for the web UI |
+| `static/` (source assets) | Yes | Referenced during development/fallback |
+| `staticfiles/` (collected assets) | Yes | Required by whitenoise in production mode |
+| TensorFlow, keras-facenet, mtcnn, OpenCV | Yes | Core ML dependencies |
+| All other Python dependencies | Yes | PyInstaller bundles everything from `.venv` |
+| `.env` | **No** | Created automatically by the launcher on first run |
+| `db.sqlite3` | **No** | Created fresh by migrate on first launch |
+| `media/` (uploaded photos) | **No** (by default) | Runtime data -- should not be in a fresh install |
+| FaceNet model weights | **No** | Downloaded to `~/.keras/` on first import (~90 MB) |
+| `.venv/` | **No** | PyInstaller extracts the needed files; the venv itself is not needed |
+
+---
+
+### Keras-FaceNet Model Weights
+
+keras-facenet downloads the FaceNet model weights (~90 MB) from the internet to `%USERPROFILE%\.keras\keras_facenet\` on the **first time** `keras_facenet` is imported. This is a one-time download per Windows user account.
+
+**If the target machine has no internet access:**
+
+Pre-populate the weights directory before packaging or before first run:
+
+```powershell
+# On a machine with internet access, import keras_facenet to trigger the download
+python -c "import keras_facenet"
+
+# The weights are at:
+# %USERPROFILE%\.keras\keras_facenet\
+# Copy this folder to the same path on the target machine.
+```
+
+Alternatively, add the weights directory to the `datas` list in `fans_c.spec`:
+
+```python
+import os
+keras_home = os.path.join(os.path.expanduser('~'), '.keras', 'keras_facenet')
+if os.path.isdir(keras_home):
+    project_datas.append((keras_home, os.path.join('.keras', 'keras_facenet')))
+```
+
+Then set `KERAS_HOME` to point to the bundle directory in `launcher.py`:
+```python
+if getattr(sys, 'frozen', False):
+    os.environ['KERAS_HOME'] = BASE_DIR
+```
+
+---
+
+### onedir vs onefile
+
+**This project uses `onedir` (recommended). Do not switch to `onefile`.**
+
+| | onedir | onefile |
+|---|---|---|
+| How it works | All files extracted once to `dist/FANS-C/` at install time | All files re-extracted to `%TEMP%` on every launch |
+| Launch time | 2-5 seconds (TF import only) | 30-120 seconds (extract 2+ GB on every launch) |
+| Disk usage | One-time 2-4 GB in install dir | 2-4 GB in `%TEMP%` per launch (cleared on restart) |
+| Antivirus compatibility | Good (stable file paths) | Poor (AV tools flag DLL drops from `%TEMP%`) |
+| Suitable for TensorFlow | Yes | No  --  startup time is unacceptably slow |
+
+---
+
+### TensorFlow and PyInstaller Caveats
+
+**1. Python version must be 3.11**
+TensorFlow 2.13 only supports Python 3.10 and 3.11. Python 3.12+ will produce a `DLL load failed` error at import time. PyInstaller must be run from the `.venv` that uses Python 3.11.
+
+**2. Build time is long on the first run**
+`collect_all('tensorflow')` walks thousands of files. Expect 5-20 minutes for the first build. Subsequent builds use the PyInstaller cache (`build/` directory) and are much faster.
+
+**3. UPX must not compress TensorFlow DLLs**
+UPX compression of `_tensorflow_*.pyd` and `_pywrap_*.pyd` files frequently corrupts them. The spec file excludes these files from UPX compression via the `upx_exclude` list.
+
+**4. console=True is intentional**
+The EXE is built with `console=True`. This keeps the terminal window visible so staff can see Django logs, verification scores, and error messages. To run silently, set `console=False` in `fans_c.spec` and ensure all logging is directed to a file in `settings.py`.
+
+**5. TensorFlow GPU variant not supported**
+The project uses `tensorflow-cpu`. If a GPU build is needed, the spec file would need to be updated with the correct CUDA DLLs in `binaries`.
+
+**6. Long path issue on Windows**
+If PyInstaller fails with `OSError: [Errno 2] No such file or directory` on TensorFlow files, your project path is too long. Move the project to a shorter path (`D:\FANS`) and rebuild. Alternatively, enable Windows long path support:
+```powershell
+# Run as administrator
+New-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem" `
+    -Name "LongPathsEnabled" -Value 1 -PropertyType DWORD -Force
+```
+
+---
+
+### Common Packaging Problems and Fixes
+
+**`build_exe.ps1` fails immediately with a parser error or garbled output**
+
+Root cause: the `.ps1` file contains non-ASCII characters (em dashes, bullet points,
+arrow symbols, box-drawing characters) that PowerShell misreads when the console code
+page is not UTF-8.  This is a known Windows issue -- PowerShell versions before 7 and
+consoles with code page 1252 or 437 silently misinterpret multi-byte UTF-8 sequences
+and report syntax errors on otherwise valid lines.
+
+All packaging files (`build_exe.ps1`, `launcher.py`, `fans_c.spec`, `installer/fans_c.iss`)
+have been scrubbed to pure 7-bit ASCII.  If you ever edit these files and paste content
+from a browser or word processor, watch for:
+
+| Unsafe character | Looks like | ASCII replacement used here |
+|---|---|---|
+| U+2014 em dash | -- | ` -- ` (two hyphens with spaces) |
+| U+2013 en dash | - | `-` (hyphen) |
+| U+2022 bullet | * | `*` (asterisk) |
+| U+2192 right arrow | -> | `->` |
+| U+2500 box drawing | - | `-` |
+| U+201C/201D smart quotes | " " | `"` |
+| U+2018/2019 smart quotes | ' ' | `'` |
+
+To detect non-ASCII characters in a file before committing:
+
+```powershell
+# PowerShell: scan a file for non-ASCII bytes
+$bytes = [System.IO.File]::ReadAllBytes('build_exe.ps1')
+$bad = $bytes | Where-Object { $_ -gt 127 }
+if ($bad) { Write-Host "Non-ASCII bytes found: $($bad.Count)" } else { Write-Host "Clean" }
+```
+
+```python
+# Python: scan any file
+with open('build_exe.ps1', 'rb') as f:
+    bad = [i for i, b in enumerate(f.read()) if b > 127]
+print('non-ASCII at bytes:', bad[:10] if bad else 'none')
+```
+
+---
+
+**`build_exe.ps1` crashes at the collectstatic step with a NativeCommandError or RuntimeWarning**
+
+Symptom: the script dies at Step 3 with output similar to:
+
+```
+[warn] ...\settings.py:221: RuntimeWarning: SECRET_KEY is the default placeholder...
+NativeCommandError
+```
+
+Root cause: `$ErrorActionPreference = 'Stop'` is active globally.  When Python writes
+to stderr (Django emits a `RuntimeWarning` about the placeholder `SECRET_KEY` at import
+time), PowerShell wraps that stderr line in an `ErrorRecord` object.  Under `Stop`,
+any `ErrorRecord` flowing through `ForEach-Object` becomes a terminating error --
+even though collectstatic itself exited with code 0.
+
+This is fixed in the current `build_exe.ps1`.  The collectstatic block now:
+
+1. Temporarily lowers `$ErrorActionPreference` to `'Continue'` for that one call only.
+2. Type-checks every pipeline object: `ErrorRecord` items (stderr) are shown as
+   `[warn]` in yellow; plain strings (stdout) are shown in gray.
+3. Captures `$LASTEXITCODE` after the pipeline to detect real failures.
+4. Restores `$ErrorActionPreference = 'Stop'` unconditionally before moving on.
+
+The `SECRET_KEY` warning itself is expected when your `.env` still has the placeholder
+value.  It does not prevent collectstatic from running.  Set a real `SECRET_KEY` in
+`.env` to suppress it.
+
+If you see this error on a modified copy of `build_exe.ps1`, apply the same pattern:
+
+```powershell
+$prevEAP = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
+
+& $yourCommand 2>&1 | ForEach-Object {
+    if ($_ -is [System.Management.Automation.ErrorRecord]) {
+        Write-Host "  [warn] $_" -ForegroundColor Yellow
+    } else {
+        Write-Host "  $_" -ForegroundColor DarkGray
+    }
+}
+$exitCode = $LASTEXITCODE
+$ErrorActionPreference = $prevEAP
+
+if ($exitCode -ne 0) { exit 1 }
+```
+
+---
+
+**`ModuleNotFoundError: No module named 'fans'` at runtime**
+
+The Django project root is not in the bundle's `sys.path`. In `launcher.py`, `BASE_DIR` is added to `sys.path` before Django starts. If this error occurs, ensure `launcher.py` is being used as the entry point (not `manage.py`).
+
+**`ModuleNotFoundError: No module named 'xyz'` for a Django app or dependency**
+
+Add `'xyz'` to the `hiddenimports` list in `fans_c.spec` and rebuild. This is the most common packaging error  --  Django and TensorFlow both use many string-based dynamic imports that static analysis misses.
+
+**Missing template or static file (404 on CSS/JS)**
+
+1. Confirm `collectstatic` ran before the build (`build_exe.ps1` runs it automatically).
+2. Confirm `staticfiles/` in `project_datas` includes the right path.
+3. Confirm `DEBUG=False` is set (the launcher forces this when `sys.frozen` is True).
+
+**`PermissionError` writing `db.sqlite3`**
+
+The install directory must be writable. The installer installs to `%LocalAppData%\Programs\FANS-C\` which is always writable by the current user. If you changed the install path to `Program Files`, the database write will fail on a standard-user account.
+
+**App starts but verification gives `Model status: MOCK`**
+
+TensorFlow or keras-facenet failed to import in the bundle. Check the console for `ImportError` or `DLL load failed` messages. The most common cause is a missing TensorFlow DLL  --  ensure the spec uses `collect_all('tensorflow')` (it does by default).
+
+**Antivirus quarantines `FANS-C.exe`**
+
+Some AV tools flag PyInstaller executables as suspicious. This is a false positive. Add `FANS-C.exe` and the `dist\FANS-C\` directory to the AV exclusion list. For institutional deployment, consider code-signing the executable.
+
+**Inno Setup: `Source file does not exist` error**
+
+`build_exe.ps1` must run successfully before Inno Setup is used. Confirm `dist\FANS-C\FANS-C.exe` exists before opening `installer\fans_c.iss`.
+
+---
+
+### Limitations of the Packaged Version
+
+1. **No automatic updates.** A new installer must be built and distributed when the application is updated. The installer preserves existing `db.sqlite3` and `.env` during upgrades.
+
+2. **Single-user per Windows account.** The app installs to `%LocalAppData%` which is per-user. On a multi-user machine, each Windows user would need their own installation and `.env` (with the same `EMBEDDING_ENCRYPTION_KEY`).
+
+3. **No service/tray mode.** The app runs in a console window. Closing the console stops the server. A future improvement would be to run as a Windows service or system-tray application.
+
+4. **FaceNet weights require internet on first launch.** Approximately 90 MB is downloaded from the internet on the very first launch on a new machine. Pre-populate `%USERPROFILE%\.keras\keras_facenet\` if internet is not available.
+
+5. **Large distribution size.** The installer is approximately 1-2 GB due to TensorFlow. This is unavoidable  --  TensorFlow's minimum CPU-only footprint is large.
+
+6. **Development server limitations.** When `waitress` is unavailable (fallback path), Django's `runserver --noreload` is used. This is not optimised for concurrent requests and is not suitable for high-volume production use. For a barangay workstation with one operator, this is not a concern.
+
+7. **No PostgreSQL support in the packaged build.** The packaged build is configured for SQLite (`USE_SQLITE=True`). Switching to PostgreSQL in the packaged version would require `psycopg2-binary` to be added to the spec and the PostgreSQL server to be separately installed on the target machine.
+

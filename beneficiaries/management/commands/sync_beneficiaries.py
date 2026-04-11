@@ -1,13 +1,17 @@
 """
 Management command: sync_beneficiaries
 
-Sends all locally registered (unsynced) beneficiary records to the central
+Sends locally-registered (pending_sync) beneficiary records to the central
 server API when an internet connection is available.
+
+Only records with sync_status='pending_sync' are processed.  Records in
+'sync_conflict' or 'sync_rejected' require admin review via the sync conflict
+dashboard (/sync/conflicts/) before they can be retried.
 
 Usage:
     python manage.py sync_beneficiaries
     python manage.py sync_beneficiaries --force       # skip connectivity check
-    python manage.py sync_beneficiaries --quiet       # suppress output
+    python manage.py sync_beneficiaries --quiet       # suppress non-error output
     python manage.py sync_beneficiaries --batch 100   # override batch size
 
 Configuration (in .env):
@@ -32,7 +36,7 @@ logger = logging.getLogger('beneficiaries.sync')
 
 
 class Command(BaseCommand):
-    help = 'Sync unsynced beneficiary records to the central server'
+    help = 'Sync pending_sync beneficiary records to the central server'
 
     def add_arguments(self, parser):
         parser.add_argument(
@@ -54,7 +58,7 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         from django.conf import settings
-        from beneficiaries.sync import is_online, sync_all, pending_count
+        from beneficiaries.sync import is_online, sync_all, pending_count, conflict_count, rejected_count
 
         quiet = options['quiet']
         force = options['force']
@@ -66,20 +70,46 @@ class Command(BaseCommand):
                 self.stdout.write(
                     self.style.WARNING(
                         'SYNC SKIP: SYNC_API_URL is not configured in .env. '
-                        'Offline-only mode — data is stored locally only.'
+                        'Centralized/offline-only mode — data is stored locally only.'
                     )
                 )
             return
 
-        pending = pending_count()
+        # Show current queue state before attempting sync
+        n_pending   = pending_count()
+        n_conflicts = conflict_count()
+        n_rejected  = rejected_count()
 
-        if pending == 0:
+        if not quiet:
+            if n_conflicts or n_rejected:
+                self.stdout.write(
+                    self.style.WARNING(
+                        f'SYNC QUEUE | pending={n_pending} '
+                        f'conflict={n_conflicts} rejected={n_rejected}'
+                    )
+                )
+                if n_conflicts:
+                    self.stdout.write(
+                        self.style.WARNING(
+                            f'  {n_conflicts} record(s) in sync_conflict — '
+                            'admin review required at /sync/conflicts/'
+                        )
+                    )
+                if n_rejected:
+                    self.stdout.write(
+                        self.style.WARNING(
+                            f'  {n_rejected} record(s) in sync_rejected — '
+                            'admin review required at /sync/conflicts/'
+                        )
+                    )
+
+        if n_pending == 0:
             if not quiet:
-                self.stdout.write(self.style.SUCCESS('SYNC OK: No unsynced records.'))
+                self.stdout.write(self.style.SUCCESS('SYNC OK: No pending_sync records.'))
             return
 
         if not quiet:
-            self.stdout.write(f'SYNC: {pending} record(s) pending sync to {api_url}')
+            self.stdout.write(f'SYNC: {n_pending} record(s) pending sync to {api_url}')
 
         # Connectivity check
         if not force and not is_online():
@@ -87,10 +117,10 @@ class Command(BaseCommand):
                 self.stdout.write(
                     self.style.WARNING(
                         f'SYNC SKIP: No internet connection detected. '
-                        f'{pending} record(s) will sync when connectivity is restored.'
+                        f'{n_pending} record(s) will sync when connectivity is restored.'
                     )
                 )
-            logger.info('SYNC SKIP | offline | pending=%d', pending)
+            logger.info('SYNC SKIP | offline | pending=%d', n_pending)
             return
 
         batch_size = options['batch'] or int(getattr(settings, 'SYNC_BATCH_SIZE', 50))
@@ -100,21 +130,33 @@ class Command(BaseCommand):
 
         result = sync_all(batch_size=batch_size)
 
-        synced = result['synced']
-        failed = result['failed']
+        synced    = result['synced']
+        failed    = result['failed']
+        conflicts = result['conflicts']
+        rejected  = result['rejected']
 
-        if failed == 0:
+        if failed == 0 and conflicts == 0 and rejected == 0:
             if not quiet:
                 self.stdout.write(
-                    self.style.SUCCESS(f'SYNC DONE: {synced} synced, {failed} failed.')
+                    self.style.SUCCESS(f'SYNC DONE: {synced} synced, 0 errors.')
                 )
         else:
+            summary_parts = [f'{synced} synced']
+            if failed:
+                summary_parts.append(f'{failed} failed (will retry)')
+            if conflicts:
+                summary_parts.append(f'{conflicts} conflict (admin review needed)')
+            if rejected:
+                summary_parts.append(f'{rejected} rejected (admin review needed)')
+
             self.stdout.write(
                 self.style.WARNING(
-                    f'SYNC PARTIAL: {synced} synced, {failed} failed. '
-                    'Failed records will be retried on the next run. '
-                    'Check the server log for details.'
+                    f'SYNC PARTIAL: {", ".join(summary_parts)}. '
+                    'Check /sync/conflicts/ for conflict and rejected records.'
                 )
             )
-            # Exit with a non-zero code so callers (e.g. Task Scheduler) know there were failures
+            # Exit with a non-zero code so callers (e.g. Task Scheduler) know
+            # there were non-transient outcomes requiring attention.
+            if conflicts or rejected:
+                raise SystemExit(2)
             raise SystemExit(1)

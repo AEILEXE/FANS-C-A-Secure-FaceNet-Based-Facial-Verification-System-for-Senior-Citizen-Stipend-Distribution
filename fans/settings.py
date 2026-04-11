@@ -25,7 +25,34 @@ def _bool_env(key, default=False):
 
 SECRET_KEY = os.getenv('SECRET_KEY', 'django-insecure-change-this-immediately')
 DEBUG = _bool_env('DEBUG', default=True)
-ALLOWED_HOSTS = os.getenv('ALLOWED_HOSTS', 'localhost,127.0.0.1').split(',')
+# ALLOWED_HOSTS — configure this for your deployment environment.
+#
+#   Development (default):
+#     ALLOWED_HOSTS=localhost,127.0.0.1
+#
+#   Barangay LAN server — plain HTTP (basic LAN access, no camera on clients):
+#     ALLOWED_HOSTS=192.168.1.77,localhost,127.0.0.1
+#     Replace 192.168.1.77 with the server's LAN IP (run `ipconfig` to find it).
+#
+#   Barangay LAN server — secure HTTPS via Caddy (recommended, enables camera):
+#     ALLOWED_HOSTS=fans-barangay.local,192.168.1.77,localhost,127.0.0.1
+#     Caddy terminates HTTPS and forwards requests to Waitress/Django on
+#     localhost.  The hostname fans-barangay.local must also be set in
+#     CSRF_TRUSTED_ORIGINS so Django accepts form POST requests from HTTPS
+#     clients.  See the Secure HTTPS LAN Deployment section in README.md.
+#
+#   Why HTTPS matters for camera access: browsers enforce a "secure context"
+#   rule — getUserMedia (webcam) is only available on https:// or localhost.
+#   A plain http://192.168.x.x URL blocks camera access on client devices.
+#   HTTPS with a locally-trusted certificate resolves this without any
+#   insecure browser flag workarounds.
+#
+#   Multiple values are comma-separated in .env; whitespace is stripped.
+ALLOWED_HOSTS = [
+    h.strip()
+    for h in os.getenv('ALLOWED_HOSTS', 'localhost,127.0.0.1').split(',')
+    if h.strip()
+]
 
 INSTALLED_APPS = [
     'django.contrib.admin',
@@ -90,6 +117,11 @@ else:
             'PASSWORD': os.getenv('DB_PASSWORD', ''),
             'HOST': os.getenv('DB_HOST', 'localhost'),
             'PORT': os.getenv('DB_PORT', '5432'),
+            # Keep database connections alive between requests so multiple
+            # staff stations sharing one PostgreSQL server do not pay the
+            # TCP handshake cost on every request.  60 s is a safe default;
+            # set CONN_MAX_AGE=0 to revert to per-request connections.
+            'CONN_MAX_AGE': int(os.getenv('CONN_MAX_AGE', '60')),
         }
     }
 
@@ -194,6 +226,46 @@ CSRF_COOKIE_HTTPONLY = True
 CSRF_COOKIE_SECURE = not DEBUG
 X_FRAME_OPTIONS = 'DENY'
 SECURE_CONTENT_TYPE_NOSNIFF = True
+
+# ── Reverse-proxy / HTTPS (centralized server deployment) ────────────────────
+# These settings are no-ops when left empty; safe for local development.
+#
+# For barangay LAN deployment behind Caddy with HTTPS termination:
+#
+#   CSRF_TRUSTED_ORIGINS=https://fans-barangay.local
+#   SECURE_PROXY_SSL_HEADER=HTTP_X_FORWARDED_PROTO,https
+#   USE_X_FORWARDED_HOST=True
+#
+# Why CSRF_TRUSTED_ORIGINS is required for HTTPS deployments:
+#   Caddy terminates TLS and forwards plain HTTP to Waitress/Django on
+#   127.0.0.1:8000.  From Django's perspective every request arrives over
+#   plain HTTP, but the browser sent it from an https:// origin.  Django's
+#   CSRF middleware compares the Origin header against CSRF_TRUSTED_ORIGINS;
+#   if the origin is missing from the list, all form POST requests (login,
+#   verification, registration) are rejected with HTTP 403.  Setting
+#   CSRF_TRUSTED_ORIGINS to the HTTPS hostname fixes this without weakening
+#   any security — the origin check becomes: "did this request come from
+#   our own HTTPS hostname?" which is exactly what we want.
+#
+# If using a raw IP instead of a hostname (less preferred):
+#   CSRF_TRUSTED_ORIGINS=https://192.168.1.77
+#   Note: mkcert cannot issue certs for raw IPs by default; hostname-based
+#   access (fans-barangay.local) is strongly preferred.
+_csrf_origins = os.getenv('CSRF_TRUSTED_ORIGINS', '').strip()
+if _csrf_origins:
+    CSRF_TRUSTED_ORIGINS = [o.strip() for o in _csrf_origins.split(',') if o.strip()]
+
+# When the proxy forwards requests over HTTP internally, tell Django the real
+# protocol so SESSION_COOKIE_SECURE, CSRF_COOKIE_SECURE, and redirect URLs
+# all reference https:// rather than http://.
+_proxy_ssl_header = os.getenv('SECURE_PROXY_SSL_HEADER', '').strip()
+if _proxy_ssl_header and ',' in _proxy_ssl_header:
+    _hdr_name, _hdr_value = _proxy_ssl_header.split(',', 1)
+    SECURE_PROXY_SSL_HEADER = (_hdr_name.strip(), _hdr_value.strip())
+
+# Required when the proxy sets the Host header from the original client
+# request instead of the internal upstream address.
+USE_X_FORWARDED_HOST = _bool_env('USE_X_FORWARDED_HOST', default=False)
 
 # ── First-run validation ───────────────────────────────────────────────────────
 # Emit clear warnings at startup instead of crashing with opaque errors.

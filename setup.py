@@ -54,9 +54,19 @@ def main():
     print('\n[5] Initializing system configuration...')
     run('python manage.py init_config')
 
-    # 6. Create admin user
+    # 6. Create admin user (interactive — no credentials are hard-coded)
     print('\n[6] Creating admin user...')
-    run('python manage.py create_admin')
+    print('    Django will prompt for username, email, and password.')
+    print('    Choose a strong password and store it securely.')
+    # Use subprocess directly so stdin is inherited (interactive prompt works)
+    result = subprocess.run(
+        [sys.executable, 'manage.py', 'createsuperuser'],
+        shell=False,
+    )
+    if result.returncode != 0:
+        print('    WARNING: createsuperuser exited with an error.')
+        print('    Create the admin account later with:')
+        print('        python manage.py createsuperuser')
 
     # 7. Collect static files
     print('\n[7] Collecting static files...')
@@ -66,8 +76,7 @@ def main():
     print('Setup complete!')
     print('Run the server with: python manage.py runserver')
     print('Login at: http://127.0.0.1:8000/')
-    print('Default admin credentials: admin / Admin@1234')
-    print('CHANGE THE PASSWORD IMMEDIATELY!')
+    print('Log in with the admin account you created in step 6.')
     print('=' * 60)
 
 

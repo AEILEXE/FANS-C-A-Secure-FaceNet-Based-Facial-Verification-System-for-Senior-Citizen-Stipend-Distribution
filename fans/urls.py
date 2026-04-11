@@ -11,4 +11,11 @@ urlpatterns = [
     path('verification/', include('verification.urls')),
     path('logs/', include('logs.urls')),
     path('', RedirectView.as_view(url='/dashboard/', permanent=False)),
-] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
+]
+
+# Serve uploaded media files through Django only in local development.
+# In centralized server deployments, configure nginx to serve /media/ directly:
+#   location /media/ { alias /path/to/fans-c/media/; }
+# This avoids routing large image files through the Python process.
+if settings.DEBUG:
+    urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

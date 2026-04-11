@@ -29,6 +29,10 @@ class AuditLog(models.Model):
     ACTION_REGISTER_APPROVED           = 'register_approved'
     ACTION_REGISTER_REJECTED           = 'register_rejected'
     ACTION_DUPLICATE_FACE              = 'duplicate_face'
+    # Offline-sync audit actions — recorded by beneficiaries/sync.py
+    ACTION_SYNC_ACCEPTED               = 'sync_accepted'   # central server accepted (HTTP 200/201)
+    ACTION_SYNC_CONFLICT               = 'sync_conflict'   # central server returned 409
+    ACTION_SYNC_REJECTED               = 'sync_rejected'   # central server returned 400/422
 
     ACTION_CHOICES = [
         (ACTION_LOGIN, 'Login'),
@@ -56,6 +60,9 @@ class AuditLog(models.Model):
         (ACTION_REGISTER_APPROVED,      'Registration Approved'),
         (ACTION_REGISTER_REJECTED,      'Registration Rejected'),
         (ACTION_DUPLICATE_FACE,         'Duplicate Face Detected'),
+        (ACTION_SYNC_ACCEPTED,          'Sync Accepted'),
+        (ACTION_SYNC_CONFLICT,          'Sync Conflict'),
+        (ACTION_SYNC_REJECTED,          'Sync Rejected'),
     ]
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)

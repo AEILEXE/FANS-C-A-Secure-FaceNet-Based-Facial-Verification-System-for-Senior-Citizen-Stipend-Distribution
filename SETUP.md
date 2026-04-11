@@ -84,12 +84,15 @@ Apply migrations and finish setup:
 python manage.py makemigrations
 python manage.py migrate
 python manage.py init_config
-python manage.py create_admin
+python manage.py createsuperuser
 python manage.py collectstatic --noinput
 python manage.py runserver
 ```
 
-Open http://127.0.0.1:8000/ and log in with admin / Admin@1234. Change the password immediately.
+`createsuperuser` prompts for a username, email, and password interactively.
+Choose a strong password and store it securely — no default credentials exist.
+
+Open http://127.0.0.1:8000/ and log in with the account you just created.
 
 ---
 

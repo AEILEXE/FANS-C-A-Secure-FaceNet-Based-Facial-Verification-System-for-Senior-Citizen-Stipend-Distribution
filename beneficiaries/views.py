@@ -134,6 +134,13 @@ def beneficiary_detail(request, pk):
 def beneficiary_edit(request, pk):
     beneficiary = get_object_or_404(Beneficiary, pk=pk)
 
+    # Editing personal records (name, DOB, ID numbers, representative info)
+    # is admin-only, consistent with all other write operations on existing
+    # records.  Staff register new beneficiaries but do not edit existing ones.
+    if not request.user.is_admin:
+        messages.error(request, 'Admin access required to edit beneficiary records.')
+        return redirect('beneficiaries:beneficiary_detail', pk=pk)
+
     if request.method == 'POST':
         form = BeneficiaryEditForm(request.POST, request.FILES, instance=beneficiary)
         if form.is_valid():
@@ -425,6 +432,12 @@ def register_submit_face(request):
         )
         beneficiary.save()
 
+        # Mark this record as created on an offline device so sync.py
+        # knows which workstation to attribute the registration to.
+        # This is a no-op in centralized mode (SYNC_API_URL not configured).
+        from beneficiaries import sync as _sync
+        _sync.mark_created(beneficiary)
+
         FaceEmbedding.objects.create(
             beneficiary=beneficiary,
             embedding_data=result['encrypted_embedding'],
@@ -665,3 +678,164 @@ def user_edit(request, pk):
     else:
         form = UserUpdateForm(instance=user)
     return render(request, 'admin_panel/user_form.html', {'form': form, 'action': 'Edit', 'edited_user': user})
+
+
+# ─── Sync Conflict Dashboard (Admin only) ─────────────────────────────────────
+
+@login_required
+def sync_conflict_list(request):
+    """
+    Admin-only view: list all beneficiary records in sync_conflict or
+    sync_rejected state that require manual review.
+
+    These records were created offline and, when sync was attempted:
+    - sync_conflict  — the central server already has a different record for
+                       the same ID (HTTP 409).  Admin must decide which version
+                       is authoritative.
+    - sync_rejected  — the central server refused the payload (HTTP 400/422).
+                       Admin must correct the data or accept the local record.
+
+    Records in this list cannot claim stipends until the conflict is resolved.
+    """
+    if not request.user.is_admin:
+        messages.error(request, 'Admin access required.')
+        return redirect('beneficiaries:dashboard')
+
+    conflict_records = Beneficiary.objects.filter(
+        sync_status__in=[Beneficiary.SYNC_CONFLICT, Beneficiary.SYNC_REJECTED]
+    ).select_related('registered_by').order_by('sync_status', 'created_at')
+
+    from beneficiaries.sync import conflict_count, rejected_count
+    return render(request, 'beneficiaries/sync_conflict_list.html', {
+        'conflict_records': conflict_records,
+        'conflict_count': conflict_count(),
+        'rejected_count': rejected_count(),
+        'SYNC_CONFLICT': Beneficiary.SYNC_CONFLICT,
+        'SYNC_REJECTED': Beneficiary.SYNC_REJECTED,
+    })
+
+
+@login_required
+@require_http_methods(['GET', 'POST'])
+def sync_conflict_review(request, pk):
+    """
+    Admin-only view: review a single beneficiary in sync_conflict or sync_rejected.
+
+    POST actions:
+      retry   — reset sync_status to 'pending_sync' so the next sync run will
+                re-attempt to send this record.  Use when the conflict may have
+                been transient (e.g. a previously-deleted duplicate on the server).
+      accept  — mark sync_status as 'synced' locally.  Use when the admin has
+                determined that the local record is authoritative and the central
+                server's conflicting copy should be disregarded.
+      reject  — keep sync_status as 'sync_rejected' with an admin note.  Use
+                when the local record is invalid and should never be synced.
+                The beneficiary remains in the system for audit purposes.
+
+    All decisions are permanently recorded in the audit log.
+    """
+    if not request.user.is_admin:
+        messages.error(request, 'Admin access required.')
+        return redirect('beneficiaries:sync_conflict_list')
+
+    beneficiary = get_object_or_404(
+        Beneficiary,
+        pk=pk,
+        sync_status__in=[Beneficiary.SYNC_CONFLICT, Beneficiary.SYNC_REJECTED],
+    )
+
+    if request.method == 'POST':
+        action = request.POST.get('action', '').strip()
+        review_notes = request.POST.get('review_notes', '').strip()
+
+        if not review_notes:
+            messages.error(request, 'Review notes are required.')
+            return render(request, 'beneficiaries/sync_conflict_review.html', {
+                'beneficiary': beneficiary,
+            })
+
+        if action == 'retry':
+            old_status = beneficiary.sync_status
+            beneficiary.sync_status = Beneficiary.SYNC_PENDING
+            beneficiary.sync_error = ''
+            beneficiary.save(update_fields=['sync_status', 'sync_error'])
+            AuditLog.log(
+                action=AuditLog.ACTION_UPDATE,
+                user=request.user,
+                target_type='Beneficiary',
+                target_id=beneficiary.id,
+                details={
+                    'beneficiary_id': beneficiary.beneficiary_id,
+                    'sync_action': 'retry',
+                    'old_sync_status': old_status,
+                    'new_sync_status': Beneficiary.SYNC_PENDING,
+                    'review_notes': review_notes,
+                    'offline_device': beneficiary.offline_device,
+                },
+                request=request,
+            )
+            messages.success(
+                request,
+                f'{beneficiary.full_name} reset to pending_sync. '
+                'The record will be re-sent on the next sync run.'
+            )
+
+        elif action == 'accept':
+            old_status = beneficiary.sync_status
+            beneficiary.sync_status = Beneficiary.SYNC_SYNCED
+            beneficiary.sync_error = f'Admin-accepted after {old_status}. Notes: {review_notes}'
+            beneficiary.save(update_fields=['sync_status', 'sync_error'])
+            AuditLog.log(
+                action=AuditLog.ACTION_SYNC_ACCEPTED,
+                user=request.user,
+                target_type='Beneficiary',
+                target_id=beneficiary.id,
+                details={
+                    'beneficiary_id': beneficiary.beneficiary_id,
+                    'sync_action': 'accept',
+                    'old_sync_status': old_status,
+                    'review_notes': review_notes,
+                    'offline_device': beneficiary.offline_device,
+                },
+                request=request,
+            )
+            messages.success(
+                request,
+                f'{beneficiary.full_name} accepted as synced. '
+                'The local record is now treated as authoritative.'
+            )
+
+        elif action == 'reject':
+            beneficiary.sync_status = Beneficiary.SYNC_REJECTED
+            beneficiary.sync_error = f'Admin-rejected. Notes: {review_notes}'
+            beneficiary.save(update_fields=['sync_status', 'sync_error'])
+            AuditLog.log(
+                action=AuditLog.ACTION_SYNC_REJECTED,
+                user=request.user,
+                target_type='Beneficiary',
+                target_id=beneficiary.id,
+                details={
+                    'beneficiary_id': beneficiary.beneficiary_id,
+                    'sync_action': 'reject',
+                    'review_notes': review_notes,
+                    'offline_device': beneficiary.offline_device,
+                },
+                request=request,
+            )
+            messages.warning(
+                request,
+                f'{beneficiary.full_name} marked as sync_rejected. '
+                'The record is retained for audit but will not be synced.'
+            )
+
+        else:
+            messages.error(request, 'Invalid action. Choose retry, accept, or reject.')
+            return render(request, 'beneficiaries/sync_conflict_review.html', {
+                'beneficiary': beneficiary,
+            })
+
+        return redirect('beneficiaries:sync_conflict_list')
+
+    return render(request, 'beneficiaries/sync_conflict_review.html', {
+        'beneficiary': beneficiary,
+    })
