@@ -1,0 +1,115 @@
+@echo off
+:: ============================================================
+::  FANS-C Production Startup Script
+::  Double-click this file to start the server after a reboot.
+::
+::  What it does:
+::    1. Opens a window for Waitress (Django app server)
+::    2. Opens a window for Caddy (HTTPS reverse proxy)
+::
+::  Requirements (already done during initial setup):
+::    - .venv must exist (run setup.ps1 once to create it)
+::    - caddy.exe must be on the PATH (or in this folder)
+::    - Caddyfile and TLS certificates must be present
+::    - .env must be configured for production
+::
+::  To stop the system:
+::    - Close the two server windows that this script opens.
+::
+::  NOTE: Run this script from the project root folder (e.g. D:\FANS\fans-c\).
+::        Do NOT move this file to a different location without updating paths.
+:: ============================================================
+
+title FANS-C Startup
+
+echo.
+echo  ================================================================
+echo   FANS-C  ^|  FaceNet Facial Verification System
+echo   Starting Production Server...
+echo  ================================================================
+echo.
+
+:: ----------------------------------------------------------
+:: Check: Are we in the right folder?
+:: ----------------------------------------------------------
+if not exist ".venv\Scripts\waitress-serve.exe" (
+    echo  [FAIL] .venv\Scripts\waitress-serve.exe not found.
+    echo.
+    echo         Make sure you:
+    echo           1. Run this script from the project root folder.
+    echo              Example: D:\FANS\fans-c\start-fans.bat
+    echo           2. Have already run setup.ps1 at least once.
+    echo.
+    pause
+    exit /b 1
+)
+
+if not exist "Caddyfile" (
+    echo  [FAIL] Caddyfile not found in the current folder.
+    echo.
+    echo         Make sure you run this script from the project root folder.
+    echo         The Caddyfile must be present alongside this script.
+    echo.
+    pause
+    exit /b 1
+)
+
+if not exist ".env" (
+    echo  [FAIL] .env file not found.
+    echo.
+    echo         The .env configuration file is required.
+    echo         Copy .env.example to .env and fill in your values,
+    echo         then re-run setup.ps1.
+    echo.
+    pause
+    exit /b 1
+)
+
+if not exist "fans-barangay.local+3.pem" (
+    echo  [WARN] TLS certificate not found: fans-barangay.local+3.pem
+    echo.
+    echo         Caddy may fail to start. Run mkcert to generate certificates.
+    echo         See SETUP.md -- Section: Production Deployment (Waitress + Caddy)
+    echo.
+)
+
+echo  [OK]  Pre-flight checks passed.
+echo.
+
+:: ----------------------------------------------------------
+:: Start Waitress (Django app server) in a new window
+:: ----------------------------------------------------------
+echo  [1/2] Starting Waitress (Django WSGI server)...
+echo        This serves the FANS-C application on 127.0.0.1:8000
+echo.
+start "FANS-C Waitress" cmd /k "title FANS-C Waitress && echo. && echo   FANS-C Waitress - Django App Server && echo   DO NOT CLOSE THIS WINDOW while the system is in use. && echo. && .venv\Scripts\waitress-serve.exe --listen=127.0.0.1:8000 fans.wsgi:application"
+
+:: Wait a few seconds for Waitress to initialize before Caddy starts
+echo  [..] Waiting 4 seconds for Waitress to initialize...
+timeout /t 4 /nobreak >nul
+
+:: ----------------------------------------------------------
+:: Start Caddy (HTTPS reverse proxy) in a new window
+:: ----------------------------------------------------------
+echo  [2/2] Starting Caddy (HTTPS reverse proxy)...
+echo        This handles HTTPS on port 443 and forwards to Waitress.
+echo.
+start "FANS-C Caddy" cmd /k "title FANS-C Caddy && echo. && echo   FANS-C Caddy - HTTPS Reverse Proxy && echo   DO NOT CLOSE THIS WINDOW while the system is in use. && echo. && caddy run --config Caddyfile"
+
+:: ----------------------------------------------------------
+:: Done
+:: ----------------------------------------------------------
+echo.
+echo  ================================================================
+echo   Both servers are starting in their own windows.
+echo.
+echo   System URL: https://fans-barangay.local
+echo.
+echo   - Staff on the same Wi-Fi/LAN can open the URL above.
+echo   - Keep both server windows open while the system is in use.
+echo   - Close both windows to shut down the system.
+echo  ================================================================
+echo.
+echo  Press any key to close this startup window.
+echo  (The two server windows will keep running.)
+pause >nul

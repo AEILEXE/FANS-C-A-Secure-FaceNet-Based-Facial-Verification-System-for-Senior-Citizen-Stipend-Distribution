@@ -15,8 +15,10 @@
 
     <div class="login-card card">
       <div class="login-header">
+        {# Logo file: place your image at static/images/logo.png (recommended: 72×72px PNG) #}
         <div class="login-logo-ring">
-          <i class="bi bi-shield-lock-fill"></i>
+          <img src="{% static 'images/logo.png' %}" alt="FANS-C Logo"
+               style="width:52px; height:52px; object-fit:contain; border-radius:4px;">
         </div>
         <h4 class="fw-bold mb-0">FANS</h4>
         <p class="mb-0" style="font-size:0.85rem; opacity:0.8;">Facial Verification System</p>

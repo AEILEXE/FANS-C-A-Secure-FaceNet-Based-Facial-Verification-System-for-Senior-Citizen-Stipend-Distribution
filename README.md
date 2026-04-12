@@ -5,6 +5,16 @@
 
 ---
 
+## Quick Access
+
+| Guide | Audience |
+|---|---|
+| [Developer Setup](SETUP.md) | Developers setting up the system on a new machine |
+| [Client Access Guide](CLIENT_ACCESS.md) | Barangay staff accessing the system from a browser |
+| Full Documentation | This README |
+
+---
+
 ## Table of Contents
 
 1. [System Overview](#system-overview)
@@ -55,7 +65,8 @@
     - [Backup and Maintenance](#backup-and-maintenance)
     - [Development vs Production Mode](#development-vs-production-mode)
     - [Defense Notes: Why Centralized LAN](#defense-notes-why-centralized-lan-is-the-right-architecture)
-26. [Secure HTTPS LAN Deployment](#secure-https-lan-deployment)
+26. [LAN vs Internet: What the System Actually Needs](#lan-vs-internet-what-the-system-actually-needs)
+27. [Secure HTTPS LAN Deployment](#secure-https-lan-deployment)
     - [Why HTTPS Is Required for Camera Access](#why-https-is-required-for-camera-access)
     - [Recommended Stack: Waitress + Caddy](#recommended-stack-waitress--caddy)
     - [How Requests Flow](#how-requests-flow)
@@ -67,7 +78,7 @@
     - [Insecure Browser Flags Are Not the Answer](#insecure-browser-flags-are-not-the-answer)
     - [Security Notes for HTTPS Deployment](#security-notes-for-https-deployment)
     - [Defense Notes: Why This Stack](#defense-notes-why-this-stack)
-27. [Windows .exe Packaging and Distribution](#windows-exe-packaging-and-distribution)
+28. [Windows .exe Packaging and Distribution](#windows-exe-packaging-and-distribution)
     - [Overview](#packaging-overview)
     - [How the Launcher Works](#how-the-launcher-works)
     - [Files Added for Packaging](#files-added-for-packaging)
@@ -2161,13 +2172,45 @@ The offline sync feature (`SYNC_API_URL` in `.env`) is designed for edge cases w
 
 **In normal barangay office LAN operation, offline sync is not enabled and is not needed.** All staff devices connect directly to the central server through the browser. Leave `SYNC_API_URL` empty in `.env`.
 
-When offline sync is used (fallback only):
+#### What "offline" means in practice
 
-- Records are stored locally on the disconnected device as **provisional data**
-- When connectivity is restored, records are pushed to the central server via the sync command
-- The central server validates records before accepting them
-- Conflicting records (duplicate IDs, duplicate claims for the same event) are flagged for manual review in the conflict queue
-- Offline records are never treated as final until the central server has validated them
+The term "offline" in FANS-C means a **specific device** has temporarily lost its connection to the central server. It does not mean the system has no internet — this system does not require public internet at all. A device goes offline when the LAN cable is unplugged, it is taken outside the Wi-Fi range, or the server PC is turned off.
+
+#### What the server being off means
+
+If the **server PC is shut down**:
+
+- The entire centralized system is unavailable — no staff can log in, no verifications can be processed through the main system
+- Staff PCs will show "This site can't be reached" or a similar browser error
+- The system comes back online as soon as the server PC is restarted and the startup scripts are run
+- No reinstallation is required — all data, registrations, and configuration are preserved on the server
+
+#### What operations are allowed offline (fallback mode only)
+
+When a device has lost connection and offline mode is active, only clearly defined low-risk operations are permitted:
+
+| Operation | Offline allowed? | Notes |
+|---|---|---|
+| Register new beneficiary | Yes | Stored as `pending_sync` — provisional only |
+| Capture face embedding | Yes | Encrypted locally |
+| Stipend verification | Yes | Runs against local embedding store |
+| Claim recording | Yes | Stored locally — must sync before treated as final |
+| Admin approval of pending registrations | Yes | Only if admin account is on the same offline device |
+| Sync conflict review | **No** | Requires access to central server data to make an informed decision |
+| Admin override of manual review | **No** | Server validation required |
+| Any action that requires central server state | **No** | Must wait for reconnection |
+
+**Offline records are always provisional.** They are marked `pending_sync` and must be reviewed and accepted by the central server before they are treated as authoritative. If the central server detects a conflict (e.g., a beneficiary was already registered or already claimed), the record enters a conflict queue for admin review — it is never silently merged.
+
+#### When connectivity returns
+
+When the device reconnects to the server:
+
+1. The sync command (`python manage.py sync_beneficiaries`) pushes `pending_sync` records to the central server
+2. The server validates each record — it may accept, reject, or flag a conflict
+3. Records accepted by the server move to `synced` status
+4. Conflicts and rejections appear in the admin review queue at `/dashboard/sync/conflicts/`
+5. An admin must resolve each conflict manually — the system does not auto-merge
 
 Offline sync adds operational complexity and conflict-resolution overhead. Enable it only when a device genuinely cannot be networked to the LAN.
 
@@ -2237,21 +2280,25 @@ Or copy `db.sqlite3`, `media\`, and `.env` to a USB drive after each session.
 
 **Restarting Django after the server machine reboots:**
 
-Django (via Waitress) does not start automatically after a reboot by default. To restart:
+The project does **not** need to be reinstalled after a reboot. The virtual environment, `.env`, database, certificates, and all registered data remain in place. Only the two server processes — Waitress and Caddy — need to be started again.
+
+**Quickest method:** Double-click `start-fans.bat` in the project root folder. It opens two windows — one for Waitress and one for Caddy — and shows progress messages.
+
+**With pre-flight checks:** Run `.\start-fans-production.ps1` from PowerShell. It validates the environment (encryption key, certificates, Caddy installation) before starting anything.
+
+**Manual method:**
 
 ```powershell
-cd D:\FANS\FANS-C
-.\.venv\Scripts\activate
+# Window 1 — Waitress
+cd D:\FANS\fans-c
+.\.venv\Scripts\Activate.ps1
 waitress-serve --listen=127.0.0.1:8000 fans.wsgi:application
+
+# Window 2 — Caddy (same folder)
+caddy run --config Caddyfile
 ```
 
-Caddy also needs to be running — if installed as a Windows service (see the Secure HTTPS section) it starts automatically. If not, restart it with:
-
-```powershell
-caddy run --config D:\FANS\FANS-C\Caddyfile
-```
-
-For automatic startup on Windows boot, use Windows Task Scheduler or install both Waitress (via `nssm`) and Caddy as Windows services so they restart after reboot without manual intervention.
+**Automatic startup on Windows boot (Task Scheduler):** Use Windows Task Scheduler to run `start-fans.bat` automatically at login, so the system comes online without manual steps after every reboot. Full instructions are in [SETUP.md](SETUP.md) — "Starting the Server After a Reboot".
 
 **Applying updates:**
 
@@ -2319,6 +2366,56 @@ Offline sync was designed for a specific scenario: a registration team at a remo
 | Software updates | Must be applied to every device | Update once on the server |
 | Encryption key management | Keys must be identical and managed on every device | One key, one server |
 | Staff training | Each staff member needs to manage their own Python environment | Open browser, enter IP, log in |
+
+---
+
+## LAN vs Internet: What the System Actually Needs
+
+This section is for non-expert readers — barangay staff, administrators, and capstone panelists — to clearly understand how this system works in a real office.
+
+### This system is LAN-based (on-premise)
+
+FANS-C is installed on one server PC inside the barangay office. All staff computers and tablets connect to that server over the local Wi-Fi or wired network. The system does **not** communicate with the internet during normal operation.
+
+### Does the system need internet?
+
+| Task | Internet needed? |
+|---|---|
+| Daily use — registration, verification, stipend claims | **No.** Runs on local network only. |
+| FaceNet model download (first startup only, done once during setup) | Yes — model is ~90 MB, downloaded once and cached. |
+| Software updates | Yes — only when the developer applies updates manually. |
+
+After initial setup, the system operates entirely within the office network. Public internet going down has no effect on the system.
+
+### What happens in each scenario
+
+| Scenario | What staff experience |
+|---|---|
+| Internet is down, office Wi-Fi and server are running | System works normally. Staff log in and process verifications as usual. |
+| Office Wi-Fi is running, internet is also working | System works. Internet connectivity is irrelevant. |
+| Server PC is turned off | System unavailable. Browser shows "This site can't be reached". Staff must wait for the server to be restarted. |
+| Staff PC loses Wi-Fi connection | That PC cannot reach the system. Other PCs on the network are unaffected. Reconnecting to Wi-Fi restores access. |
+| Power outage | System goes offline until power is restored and the server PC is restarted. |
+
+### What happens when the server comes back online
+
+No reinstallation is needed. When the server PC is turned back on:
+
+1. Open `start-fans.bat` (or `start-fans-production.ps1`) on the server machine
+2. Two windows appear — Waitress and Caddy — and start up automatically
+3. After a few seconds, `https://fans-barangay.local` becomes available again on the network
+4. Staff log in and continue working from where they left off
+
+All data, registered beneficiaries, and audit logs are preserved on the server's database. Nothing is lost from a reboot.
+
+### Server machine vs client/staff PCs
+
+| Machine type | What it needs | Who manages it |
+|---|---|---|
+| **Server PC** | Python, Django, the full project, Waitress, Caddy, TLS certificates, `.env`, database | IT person / developer (setup once) |
+| **Client / staff PC** | A web browser | Any staff member |
+
+Staff PCs do not need Python, the project files, or any installation beyond a browser and the hosts file entry for `fans-barangay.local` (done once per device by the IT person).
 
 ---
 
