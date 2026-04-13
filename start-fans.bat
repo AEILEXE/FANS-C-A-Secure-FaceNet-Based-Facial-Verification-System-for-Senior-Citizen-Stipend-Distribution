@@ -80,9 +80,9 @@ echo.
 :: Start Waitress (Django app server) in a new window
 :: ----------------------------------------------------------
 echo  [1/2] Starting Waitress (Django WSGI server)...
-echo        This serves the FANS-C application on 127.0.0.1:8000
+echo        This serves the FANS-C application on 127.0.0.0:8000
 echo.
-start "FANS-C Waitress" cmd /k "title FANS-C Waitress && echo. && echo   FANS-C Waitress - Django App Server && echo   DO NOT CLOSE THIS WINDOW while the system is in use. && echo. && .venv\Scripts\waitress-serve.exe --listen=127.0.0.1:8000 fans.wsgi:application"
+start "FANS-C Waitress" cmd /k "cd /d %~dp0 && "%~dp0.venv\Scripts\waitress-serve.exe" --host=0.0.0.0 --port=8000 fans.wsgi:application"
 
 :: Wait a few seconds for Waitress to initialize before Caddy starts
 echo  [..] Waiting 4 seconds for Waitress to initialize...
@@ -94,7 +94,17 @@ timeout /t 4 /nobreak >nul
 echo  [2/2] Starting Caddy (HTTPS reverse proxy)...
 echo        This handles HTTPS on port 443 and forwards to Waitress.
 echo.
-start "FANS-C Caddy" cmd /k "title FANS-C Caddy && echo. && echo   FANS-C Caddy - HTTPS Reverse Proxy && echo   DO NOT CLOSE THIS WINDOW while the system is in use. && echo. && caddy run --config Caddyfile"
+start "FANS-C Caddy" cmd /k "title FANS-C Caddy && echo. && echo   FANS-C Caddy - HTTPS Reverse Proxy && echo   DO NOT CLOSE THIS WINDOW while the system is in use. && echo. && cd /d %~dp0 && D:\Tools\caddy.exe run --config Caddyfile"
+
+:: ----------------------------------------------------------
+:: Detect LAN IP (for staff connection guidance)
+:: ----------------------------------------------------------
+set "LAN_IP="
+for /f "tokens=2 delims=:" %%A in ('ipconfig ^| findstr /i "IPv4 Address"') do (
+    if not defined LAN_IP (
+        for /f "tokens=*" %%B in ("%%A") do set "LAN_IP=%%B"
+    )
+)
 
 :: ----------------------------------------------------------
 :: Done
@@ -103,11 +113,31 @@ echo.
 echo  ================================================================
 echo   Both servers are starting in their own windows.
 echo.
-echo   System URL: https://fans-barangay.local
+echo   SECURE ACCESS (Recommended):
+echo     https://fans-barangay.local
+echo     Camera enabled - full features - requires hosts file setup
 echo.
-echo   - Staff on the same Wi-Fi/LAN can open the URL above.
+echo   FALLBACK ACCESS (No setup needed):
+if defined LAN_IP (
+echo     http://%LAN_IP%:8000
+echo     Works immediately - no hosts file - camera disabled
+) else (
+echo     (LAN IP not detected -- connect server to the network)
+)
+echo.
+echo   Server only (this device): http://127.0.0.1:8000
+echo.
+if defined LAN_IP (
+echo   TIP: Give staff the FALLBACK URL to connect right away.
+echo        Switch to SECURE ACCESS once hosts file is set up.
+) else (
+echo   TIP: Connect this server to the network, then restart to
+echo        get the Fallback URL for staff devices.
+)
+echo.
 echo   - Keep both server windows open while the system is in use.
 echo   - Close both windows to shut down the system.
+echo   - Connection help: https://fans-barangay.local/help/connect/
 echo  ================================================================
 echo.
 echo  Press any key to close this startup window.

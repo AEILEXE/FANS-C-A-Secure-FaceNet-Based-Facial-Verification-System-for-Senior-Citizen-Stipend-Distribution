@@ -72,6 +72,7 @@
     - [How Requests Flow](#how-requests-flow)
     - [Why fans-barangay.local Instead of a Raw IP](#why-fans-barangaylocal-instead-of-a-raw-ip)
     - [Step-by-Step: Secure Windows LAN Deployment](#step-by-step-secure-windows-lan-deployment)
+    - [Recommended Network Setup (No Per-Device Configuration)](#recommended-network-setup-no-per-device-configuration)
     - [Hostname Resolution: fans-barangay.local](#hostname-resolution-fans-barangaylocal)
     - [Django Settings for HTTPS Behind Caddy](#django-settings-for-https-behind-caddy)
     - [Verifying Camera Access from a Client Device](#verifying-camera-access-from-a-client-device)
@@ -2661,13 +2662,60 @@ Open a browser on the server machine and go to `https://fans-barangay.local`. Yo
 
 ---
 
-### Hostname Resolution: `fans-barangay.local`
+### Recommended Network Setup (No Per-Device Configuration)
+
+Before covering hostname resolution, it is worth understanding the full picture of what makes a barangay LAN deployment truly maintenance-free. The goal is: configure the server and router once, then any device that joins the office Wi-Fi can immediately reach `https://fans-barangay.local` — no IT visit to each device, no hosts file edits, no manual IP lookups.
+
+This requires two things at the router level: a stable server IP (DHCP reservation) and automatic domain resolution (local DNS).
+
+#### DHCP Reservation — Stable Server IP
+
+**What is DHCP?** When any device joins a Wi-Fi network, the router automatically assigns it an IP address. By default these addresses can change between reboots. A DHCP reservation (also called a static lease) tells the router: "always give this specific device the same IP address every time," identified by its MAC address (a permanent hardware identifier on the network card).
+
+**Why not just set a static IP in Windows instead?** A router-side DHCP reservation is cleaner: no risk of IP conflicts with the router's own DHCP range, survives Windows reinstalls, and requires no knowledge of the correct gateway and DNS values on the Windows side. It is the recommended approach for production deployments.
+
+**How to set it up:**
+
+1. Find the server PC's MAC address. Run this on the server machine:
+   ```
+   ipconfig /all
+   ```
+   Look for **Physical Address** under the active network adapter. It looks like: `A4-B1-C2-D3-E4-F5`
+
+2. Log in to the router admin panel (usually `192.168.1.1` or `192.168.0.1` in a browser).
+
+3. Navigate to the DHCP section — commonly labeled **DHCP**, **LAN**, or **Network Settings**.
+
+4. Find **DHCP Reservations**, **Static Leases**, or **Address Reservation** (exact label varies by router brand).
+
+5. Enter the server PC's MAC address and assign a fixed IP outside the normal DHCP range (e.g., if the router normally assigns `.100` to `.149`, assign `.150` — so `192.168.1.150`).
+
+6. Save and apply. Restart the server PC to confirm it receives the reserved IP.
+
+After this, the server's IP never changes regardless of reboots or power cuts. All subsequent configuration uses this fixed IP.
+
+#### Hostname Resolution: `fans-barangay.local`
 
 The hostname `fans-barangay.local` must resolve to the server's LAN IP address on every device that needs to connect. There are two ways to do this.
 
-#### Option A — Hosts File (Small Deployment / Demo)
+#### Option A — Router / Local DNS (Recommended — No Per-Device Work)
 
-Edit the `hosts` file on each client device. This is the simplest approach and requires no router configuration.
+If the office router supports custom DNS or hostname entries (most modern routers do — check under Advanced Settings, DNS, or Local Hosts):
+
+1. Log in to the router admin panel (usually `192.168.1.1` or `192.168.0.1`)
+2. Find the local DNS, hostname mapping, or static hosts section
+3. Add: `fans-barangay.local` → the fixed server IP (e.g., `192.168.1.150`)
+4. Save and apply
+
+All devices on the network — Windows PCs, laptops, tablets, phones — will now automatically resolve `fans-barangay.local` without any per-device configuration. This is the best approach for any real barangay deployment.
+
+**What this removes:** no hosts file edits per device, no IT visit for each new staff PC, works on Android and iOS without workarounds.
+
+#### Option B — Hosts File (Fallback / Manual Setup)
+
+Use this only if the router does not support local DNS entries, or during initial testing before router configuration is complete.
+
+Edit the `hosts` file on each client device. This requires Administrator access and must be repeated on every device separately.
 
 **On Windows client devices (run as Administrator):**
 
@@ -2675,30 +2723,25 @@ Edit the `hosts` file on each client device. This is the simplest approach and r
 notepad C:\Windows\System32\drivers\etc\hosts
 ```
 
-Add this line (replace `192.168.1.77` with your server's actual LAN IP):
+Add this line (replace `192.168.1.150` with your server's actual LAN IP):
 
 ```
-192.168.1.77    fans-barangay.local
+192.168.1.150    fans-barangay.local
 ```
 
 Save and close. No restart needed — open a new browser tab and go to `https://fans-barangay.local`.
 
 **On Android / iOS clients:**
 
-Android and iOS do not allow direct hosts file editing. Use Option B (router DNS) for mobile devices, or use a third-party DNS app.
+Android and iOS do not allow direct hosts file editing. Option A (router DNS) is the only method that works on these devices.
 
-For a barangay deployment where clients are primarily Windows PCs or laptops, Option A is sufficient.
+#### Comparison: Which method to use
 
-#### Option B — Router / Local DNS (Preferred if Available)
-
-If the office router supports custom DNS entries (most modern routers do under Advanced Settings > DNS or Local Hosts):
-
-1. Log in to the router admin panel (usually `192.168.1.1` or `192.168.0.1`)
-2. Find the local DNS or static host mapping section
-3. Add: `fans-barangay.local` → `192.168.1.77`
-4. Save and apply
-
-All devices on the network will now automatically resolve `fans-barangay.local` without any per-device hosts file changes. This is the preferred approach for larger deployments or when client devices change frequently.
+| Method | Setup Effort | Maintenance | Works on mobile? | Recommended |
+|---|---|---|---|---|
+| Hosts file (Option B) | Per device — IT must visit each PC | High — redo if IP changes | No (iOS/Android blocked) | Fallback only |
+| Static IP in Windows | One device | Medium — risk of IP conflict | N/A | Not recommended |
+| Router DHCP Reservation + DNS (Option A) | One-time on the router | Low — set and forget | Yes | **BEST** |
 
 #### Installing the mkcert CA on Client Devices
 

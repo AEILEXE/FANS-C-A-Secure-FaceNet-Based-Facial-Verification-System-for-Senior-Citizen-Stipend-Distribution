@@ -54,6 +54,23 @@ ALLOWED_HOSTS = [
     if h.strip()
 ]
 
+# ── Auto-detect LAN IP and add to ALLOWED_HOSTS ───────────────────────────────
+# Automatically includes the server's LAN IP so that http://<IP>:8000
+# (fallback access) works without requiring the operator to update .env
+# on every network change.  Also used by the system connection view.
+import socket as _socket
+_detected_lan_ip = None
+try:
+    _sock = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
+    _sock.settimeout(0.1)
+    _sock.connect(('8.8.8.8', 80))
+    _detected_lan_ip = _sock.getsockname()[0]
+    _sock.close()
+except Exception:
+    pass
+if _detected_lan_ip and _detected_lan_ip not in ALLOWED_HOSTS:
+    ALLOWED_HOSTS.append(_detected_lan_ip)
+
 INSTALLED_APPS = [
     'django.contrib.admin',
     'django.contrib.auth',
@@ -91,6 +108,9 @@ TEMPLATES = [
                 'django.template.context_processors.request',
                 'django.contrib.auth.context_processors.auth',
                 'django.contrib.messages.context_processors.messages',
+                # Injects server_lan_ip/url, server_local_url, server_domain_url
+                # into every template so staff can see how to connect.
+                'fans.context_processors.server_access_info',
             ],
         },
     },
@@ -221,11 +241,29 @@ LOGGING = {
 }
 
 SESSION_COOKIE_HTTPONLY = True
-SESSION_COOKIE_SECURE = not DEBUG
 CSRF_COOKIE_HTTPONLY = True
-CSRF_COOKIE_SECURE = not DEBUG
 X_FRAME_OPTIONS = 'DENY'
 SECURE_CONTENT_TYPE_NOSNIFF = True
+
+# ── Secure-cookie mode ────────────────────────────────────────────────────────
+# When True, session and CSRF cookies carry the `Secure` flag.  The browser
+# will then refuse to send them over plain http://.  Any login attempt at
+# http://192.168.x.x:8000 will fail with:
+#
+#   Forbidden (CSRF cookie not set.): /accounts/login/
+#
+# Default behaviour (backward-compatible):
+#   DEBUG=True  → secure cookies OFF  (dev server over http:// works fine)
+#   DEBUG=False → secure cookies ON   (production HTTPS path, intended default)
+#
+# To allow login over plain HTTP (LAN IP fallback / testing) while keeping
+# DEBUG=False, add SECURE_COOKIES=False to .env.
+#
+# Do NOT set SECURE_COOKIES=False in a production deployment that is exposed
+# beyond a trusted LAN — it allows session tokens to travel unencrypted.
+_secure_cookies = _bool_env('SECURE_COOKIES', default=not DEBUG)
+SESSION_COOKIE_SECURE = _secure_cookies
+CSRF_COOKIE_SECURE = _secure_cookies
 
 # ── Reverse-proxy / HTTPS (centralized server deployment) ────────────────────
 # These settings are no-ops when left empty; safe for local development.
@@ -304,3 +342,16 @@ if not _running_tests:
         _warnings.warn(f'[FANS-C] {_msg}', RuntimeWarning, stacklevel=2)
     for _msg in _startup_errors:
         print(f'\n[FANS-C CRITICAL] {_msg}\n', file=sys.stderr)
+
+    # ── Startup settings summary (shown in Waitress console for installer) ────
+    try:
+        _csrf_display = str(CSRF_TRUSTED_ORIGINS)
+    except NameError:
+        _csrf_display = '(not set — required for HTTPS form POSTs via Caddy)'
+    print(f'[FANS-C] ALLOWED_HOSTS       : {ALLOWED_HOSTS}', file=sys.stderr)
+    print(f'[FANS-C] CSRF_TRUSTED_ORIGINS: {_csrf_display}', file=sys.stderr)
+    print(f'[FANS-C] SECURE_COOKIES      : {_secure_cookies}', file=sys.stderr)
+    if _detected_lan_ip:
+        print(f'[FANS-C] LAN IP              : {_detected_lan_ip}  [OK] auto-added to ALLOWED_HOSTS', file=sys.stderr)
+    else:
+        print('[FANS-C] LAN IP              : not detected (server may not be connected to LAN)', file=sys.stderr)

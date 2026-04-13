@@ -260,7 +260,7 @@ USE_X_FORWARDED_HOST=True
 | Run `mkcert fans-barangay.local 192.168.1.77 localhost 127.0.0.1` | Once; redo only if cert expires or IP changes |
 | Add firewall rule for port 443 (as Admin) | Once per server machine |
 | Start Waitress and Caddy after each reboot | Every time the server restarts (see startup scripts below) |
-| Add hosts file entry + install CA on each client device | Once per client device (see CLIENT_ACCESS.md) |
+| Configure hostname resolution on client devices | Once-total if router DNS is used; once per device if hosts file fallback is used (see CLIENT_ACCESS.md) |
 
 ---
 
@@ -346,6 +346,116 @@ caddy run --config Caddyfile
 
 ---
 
+## Recommended Network Setup (No Per-Device Configuration)
+
+This section explains the best-practice network setup for a real barangay deployment. The goal is simple: once the server is configured, staff just connect to the office Wi-Fi and open one link in a browser — no one has to touch their individual devices.
+
+### The problem with editing hosts files on every device
+
+The default approach (editing `C:\Windows\System32\drivers\etc\hosts` on each PC) works, but has real drawbacks in practice:
+
+- Every new staff device requires an admin to manually edit a system file
+- If the server IP ever changes, every device must be updated again
+- Android and iOS devices do not support hosts file editing at all
+- It requires running Notepad as Administrator — staff cannot do it themselves
+
+### The better approach: configure the router once
+
+A standard office Wi-Fi router can be configured to handle both problems — stable IP assignment and automatic domain name resolution — in one place, for the whole network.
+
+---
+
+### A. DHCP Reservation — Give the Server a Stable IP
+
+**What is DHCP?**
+DHCP (Dynamic Host Configuration Protocol) is the service your router uses to automatically assign IP addresses to devices that join the network. By default, these addresses can change — your server PC might get `192.168.1.77` today and `192.168.1.82` after a reboot.
+
+**What is a DHCP Reservation (also called a Static Lease)?**
+A DHCP reservation tells the router: "always give this specific device the same IP address, every time." The device is identified by its MAC address (a permanent hardware identifier burned into its network card).
+
+**Why this is better than setting a static IP in Windows:**
+
+| Approach | How it works | Drawback |
+|---|---|---|
+| Windows static IP | You manually type the IP into Windows Network Settings | Breaks if the router's DHCP range overlaps; can cause IP conflicts; requires knowing the correct gateway and DNS values |
+| Router DHCP Reservation | Router always hands out the same IP to the server's MAC address | Zero risk of IP conflict; router manages everything; survives Windows reinstall |
+
+**How to set it up (generic steps — exact menu names vary by router brand):**
+
+1. Log in to your router admin panel. The address is usually `192.168.1.1` or `192.168.0.1` — type it in a browser on any device connected to the router.
+2. Look for a section called **DHCP**, **LAN**, or **Network Settings**.
+3. Inside it, find **DHCP Reservations**, **Static Leases**, or **Address Reservation**.
+4. Find the server PC's MAC address. You can find it on the server PC by running this in Command Prompt:
+   ```
+   ipconfig /all
+   ```
+   Look for **Physical Address** under your active network adapter (Wi-Fi or Ethernet). It looks like: `A4-B1-C2-D3-E4-F5`
+5. Enter the MAC address and choose a fixed IP (e.g., `192.168.1.150`). Pick a number that is outside the router's normal DHCP range (e.g., if DHCP range is `.100` to `.149`, pick `.150`).
+6. Save and apply. Restart the server PC — it should now always get that IP.
+
+> **What this achieves:** The server's IP address never changes, even after a reboot or power cut. You never need to update any configuration because of an IP change.
+
+---
+
+### B. Local DNS / Hostname Mapping — Resolve the Domain Automatically
+
+**What is DNS?**
+DNS (Domain Name System) is the service that translates a name like `fans-barangay.local` into an IP address like `192.168.1.150`. Normally this happens via public internet DNS servers. For local names, the router can handle it instead.
+
+**What does "hostname mapping" mean?**
+It means telling the router: "when any device on this network asks what IP `fans-barangay.local` is, respond with `192.168.1.150`."
+
+Once this is set on the router, every device on the network — Windows PCs, laptops, tablets, phones — can automatically resolve `fans-barangay.local` without any changes to the device itself.
+
+**How to set it up (generic steps):**
+
+1. Log in to your router admin panel.
+2. Look for a section called **DNS**, **Advanced DNS**, **Local DNS**, **Hostname Mapping**, or **Static Hosts**. This varies by router — check under Advanced Settings if you do not see it immediately.
+3. Add an entry:
+   - Hostname / Domain: `fans-barangay.local`
+   - IP Address: the fixed IP you assigned in step A (e.g., `192.168.1.150`)
+4. Save and apply.
+
+> **What this achieves:** Every device that joins the office Wi-Fi can immediately reach `https://fans-barangay.local` — no hosts file edits, no per-device setup, no IT visit needed for new devices.
+
+---
+
+### Does every router support this?
+
+Most modern home and office routers support DHCP reservations. Local DNS / hostname mapping is less universal but available on most branded routers (TP-Link, ASUS, Netgear, D-Link, Mikrotik, Ubiquiti, and most ISP-provided routers).
+
+If the router does not support local DNS entries, use the hosts file fallback described in the next section.
+
+---
+
+### Comparison: Which approach is right for your barangay?
+
+| Method | Setup Effort | Maintenance | Works on mobile? | Recommended |
+|---|---|---|---|---|
+| Hosts file (manual) | Per device — IT must visit each PC | High — must redo if IP changes | No (iOS/Android) | Fallback only |
+| Static IP in Windows | One device | Medium — risk of IP conflict | N/A | Not recommended |
+| Router DHCP Reservation + Local DNS | One-time on the router | Low — set and forget | Yes | **BEST** |
+
+---
+
+### Fallback / Manual Setup (for testing or when router config is not available)
+
+If router DNS configuration is not available, use the hosts file method on each client device:
+
+1. Open Notepad **as Administrator** on the client device
+2. Open the file: `C:\Windows\System32\drivers\etc\hosts`
+3. Add this line at the bottom (replace the IP with your server's actual IP):
+   ```
+   192.168.1.150   fans-barangay.local
+   ```
+4. Save the file. Open a new browser tab and go to `https://fans-barangay.local`.
+
+This must be done once per device. If the server IP ever changes, every device's hosts file must be updated.
+
+See [CLIENT_ACCESS.md](CLIENT_ACCESS.md) for the staff-facing version of these instructions.
+
+---
+
 ## LAN vs Internet — What This System Actually Needs
 
 This system is **LAN-based (on-premise)**. It runs on a server PC inside the barangay office and is accessed by staff using browsers on the same local Wi-Fi or wired network.
@@ -368,7 +478,7 @@ This system is **LAN-based (on-premise)**. It runs on a server PC inside the bar
 Staff PCs do not need Python, PostgreSQL, GitHub Desktop, or any project files. They only need:
 - A web browser (Chrome, Edge, or Firefox)
 - Connection to the same Wi-Fi or LAN as the server PC
-- The hosts file entry for `fans-barangay.local` (done once per device)
+- Domain resolution for `fans-barangay.local` — handled automatically if the router is configured with a local DNS entry (recommended), or done once per device via the hosts file (fallback)
 
 ---
 

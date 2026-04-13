@@ -113,6 +113,14 @@
                 <i class="bi bi-sliders me-2 text-secondary"></i>Threshold Config
               </a>
             </li>
+            {% if user.is_superuser %}
+            <li><hr class="dropdown-divider"></li>
+            <li>
+              <a class="dropdown-item" href="{% url 'system_connection' %}">
+                <i class="bi bi-hdd-network me-2 text-info"></i>System Connection Info
+              </a>
+            </li>
+            {% endif %}
           </ul>
         </li>
         {% endif %}
@@ -141,6 +149,23 @@
     </div>
   </div>
 </nav>
+{% endif %}
+
+{# ── Fallback-access (HTTP) banner — shown to signed-in users on plain http:// #}
+{% if user.is_authenticated and not request.is_secure %}
+<div class="alert alert-warning alert-dismissible fade show mb-0 d-flex align-items-center gap-2 px-3 py-2"
+     style="border-radius:0; border-left:none; border-right:none; border-top:none; font-size:0.82rem;"
+     role="alert">
+  <i class="bi bi-exclamation-triangle-fill flex-shrink-0"></i>
+  <span>
+    <strong>Fallback Access (HTTP):</strong>
+    Camera-based verification is disabled over plain HTTP.
+    For full features switch to
+    <a href="{{ server_domain_url }}" class="alert-link fw-semibold">{{ server_domain_url }}</a>
+    <span class="badge ms-1" style="font-size:0.6rem; background:#dcfce7; color:#15803d; border:1px solid #86efac;">Secure Access</span>
+  </span>
+  <button type="button" class="btn-close btn-sm ms-auto" data-bs-dismiss="alert" aria-label="Dismiss"></button>
+</div>
 {% endif %}
 
 <div class="page-wrapper">
@@ -180,9 +205,26 @@
 </div>
 
 <footer class="mt-auto py-3 text-center" style="font-size:0.75rem; color:#94a3b8; border-top:1px solid #e2e8f0; background:white;">
-  <span class="fw-semibold" style="color:var(--qc-blue);">FANS-C</span>
-  &mdash; Facial Verification System &mdash; Quezon City Local Government &mdash;
-  All actions are logged and audited.
+  <div class="d-flex flex-wrap justify-content-center align-items-center gap-3">
+    <span>
+      <span class="fw-semibold" style="color:var(--qc-blue);">FANS-C</span>
+      &mdash; Facial Verification System &mdash; Quezon City Local Government &mdash;
+      All actions are logged and audited.
+    </span>
+    <span class="d-flex align-items-center gap-2">
+      <span style="display:inline-block; width:7px; height:7px; border-radius:50%; background:#22c55e; flex-shrink:0;"></span>
+      {% if request.is_secure %}
+        <span style="color:#15803d; font-weight:600;">Secure Access</span>
+        <span style="display:inline-block; padding:1px 5px; border-radius:4px; background:#dcfce7; color:#15803d; border:1px solid #86efac; font-size:0.65rem; font-weight:600;">HTTPS</span>
+        &mdash; <a href="{{ server_domain_url }}" class="text-decoration-none" style="color:#64748b;">{{ server_domain_url }}</a>
+      {% else %}
+        <span style="color:#b45309; font-weight:600;">Fallback Access</span>
+        <span style="display:inline-block; padding:1px 5px; border-radius:4px; background:#fef3c7; color:#b45309; border:1px solid #fde68a; font-size:0.65rem; font-weight:600;">HTTP</span>
+        {% if server_lan_ip %}&mdash; <a href="{{ server_lan_url }}" class="text-decoration-none" style="color:#64748b;">{{ server_lan_url }}</a>{% endif %}
+      {% endif %}
+      &mdash; <a href="{% url 'connect_help' %}" class="text-decoration-none" style="color:#64748b;">Connection Help</a>
+    </span>
+  </div>
 </footer>
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>

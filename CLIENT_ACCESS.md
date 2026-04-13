@@ -46,9 +46,17 @@ This is normal on first access from a new device. The system uses a locally-issu
 
 To fix this permanently, the IT administrator needs to install the certificate on your device (done once per device). Until then, you can click **"Advanced" → "Proceed anyway"** to continue.
 
-### "hosts file" setup (if the domain name does not work)
+### Domain name does not work (`fans-barangay.local` shows "Server not found")
 
-If `https://fans-barangay.local` shows "Server not found" and the IP address works fine, the domain name needs to be added to your device's hosts file.
+This means the device does not know which IP address `fans-barangay.local` points to. There are two ways to fix this, depending on how the network is set up.
+
+#### Option A — Router DNS (Recommended — no per-device work needed)
+
+If the IT administrator has already configured the office router to map `fans-barangay.local` to the server IP, the domain should work automatically on any device connected to the office Wi-Fi. If it still does not work, contact the IT administrator to verify the router DNS entry is saved and the device is on the correct Wi-Fi network.
+
+#### Option B — Hosts File (Fallback — for testing or when router config is not available)
+
+If the router has not been configured with a DNS entry, the IT administrator must add the domain to each device individually.
 
 Ask the IT administrator to do this — it requires one change to a system file and is done once per device.
 
@@ -57,7 +65,16 @@ Add this line to `C:\Windows\System32\drivers\etc\hosts` on the client device:
 ```
 192.168.1.77   fans-barangay.local
 ```
-Replace `192.168.1.77` with the server's actual IP address.
+Replace `192.168.1.77` with the server's actual IP address. This must be done on each Windows PC separately. Android and iOS devices cannot use this method — they require router DNS (Option A).
+
+#### Which method is set up here?
+
+| Method | Who sets it up | Applies to |
+|---|---|---|
+| Router DNS (Option A) | IT admin — once on the router | All devices automatically |
+| Hosts file (Option B) | IT admin — once per PC | Only that specific PC |
+
+Ask your IT administrator which method is in use. If you are on a new PC and the domain does not work, Option B may need to be applied to your device.
 
 ---
 

@@ -42,6 +42,7 @@ $venvWaitress = Join-Path $projectRoot '.venv\Scripts\waitress-serve.exe'
 $envFile      = Join-Path $projectRoot '.env'
 $caddyFile    = Join-Path $projectRoot 'Caddyfile'
 $certFile     = Join-Path $projectRoot 'fans-barangay.local+3.pem'
+$caddyExe     = 'D:\Tools\caddy.exe'
 
 # ---------------------------------------------------------------------------
 # Banner
@@ -110,13 +111,11 @@ if (-not (Test-Path $certFile)) {
     Write-Host ""
 }
 
-# 6. Check caddy is available
-try {
-    $null = Get-Command caddy -ErrorAction Stop
-} catch {
-    Write-Host "  [FAIL] 'caddy' command not found on PATH." -ForegroundColor Red
-    Write-Host "         Download caddy.exe and add it to your PATH, or place it" -ForegroundColor Yellow
-    Write-Host "         in the project root folder ($projectRoot)." -ForegroundColor Yellow
+# 6. Check caddy executable exists at the expected path
+if (-not (Test-Path $caddyExe)) {
+    Write-Host "  [FAIL] caddy.exe not found at: $caddyExe" -ForegroundColor Red
+    Write-Host "         Download caddy.exe and place it at that path." -ForegroundColor Yellow
+    Write-Host "         See: https://caddyserver.com/docs/install" -ForegroundColor Yellow
     Read-Host "  Press Enter to exit"
     exit 1
 }
@@ -164,7 +163,7 @@ Write-Host '   DO NOT CLOSE THIS WINDOW while the system is in use.          ' -
 Write-Host '  ================================================================' -ForegroundColor DarkCyan
 Write-Host ''
 Set-Location '$projectRoot'
-caddy run --config Caddyfile
+& '$caddyExe' run --config Caddyfile
 Write-Host ''
 Write-Host '  Caddy has stopped. Press Enter to close.' -ForegroundColor Red
 Read-Host
@@ -173,17 +172,53 @@ Read-Host
 Start-Process powershell.exe -ArgumentList "-NoExit", "-Command", $caddyCmd
 
 # ---------------------------------------------------------------------------
+# Detect LAN IP (for staff connection guidance)
+# ---------------------------------------------------------------------------
+$lanIp = $null
+try {
+    $udp = New-Object System.Net.Sockets.UdpClient
+    $udp.Connect('8.8.8.8', 80)
+    $lanIp = $udp.Client.LocalEndPoint.Address.ToString()
+    $udp.Close()
+} catch {
+    try {
+        $lanIp = (Get-NetIPAddress -AddressFamily IPv4 |
+                  Where-Object { $_.IPAddress -notmatch '^127\.' -and $_.IPAddress -notmatch '^169\.254\.' } |
+                  Select-Object -First 1).IPAddress
+    } catch { }
+}
+
+# ---------------------------------------------------------------------------
 # Done
 # ---------------------------------------------------------------------------
 Write-Host ""
 Write-Host "  ================================================================" -ForegroundColor DarkCyan
 Write-Host "   Both servers are starting in their own windows.               " -ForegroundColor Green
 Write-Host ""
-Write-Host "   System URL  : https://fans-barangay.local                     " -ForegroundColor Cyan
-Write-Host "   Staff access: Any browser on the same Wi-Fi or LAN network    " -ForegroundColor Cyan
+Write-Host "   SECURE ACCESS (Recommended):" -ForegroundColor Green
+Write-Host "     https://fans-barangay.local" -ForegroundColor Cyan
+Write-Host "     Camera enabled · Full features · Requires hosts file setup  " -ForegroundColor DarkGray
 Write-Host ""
-Write-Host "   Internet is NOT required for normal operation.                 " -ForegroundColor Yellow
-Write-Host "   The system runs entirely on your local network.                " -ForegroundColor Yellow
+Write-Host "   FALLBACK ACCESS (No setup needed):" -ForegroundColor Yellow
+if ($lanIp) {
+    Write-Host "     http://$lanIp`:8000" -ForegroundColor Cyan
+    Write-Host "     Works immediately · No hosts file · Camera disabled        " -ForegroundColor DarkGray
+} else {
+    Write-Host "     (LAN IP not detected -- connect server to the network)     " -ForegroundColor DarkYellow
+}
+Write-Host ""
+Write-Host "   Server only (this device): http://127.0.0.1:8000             " -ForegroundColor DarkGray
+Write-Host ""
+if ($lanIp) {
+    Write-Host "   TIP: Give staff the FALLBACK URL to connect right away.      " -ForegroundColor Yellow
+    Write-Host "        Switch to SECURE ACCESS once hosts file is set up.      " -ForegroundColor Yellow
+} else {
+    Write-Host "   TIP: Connect this server to the network, then restart to     " -ForegroundColor Yellow
+    Write-Host "        get the Fallback URL for staff devices.                 " -ForegroundColor Yellow
+}
+Write-Host ""
+Write-Host "   Internet is NOT required for normal operation.                 " -ForegroundColor DarkGray
+Write-Host "   Connection help: https://fans-barangay.local/help/connect/    " -ForegroundColor DarkGray
 Write-Host ""
 Write-Host "   To stop: Close both the Waitress and Caddy windows.            " -ForegroundColor DarkGray
 Write-Host "  ================================================================" -ForegroundColor DarkCyan
