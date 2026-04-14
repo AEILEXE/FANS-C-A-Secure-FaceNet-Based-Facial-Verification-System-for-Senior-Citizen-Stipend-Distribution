@@ -42,7 +42,7 @@ $venvWaitress = Join-Path $projectRoot '.venv\Scripts\waitress-serve.exe'
 $envFile      = Join-Path $projectRoot '.env'
 $caddyFile    = Join-Path $projectRoot 'Caddyfile'
 $certFile     = Join-Path $projectRoot 'fans-barangay.local+3.pem'
-$caddyExe     = 'D:\Tools\caddy.exe'
+$caddyBundled = Join-Path $projectRoot 'tools\caddy.exe.exe'
 
 # ---------------------------------------------------------------------------
 # Banner
@@ -111,11 +111,33 @@ if (-not (Test-Path $certFile)) {
     Write-Host ""
 }
 
-# 6. Check caddy executable exists at the expected path
-if (-not (Test-Path $caddyExe)) {
-    Write-Host "  [FAIL] caddy.exe not found at: $caddyExe" -ForegroundColor Red
-    Write-Host "         Download caddy.exe and place it at that path." -ForegroundColor Yellow
-    Write-Host "         See: https://caddyserver.com/docs/install" -ForegroundColor Yellow
+# 6. Locate caddy.exe: bundled → PATH → fallback D:\Tools\caddy.exe
+$caddyExe = $null
+if (Test-Path $caddyBundled) {
+    $caddyExe = $caddyBundled
+    Write-Host "  [OK]  Caddy found (bundled): $caddyExe" -ForegroundColor Green
+} else {
+    try {
+        $found = Get-Command caddy -ErrorAction Stop
+        $caddyExe = $found.Source
+        Write-Host "  [OK]  Caddy found on PATH: $caddyExe" -ForegroundColor Green
+    } catch {
+        $fallback = 'D:\Tools\caddy.exe'
+        if (Test-Path $fallback) {
+            $caddyExe = $fallback
+            Write-Host "  [OK]  Caddy found (fallback D:\Tools): $caddyExe" -ForegroundColor Green
+        }
+    }
+}
+
+if (-not $caddyExe) {
+    Write-Host "  [FAIL] caddy.exe not found." -ForegroundColor Red
+    Write-Host "         Checked:" -ForegroundColor Yellow
+    Write-Host "           - $caddyBundled  (bundled)" -ForegroundColor Yellow
+    Write-Host "           - D:\Tools\caddy.exe  (custom path)" -ForegroundColor Yellow
+    Write-Host "           - System PATH" -ForegroundColor Yellow
+    Write-Host "         Place caddy.exe in the project's tools\ folder for automatic detection." -ForegroundColor Yellow
+    Write-Host "         Download from: https://caddyserver.com/docs/install" -ForegroundColor Yellow
     Read-Host "  Press Enter to exit"
     exit 1
 }

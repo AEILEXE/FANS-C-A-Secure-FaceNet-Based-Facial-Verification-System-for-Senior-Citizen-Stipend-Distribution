@@ -31,10 +31,10 @@ def health_network(request):
 def connect_help(request):
     """
     GET /help/connect/ — connection guide page.
-    Restricted to superusers; regular staff see a clean UI without
-    technical network details.
+    Restricted to IT/Admin (and superuser); Head Barangay and Staff are denied
+    because this page contains technical network details they don't need.
     """
-    if not request.user.is_superuser:
+    if not request.user.is_admin_it:
         raise PermissionDenied
     return render(request, 'help/connect.html')
 
@@ -42,11 +42,11 @@ def connect_help(request):
 @login_required
 def system_connection(request):
     """
-    GET /system/connection/ — full technical status page, superuser only.
+    GET /system/connection/ — full technical status page, IT/Admin only.
     Shows effective ALLOWED_HOSTS, CSRF origins, LAN IP, access mode, and
-    troubleshooting hints.  Not linked from regular staff UI.
+    troubleshooting hints.  Not linked from Head Barangay or Staff UI.
     """
-    if not request.user.is_superuser:
+    if not request.user.is_admin_it:
         raise PermissionDenied
     from django.conf import settings
     try:

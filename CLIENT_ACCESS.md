@@ -42,9 +42,28 @@ That's all. There is nothing to install.
 
 ### Browser shows a certificate warning
 
-This is normal on first access from a new device. The system uses a locally-issued certificate.
+This is expected on first access from a new device that has not been set up yet. The system uses a certificate issued by the FANS-C server's own Certificate Authority, which the device does not yet know about.
 
-To fix this permanently, the IT administrator needs to install the certificate on your device (done once per device). Until then, you can click **"Advanced" → "Proceed anyway"** to continue.
+**For staff:** Contact your IT administrator. They will run the client trust setup on your device (done once per device). After that, the padlock will appear and no warning will be shown.
+
+**For the IT administrator:**
+The client device needs to trust the server's Certificate Authority — this is not the same as generating a new certificate on the client. Specifically:
+
+1. On the **server**, find the root CA file:
+   ```
+   mkcert -CAROOT
+   ```
+   This prints a folder path. Copy `rootCA.pem` from that folder.
+
+2. Put `rootCA.pem` and `trust-local-cert.ps1` on the client device (USB, network share, etc.).
+
+3. On the **client device**, run as Administrator:
+   ```
+   trust-local-cert.ps1
+   ```
+   This imports the server's `rootCA.pem` into Windows Trusted Root Certification Authorities using `certutil`. After that, the browser will trust the FANS-C certificate.
+
+> Do NOT run `mkcert -install` on client devices. That creates a separate CA local to the client machine, which does not sign the server's certificate and does not fix the warning.
 
 ### Domain name does not work (`fans-barangay.local` shows "Server not found")
 

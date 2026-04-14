@@ -3,11 +3,28 @@ from django.db import models
 
 
 class CustomUser(AbstractUser):
-    ROLE_ADMIN = 'admin'
-    ROLE_STAFF = 'staff'
+    # ── Role constants ────────────────────────────────────────────────────────
+    # ROLE_ADMIN (legacy)  — kept so existing 'admin' rows are never broken.
+    #                        Treated identically to ROLE_ADMIN_IT everywhere.
+    # ROLE_HEAD_BRGY       — Operational admin (Head Barangay / Barangay Captain).
+    #                        Non-technical. Sees dashboards, reports, user mgmt.
+    #                        Does NOT see LAN IPs, connection diagnostics, or
+    #                        system-setup pages.
+    # ROLE_ADMIN_IT        — Technical administrator (IT/Admin).
+    #                        Full access: everything Head Barangay sees plus
+    #                        System Connection Info, diagnostics, network setup.
+    # ROLE_STAFF           — Operational user. Register, verify, workflow only.
+    #                        No user management or system diagnostics.
+    ROLE_ADMIN    = 'admin'      # legacy — behaves as admin_it
+    ROLE_HEAD_BRGY = 'head_brgy' # operational admin (non-technical)
+    ROLE_ADMIN_IT  = 'admin_it'  # technical administrator
+    ROLE_STAFF    = 'staff'
+
     ROLE_CHOICES = [
-        (ROLE_ADMIN, 'Admin'),
-        (ROLE_STAFF, 'Staff'),
+        (ROLE_HEAD_BRGY, 'Head Barangay'),
+        (ROLE_ADMIN_IT,  'IT / Admin'),
+        (ROLE_STAFF,     'Staff'),
+        (ROLE_ADMIN,     'Admin (legacy)'),  # kept for backward compatibility
     ]
 
     role = models.CharField(max_length=10, choices=ROLE_CHOICES, default=ROLE_STAFF)
@@ -23,9 +40,25 @@ class CustomUser(AbstractUser):
         verbose_name = 'User'
         verbose_name_plural = 'Users'
 
+    # ── Role helpers ──────────────────────────────────────────────────────────
+
     @property
     def is_admin(self):
-        return self.role == self.ROLE_ADMIN
+        """True for all management-level roles (Head Barangay + IT Admin + legacy admin).
+        Use this for checks that both operational and technical admins should pass."""
+        return self.role in (self.ROLE_ADMIN, self.ROLE_ADMIN_IT, self.ROLE_HEAD_BRGY)
+
+    @property
+    def is_admin_it(self):
+        """True only for technical administrators (IT/Admin and legacy admin).
+        Use this to gate system diagnostics, connection info, and network pages
+        that the Head Barangay should NOT see."""
+        return self.role in (self.ROLE_ADMIN, self.ROLE_ADMIN_IT) or self.is_superuser
+
+    @property
+    def is_head_barangay(self):
+        """True only for the Head Barangay operational-admin role."""
+        return self.role == self.ROLE_HEAD_BRGY
 
     @property
     def is_staff_member(self):

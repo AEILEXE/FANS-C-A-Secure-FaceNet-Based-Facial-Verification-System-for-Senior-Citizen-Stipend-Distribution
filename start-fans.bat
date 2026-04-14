@@ -89,12 +89,47 @@ echo  [..] Waiting 4 seconds for Waitress to initialize...
 timeout /t 4 /nobreak >nul
 
 :: ----------------------------------------------------------
-:: Start Caddy (HTTPS reverse proxy) in a new window
+:: Locate and start Caddy (HTTPS reverse proxy)
 :: ----------------------------------------------------------
 echo  [2/2] Starting Caddy (HTTPS reverse proxy)...
 echo        This handles HTTPS on port 443 and forwards to Waitress.
 echo.
-start "FANS-C Caddy" cmd /k "title FANS-C Caddy && echo. && echo   FANS-C Caddy - HTTPS Reverse Proxy && echo   DO NOT CLOSE THIS WINDOW while the system is in use. && echo. && cd /d %~dp0 && D:\Tools\caddy.exe run --config Caddyfile"
+
+:: Locate caddy.exe: bundled (tools\caddy.exe.exe) -> D:\Tools\caddy.exe -> PATH
+set "CADDY_EXE="
+
+if exist "%~dp0tools\caddy.exe.exe" (
+    set "CADDY_EXE=%~dp0tools\caddy.exe.exe"
+    echo  [OK]  Caddy found (bundled): %~dp0tools\caddy.exe.exe
+) else (
+    if exist "D:\Tools\caddy.exe" (
+        set "CADDY_EXE=D:\Tools\caddy.exe"
+        echo  [OK]  Caddy found (D:\Tools): D:\Tools\caddy.exe
+    ) else (
+        where caddy >nul 2>&1
+        if not errorlevel 1 (
+            for /f "delims=" %%C in ('where caddy') do if not defined CADDY_EXE set "CADDY_EXE=%%C"
+            echo  [OK]  Caddy found on PATH: %CADDY_EXE%
+        )
+    )
+)
+
+if not defined CADDY_EXE (
+    echo  [FAIL] caddy.exe not found.
+    echo.
+    echo         Checked:
+    echo           - %~dp0tools\caddy.exe.exe  (bundled)
+    echo           - D:\Tools\caddy.exe        (custom path)
+    echo           - System PATH
+    echo.
+    echo         Place caddy.exe in the project's tools\ folder for automatic detection.
+    echo         Download from: https://caddyserver.com/docs/install
+    echo.
+    pause
+    exit /b 1
+)
+
+start "FANS-C Caddy" cmd /k "title FANS-C Caddy && echo. && echo   FANS-C Caddy - HTTPS Reverse Proxy && echo   DO NOT CLOSE THIS WINDOW while the system is in use. && echo. && cd /d %~dp0 && "%CADDY_EXE%" run --config Caddyfile"
 
 :: ----------------------------------------------------------
 :: Detect LAN IP (for staff connection guidance)

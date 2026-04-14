@@ -256,11 +256,15 @@ USE_X_FORWARDED_HOST=True
 
 | Task | When |
 |---|---|
-| Run `mkcert -install` (as Admin) | Once per server machine |
+| Run `mkcert -install` (as Admin) | Once per server machine — creates the server's local CA |
 | Run `mkcert fans-barangay.local 192.168.1.77 localhost 127.0.0.1` | Once; redo only if cert expires or IP changes |
+| Run `mkcert -CAROOT` and copy `rootCA.pem` to each client device | Once; distribute to clients alongside `trust-local-cert.ps1` |
+| On each client: run `trust-local-cert.ps1` (as Admin) | Once per client device — imports the **server's** rootCA.pem into Windows trust store |
 | Add firewall rule for port 443 (as Admin) | Once per server machine |
 | Start Waitress and Caddy after each reboot | Every time the server restarts (see startup scripts below) |
 | Configure hostname resolution on client devices | Once-total if router DNS is used; once per device if hosts file fallback is used (see CLIENT_ACCESS.md) |
+
+> **Certificate trust model:** The server generates the HTTPS certificate with its own mkcert CA. Client devices must trust the **server's** CA (`rootCA.pem`) — they do not generate or install their own mkcert CA. Running `mkcert -install` on a client machine creates a different CA that does not sign the server's certificate and does not fix the browser warning.
 
 ---
 
