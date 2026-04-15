@@ -177,7 +177,15 @@ if (-not (Test-Path $certFile)) {
 Write-Host "         Certificate: $certFile" -ForegroundColor Green
 Write-Host "         Private key: $certKeyFile" -ForegroundColor Green
 
-# -- Step 6: Verify Caddy knows the right cert path ---------------------------
+# Copy to stable names so Caddyfile never needs updating when cert is regenerated
+$stableCert    = Join-Path $projectRoot 'fans-cert.pem'
+$stableCertKey = Join-Path $projectRoot 'fans-cert-key.pem'
+Copy-Item $certFile    $stableCert    -Force
+Copy-Item $certKeyFile $stableCertKey -Force
+Write-Host "         Stable cert: $stableCert" -ForegroundColor Green
+Write-Host "         Stable key:  $stableCertKey" -ForegroundColor Green
+
+# -- Step 6: Verify Caddyfile exists and references the stable cert name ------
 Write-Host "  [6/10] Checking Caddyfile..." -ForegroundColor Cyan
 if (-not (Test-Path $caddyFile)) {
     Write-Host "  [FAIL] Caddyfile not found in project root." -ForegroundColor Red
@@ -185,17 +193,14 @@ if (-not (Test-Path $caddyFile)) {
     exit 1
 }
 
-# Warn if the Caddyfile refers to a different cert filename than what was generated.
 $caddyContent = Get-Content $caddyFile -Raw
-$expectedCertRef = "fans-barangay.local+$sanCount.pem"
-if ($caddyContent -notmatch [regex]::Escape($expectedCertRef)) {
+if ($caddyContent -notmatch [regex]::Escape('fans-cert.pem')) {
     Write-Host ""
-    Write-Host "  [WARN] Caddyfile references a different certificate filename than what" -ForegroundColor Yellow
-    Write-Host "         was just generated ($expectedCertRef)." -ForegroundColor Yellow
-    Write-Host "         If Caddy fails to start, check the 'tls' line in your Caddyfile." -ForegroundColor Yellow
+    Write-Host "  [WARN] Caddyfile does not reference 'fans-cert.pem'." -ForegroundColor Yellow
+    Write-Host "         Check the 'tls' line in your Caddyfile." -ForegroundColor Yellow
     Write-Host ""
 } else {
-    Write-Host "         Caddyfile cert reference looks correct." -ForegroundColor Green
+    Write-Host "         Caddyfile cert reference OK (fans-cert.pem)." -ForegroundColor Green
 }
 
 # -- Step 7: Verify .env ------------------------------------------------------
@@ -271,8 +276,9 @@ Write-Host "  ================================================================" 
 Write-Host "   Setup complete!                                                " -ForegroundColor Green
 Write-Host ""
 Write-Host "   Certificate files in project root:" -ForegroundColor DarkGray
-Write-Host "     $certFile" -ForegroundColor Cyan
-Write-Host "     $certKeyFile" -ForegroundColor Cyan
+Write-Host "     $certFile  (mkcert original)" -ForegroundColor DarkGray
+Write-Host "     $stableCert  (stable — used by Caddy)" -ForegroundColor Cyan
+Write-Host "     $stableCertKey" -ForegroundColor Cyan
 if ($lanIp) {
     Write-Host ""
     Write-Host "   Server LAN IP detected: $lanIp" -ForegroundColor DarkGray

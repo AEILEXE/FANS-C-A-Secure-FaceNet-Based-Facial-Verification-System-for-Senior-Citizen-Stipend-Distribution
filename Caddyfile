@@ -15,19 +15,25 @@
 # Place these two certificate files in the SAME FOLDER as this Caddyfile
 # (i.e. the project root, D:\FANS\...\):
 #
-#   fans-barangay.local+3.pem       ← TLS certificate (public)
-#   fans-barangay.local+3-key.pem   ← TLS private key (keep secret, no git)
+#   fans-cert.pem       ← TLS certificate (public)
+#   fans-cert-key.pem   ← TLS private key (keep secret, never commit to git)
 #
-# Generate them with mkcert (run ONCE per server machine):
+# These stable filenames are created automatically by setup-secure-server.ps1.
+# mkcert generates the raw cert (with a version-number suffix like +3.pem),
+# and setup-secure-server.ps1 copies it to the stable names above so this
+# Caddyfile never needs to change when the cert is regenerated.
 #
-#   Step 1 — Install the local CA into Windows trust store (run as Admin):
+# To regenerate the certificate manually (run as Admin from project root):
+#
+#   Step 1 — Install the local CA into Windows trust store:
 #     mkcert -install
 #
-#   Step 2 — Issue the certificate (run from the project root folder):
+#   Step 2 — Issue the certificate (replace the IP with your server's LAN IP):
 #     mkcert fans-barangay.local 192.168.1.77 localhost 127.0.0.1
 #
-#   Replace 192.168.1.77 with your server's actual LAN IP (run `ipconfig`).
-#   The "+3" suffix in the filename means the cert covers all four names.
+#   Step 3 — Copy to stable names:
+#     copy fans-barangay.local+3.pem fans-cert.pem
+#     copy fans-barangay.local+3-key.pem fans-cert-key.pem
 #
 # ─────────────────────────────────────────────────────────────────────────────
 # HOW TO START THE SYSTEM (two PowerShell windows on the server machine)
@@ -89,7 +95,7 @@ fans-barangay.local {
     # TLS: use the locally-issued mkcert certificate and private key.
     # Paths are relative to the current working directory when caddy is started.
     # Both files must be present before running `caddy run --config Caddyfile`.
-    tls fans-barangay.local+3.pem fans-barangay.local+3-key.pem
+    tls fans-cert.pem fans-cert-key.pem
 
     # Forward all HTTPS requests to Waitress (Django) on the loopback address.
     # Waitress must already be running before Caddy starts serving requests.

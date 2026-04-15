@@ -64,11 +64,11 @@ if not exist ".env" (
     exit /b 1
 )
 
-if not exist "fans-barangay.local+3.pem" (
-    echo  [WARN] TLS certificate not found: fans-barangay.local+3.pem
+if not exist "fans-cert.pem" (
+    echo  [WARN] TLS certificate not found: fans-cert.pem
     echo.
-    echo         Caddy may fail to start. Run mkcert to generate certificates.
-    echo         See SETUP.md -- Section: Production Deployment (Waitress + Caddy)
+    echo         Caddy may fail to start.
+    echo         Run setup-secure-server.ps1 to generate and install certificates.
     echo.
 )
 

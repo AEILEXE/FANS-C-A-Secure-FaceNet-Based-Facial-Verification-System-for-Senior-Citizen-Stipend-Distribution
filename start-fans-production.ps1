@@ -41,7 +41,7 @@ Set-Location $projectRoot
 $venvWaitress = Join-Path $projectRoot '.venv\Scripts\waitress-serve.exe'
 $envFile      = Join-Path $projectRoot '.env'
 $caddyFile    = Join-Path $projectRoot 'Caddyfile'
-$certFile     = Join-Path $projectRoot 'fans-barangay.local+3.pem'
+$certFile     = Join-Path $projectRoot 'fans-cert.pem'
 $caddyBundled = Join-Path $projectRoot 'tools\caddy.exe.exe'
 
 # ---------------------------------------------------------------------------
@@ -104,9 +104,9 @@ if (-not (Test-Path $caddyFile)) {
 
 # 5. TLS certificate (warning only — Caddy will produce its own error)
 if (-not (Test-Path $certFile)) {
-    Write-Host "  [WARN] TLS certificate not found: fans-barangay.local+3.pem" -ForegroundColor Yellow
+    Write-Host "  [WARN] TLS certificate not found: fans-cert.pem" -ForegroundColor Yellow
     Write-Host "         Caddy may fail to start." -ForegroundColor Yellow
-    Write-Host "         See SETUP.md — 'Production Deployment (Waitress + Caddy)'" -ForegroundColor Yellow
+    Write-Host "         Run setup-secure-server.ps1 to regenerate." -ForegroundColor Yellow
     Write-Host "         Continuing anyway..." -ForegroundColor DarkGray
     Write-Host ""
 }

@@ -19,3 +19,8 @@ node_modules/
 *.h5
 *.pkl
 models/weights/
+.env
+*.pem
+*.key
+*.sqlite3
+/media/

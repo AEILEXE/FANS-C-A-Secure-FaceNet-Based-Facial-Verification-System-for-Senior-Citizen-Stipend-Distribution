@@ -62,13 +62,29 @@ if not exist "Caddyfile" (
     exit /b 1
 )
 
-if not exist "fans-barangay.local+3.pem" (
-    if not exist "fans-barangay.local+2.pem" (
-        echo  NOTE: HTTPS certificate not found.
-        echo        The secure connection may not work correctly.
-        echo        Contact your IT administrator if this is unexpected.
-        echo.
+:: -- Migrate old mkcert cert filenames to the stable name (one-time) --------
+:: setup-secure-server.ps1 now creates fans-cert.pem directly, but if the
+:: server was set up with an older version we copy the first matching cert
+:: we find so Caddy can always use the stable filename.
+if not exist "fans-cert.pem" (
+    for %%F in ("fans-barangay.local+*.pem") do (
+        if not "%%~nxF"=="fans-cert.pem" (
+            echo  NOTE: Migrating certificate to stable filename...
+            copy "%%F" "fans-cert.pem" >nul
+        )
     )
+)
+if not exist "fans-cert-key.pem" (
+    for %%F in ("fans-barangay.local+*-key.pem") do (
+        copy "%%F" "fans-cert-key.pem" >nul
+    )
+)
+
+if not exist "fans-cert.pem" (
+    echo  NOTE: HTTPS certificate not found.
+    echo        The secure connection may not work correctly.
+    echo        Contact your IT administrator to run setup-secure-server.ps1.
+    echo.
 )
 
 echo  All checks passed.  Starting services...
