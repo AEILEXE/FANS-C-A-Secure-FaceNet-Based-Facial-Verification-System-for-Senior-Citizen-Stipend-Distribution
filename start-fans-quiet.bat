@@ -1,60 +1,62 @@
 @echo off
 :: ============================================================
-::  FANS-C Quiet Launcher  (daily operational use)
-::  ──────────────────────────────────────────────
-::  Starts Waitress and Caddy MINIMIZED to the taskbar.
-::  Only this one window stays visible — shows status and URL.
+::  FANS-C Daily Launcher  (recommended for normal daily use)
+::  ─────────────────────────────────────────────────────────
+::  Starts the verification system with both services running
+::  minimized in the background.  Only this window is visible
+::  while starting up, then you can close it.
 ::
-::  For debugging (full visible windows): use start-fans.bat instead.
+::  FOR DEBUGGING (full visible windows): use start-fans.bat
 ::
 ::  HOW TO USE:
-::    Double-click this file from the project root folder.
-::    Keep it running — close it only when you want to shut down.
-::    To stop: press any key in this window (then manually close
-::    the two minimized windows in the taskbar if still open).
+::    Double-click this file — or use the desktop shortcut.
+::    Keep the system running as long as staff need access.
+::    To stop: close the two minimized taskbar windows.
 ::
-::  REQUIREMENTS (already done during initial setup):
-::    - .venv must exist           (run setup.ps1 or setup-secure-server.ps1)
-::    - .env must be configured    (copy from .env.example, fill in values)
-::    - Caddyfile must be present  (already in the project root)
-::    - TLS certificates must exist
-::    - caddy.exe must be reachable (PATH or D:\Tools\caddy.exe)
+::  FIRST-TIME SETUP:  Run setup-secure-server.ps1 first.
+::  DESKTOP SHORTCUT:  Run Create-Desktop-Shortcut.ps1 once.
 :: ============================================================
 
-title FANS-C System
-mode con cols=68 lines=30
+title FANS-C Verification System
+mode con cols=68 lines=32
 
 echo.
 echo  ================================================================
-echo   FANS-C  ^|  FaceNet Facial Verification System
-echo   Daily Startup  (Quiet Mode — servers run minimized)
+echo   FANS-C  ^|  Barangay Senior Citizen Verification System
+echo   Starting up...
 echo  ================================================================
 echo.
 
 :: ── Pre-flight checks ─────────────────────────────────────────────
 
 if not exist ".venv\Scripts\waitress-serve.exe" (
-    echo  [FAIL] Virtual environment not found.
     echo.
-    echo         Run setup-secure-server.ps1 or setup.ps1 first.
+    echo  ERROR: System setup is not complete.
+    echo.
+    echo  Please ask your IT administrator to run
+    echo  setup-secure-server.ps1 before using this launcher.
     echo.
     pause
     exit /b 1
 )
 
 if not exist ".env" (
-    echo  [FAIL] .env file not found.
     echo.
-    echo         Copy .env.example to .env and fill in your values.
+    echo  ERROR: Configuration file is missing.
+    echo.
+    echo  Please ask your IT administrator to complete
+    echo  the server configuration before starting.
     echo.
     pause
     exit /b 1
 )
 
 if not exist "Caddyfile" (
-    echo  [FAIL] Caddyfile not found.
     echo.
-    echo         Run this script from the project root folder.
+    echo  ERROR: This launcher must be run from the FANS-C project folder.
+    echo.
+    echo  Please do not move this file to another location.
+    echo  Use the desktop shortcut created by Create-Desktop-Shortcut.ps1.
     echo.
     pause
     exit /b 1
@@ -62,19 +64,19 @@ if not exist "Caddyfile" (
 
 if not exist "fans-barangay.local+3.pem" (
     if not exist "fans-barangay.local+2.pem" (
-        echo  [WARN] TLS certificate not found.
-        echo         Run setup-secure-server.ps1 to generate it.
-        echo         Caddy may fail to start.
+        echo  NOTE: HTTPS certificate not found.
+        echo        The secure connection may not work correctly.
+        echo        Contact your IT administrator if this is unexpected.
         echo.
     )
 )
 
-echo  [OK]  Pre-flight checks passed.
+echo  All checks passed.  Starting services...
 echo.
 
 :: ── Start Waitress minimized ──────────────────────────────────────
 
-echo  [1/2] Starting Waitress (minimized)...
+echo  [1/2] Starting application server...
 start /MIN "FANS-C Waitress" cmd /k "cd /d %~dp0 && "%~dp0.venv\Scripts\waitress-serve.exe" --listen=127.0.0.1:8000 fans.wsgi:application"
 
 :: Wait for Waitress to initialize before Caddy starts
@@ -82,37 +84,30 @@ timeout /t 4 /nobreak >nul
 
 :: ── Start Caddy minimized ─────────────────────────────────────────
 
-echo  [2/2] Starting Caddy (minimized)...
+echo  [2/2] Starting HTTPS service...
 
 :: Locate caddy.exe: bundled (tools\caddy.exe.exe) -> D:\Tools\caddy.exe -> PATH
 set "CADDY_EXE="
 
 if exist "%~dp0tools\caddy.exe.exe" (
     set "CADDY_EXE=%~dp0tools\caddy.exe.exe"
-    echo  [OK]  Caddy found (bundled): %~dp0tools\caddy.exe.exe
 ) else (
     if exist "D:\Tools\caddy.exe" (
         set "CADDY_EXE=D:\Tools\caddy.exe"
-        echo  [OK]  Caddy found (D:\Tools): D:\Tools\caddy.exe
     ) else (
         where caddy >nul 2>&1
         if not errorlevel 1 (
             for /f "delims=" %%C in ('where caddy') do if not defined CADDY_EXE set "CADDY_EXE=%%C"
-            echo  [OK]  Caddy found on PATH: %CADDY_EXE%
         )
     )
 )
 
 if not defined CADDY_EXE (
-    echo  [FAIL] caddy.exe not found.
     echo.
-    echo         Checked:
-    echo           - %~dp0tools\caddy.exe.exe  (bundled)
-    echo           - D:\Tools\caddy.exe        (custom path)
-    echo           - System PATH
+    echo  ERROR: HTTPS service component (Caddy) could not be found.
     echo.
-    echo         Place caddy.exe in the project's tools\ folder for automatic detection.
-    echo         Download from: https://caddyserver.com/docs/install
+    echo  Please contact your IT administrator.
+    echo  Caddy must be placed in the project's tools\ folder.
     echo.
     pause
     exit /b 1
@@ -133,27 +128,28 @@ for /f "tokens=2 delims=:" %%A in ('ipconfig ^| findstr /i "IPv4 Address"') do (
 
 echo.
 echo  ================================================================
-echo   FANS-C is running.
+echo   FANS-C is running.  Staff can now open the system.
 echo.
-echo   SECURE ACCESS (Recommended):
+echo   OPEN THIS ADDRESS IN THE BROWSER:
 echo     https://fans-barangay.local
-echo     Camera enabled - full features
+echo     (Camera enabled -- full face verification)
 echo.
-echo   FALLBACK ACCESS (Camera disabled):
+echo   BACKUP ADDRESS (if browser shows a security warning):
 if defined LAN_IP (
 echo     http://%LAN_IP%:8000
+echo     (Camera disabled -- for troubleshooting only)
 ) else (
-echo     (LAN IP not detected - connect server to the network)
+echo     Not available -- connect this PC to the network first.
 )
 echo.
-echo   Waitress and Caddy are running minimized in the taskbar.
-echo   DO NOT close those windows while the system is in use.
+echo   Both services are running minimized in the taskbar.
+echo   Do NOT close those taskbar windows while staff are using the system.
 echo.
-echo   To shut down completely:
+echo   TO SHUT DOWN:
 echo     1. Close this window
-echo     2. Close the minimized Waitress and Caddy taskbar windows
+echo     2. Close "FANS-C Waitress" in the taskbar
+echo     3. Close "FANS-C Caddy" in the taskbar
 echo  ================================================================
 echo.
-echo  Press any key to close this launcher window.
-echo  (Waitress and Caddy will continue running until you close them.)
+echo  You may close this window.  The system will keep running.
 pause >nul

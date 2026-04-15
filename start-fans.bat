@@ -1,31 +1,30 @@
 @echo off
 :: ============================================================
-::  FANS-C Production Startup Script
-::  Double-click this file to start the server after a reboot.
+::  FANS-C Debug Launcher  (verbose mode — for IT/admin use)
+::  ─────────────────────────────────────────────────────────
+::  Opens BOTH server windows VISIBLY so you can see all output.
+::  Use this when troubleshooting startup or configuration issues.
+::
+::  FOR NORMAL DAILY USE: use start-fans-quiet.bat instead.
+::  FOR DESKTOP SHORTCUT: run Create-Desktop-Shortcut.ps1 once.
 ::
 ::  What it does:
-::    1. Opens a window for Waitress (Django app server)
-::    2. Opens a window for Caddy (HTTPS reverse proxy)
-::
-::  Requirements (already done during initial setup):
-::    - .venv must exist (run setup.ps1 once to create it)
-::    - caddy.exe must be on the PATH (or in this folder)
-::    - Caddyfile and TLS certificates must be present
-::    - .env must be configured for production
+::    1. Opens a visible window for Waitress (Django app server)
+::    2. Opens a visible window for Caddy (HTTPS reverse proxy)
 ::
 ::  To stop the system:
 ::    - Close the two server windows that this script opens.
 ::
-::  NOTE: Run this script from the project root folder (e.g. D:\FANS\fans-c\).
-::        Do NOT move this file to a different location without updating paths.
+::  NOTE: Run this script from the project root folder.
+::        Do NOT move this file without updating paths.
 :: ============================================================
 
-title FANS-C Startup
+title FANS-C Debug Launcher
 
 echo.
 echo  ================================================================
-echo   FANS-C  ^|  FaceNet Facial Verification System
-echo   Starting Production Server...
+echo   FANS-C  ^|  Barangay Senior Citizen Verification System
+echo   Debug Launcher  (verbose mode — IT/admin use)
 echo  ================================================================
 echo.
 
