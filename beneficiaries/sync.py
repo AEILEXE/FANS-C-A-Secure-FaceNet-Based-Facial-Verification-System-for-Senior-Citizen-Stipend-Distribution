@@ -1,53 +1,54 @@
 """
-Offline-First Sync Service for FANS-C.
+Offline-Fallback Sync Service for FANS-C.
 
-Purpose
--------
-This module enables the system to operate completely offline (no network
-required) and then push locally-registered beneficiary records to a
-central server once an internet connection is available.
+Architecture overview
+---------------------
+FANS-C is designed primarily for centralized LAN deployment where all
+workstations write directly to a shared PostgreSQL database.  This module
+supports the fallback scenario: barangay workstations that occasionally
+operate offline (no LAN/internet access) and need to push locally-captured
+registrations to the central server when connectivity is later restored.
 
-How it works
-------------
-1. Every new Beneficiary is saved with is_synced=False.
-2. When connectivity is detected (or manually triggered), sync_all() sends
-   unsynced records to the SYNC_API_URL endpoint defined in settings.
-3. On HTTP 200/201 the record is marked is_synced=True and last_synced_at
-   is set to the current timestamp.
-4. On failure the error is logged and stored in sync_error; the record
-   remains is_synced=False and will be retried on the next sync run.
+Sync state machine
+------------------
+Every Beneficiary has a ``sync_status`` field that progresses through these states:
+
+    pending_sync  → synced        (HTTP 200/201 — central server accepted)
+    pending_sync  → sync_conflict (HTTP 409    — server has conflicting data)
+    pending_sync  → sync_rejected (HTTP 4xx    — server rejected the payload)
+    sync_conflict → pending_sync  (admin resets to retry after reviewing)
+    sync_rejected → pending_sync  (admin resets to retry after reviewing)
+
+``sync_error`` stores the human-readable reason for the last failure/conflict.
+It is cleared on successful sync.  ``sync_attempted_at`` records when the last
+attempt (any outcome) was made.  ``offline_device`` records the hostname of
+the workstation that originally created the record offline.
 
 Configuration (.env)
 --------------------
-SYNC_API_URL   — Base URL of the central API, e.g. https://central.fans-c.gov.ph/api
-SYNC_API_KEY   — Bearer token / API key for the central server (keep secret).
-SYNC_TIMEOUT   — HTTP request timeout in seconds (default 30).
-SYNC_BATCH_SIZE— Maximum records per sync run (default 50).
+SYNC_API_URL    — Base URL of the central API, e.g. https://central.fans-c.gov.ph/api
+                  Leave empty to disable sync (centralized deployment mode).
+SYNC_API_KEY    — Bearer token / API key for the central server.
+SYNC_TIMEOUT    — HTTP request timeout in seconds (default 30).
+SYNC_BATCH_SIZE — Max records per sync run (default 50).
 
 Key sharing
 -----------
-The EMBEDDING_ENCRYPTION_KEY used locally MUST be identical on the central
-server. The encrypted embedding bytes are transferred as-is; the central
-server decrypts them using the same Fernet key. If the keys differ, face
-data will be unreadable on the other side.
-
-Conflict handling
------------------
-Records are identified by their UUID primary key (id) and by beneficiary_id.
-The central API is expected to treat a duplicate UUID as an upsert (update
-existing) rather than an error. This prevents duplicates when a record is
-re-sent after a partial failure.
+EMBEDDING_ENCRYPTION_KEY must be identical on both the offline device and the
+central server.  The encrypted embedding bytes are transferred as-is; the
+central server decrypts them with the same Fernet key.
 
 Usage
 -----
-    from beneficiaries.sync import sync_all, is_online
+    from beneficiaries.sync import sync_all, is_online, mark_created
 
+    # Call immediately after saving a new offline registration:
+    mark_created(beneficiary)
+
+    # Periodic sync (called by sync_beneficiaries management command):
     if is_online():
         result = sync_all()
-        print(result)  # {'synced': 5, 'failed': 0, 'skipped': 0}
-
-    # Or run from the command line:
-    #   python manage.py sync_beneficiaries
+        # result = {'synced': n, 'failed': n, 'conflicts': n, 'rejected': n}
 """
 import logging
 import socket
@@ -55,7 +56,7 @@ from datetime import datetime, timezone as dt_timezone
 
 logger = logging.getLogger('beneficiaries.sync')
 
-# ── Connectivity check ─────────────────────────────────────────────────────
+# ── Connectivity check ─────────────────────────────────────────────────────────
 
 
 def is_online(host: str = '8.8.8.8', port: int = 53, timeout: float = 3.0) -> bool:
@@ -74,7 +75,36 @@ def is_online(host: str = '8.8.8.8', port: int = 53, timeout: float = 3.0) -> bo
         return False
 
 
-# ── Payload builder ────────────────────────────────────────────────────────
+# ── Registration hook ──────────────────────────────────────────────────────────
+
+def mark_created(beneficiary) -> None:
+    """
+    Record that a beneficiary was registered on this offline device.
+
+    Call this immediately after ``beneficiary.save()`` in any offline
+    registration flow.  Sets ``sync_status='pending_sync'`` and stamps
+    ``offline_device`` with the current hostname.
+
+    This is a no-op if the record is somehow already in a terminal state
+    (synced/conflict/rejected) — which should never happen for a brand-new
+    registration but is guarded against defensively.
+    """
+    from .models import Beneficiary
+    if beneficiary.sync_status != Beneficiary.SYNC_PENDING:
+        return
+
+    device = _device_id()
+    beneficiary.offline_device = device
+    beneficiary.sync_status = Beneficiary.SYNC_PENDING
+    beneficiary.save(update_fields=['offline_device', 'sync_status'])
+    logger.info(
+        'SYNC MARK | beneficiary=%s device=%s',
+        beneficiary.beneficiary_id,
+        device,
+    )
+
+
+# ── Payload builder ────────────────────────────────────────────────────────────
 
 def _build_payload(beneficiary) -> dict:
     """
@@ -105,6 +135,7 @@ def _build_payload(beneficiary) -> dict:
         'has_representative': beneficiary.has_representative,
         'created_at': beneficiary.created_at.isoformat(),
         'updated_at': beneficiary.updated_at.isoformat(),
+        'offline_device': beneficiary.offline_device,
         # Face embedding — bytes are base64-encoded for JSON transport
         'face_embedding': None,
     }
@@ -123,17 +154,22 @@ def _build_payload(beneficiary) -> dict:
     return payload
 
 
-# ── Core sync function ─────────────────────────────────────────────────────
+# ── Core sync function ─────────────────────────────────────────────────────────
 
-def sync_record(beneficiary, api_url: str, api_key: str, timeout: int = 30) -> bool:
+def sync_record(beneficiary, api_url: str, api_key: str, timeout: int = 30) -> str:
     """
     Send a single Beneficiary record to the central API.
 
-    Returns True on success, False on failure.
-    Updates beneficiary.is_synced, beneficiary.last_synced_at,
-    and beneficiary.sync_error in-place and saves.
+    Returns the new sync_status string:
+        'synced'        — accepted by server (HTTP 200/201)
+        'sync_conflict' — server has conflicting data (HTTP 409)
+        'sync_rejected' — server rejected the payload (HTTP 400/422)
+        'pending_sync'  — transient failure (network error, 5xx); will retry next run
+
+    Updates sync_status, last_synced_at, sync_error, and sync_attempted_at in-place.
     """
     import requests
+    from .models import Beneficiary
 
     endpoint = api_url.rstrip('/') + '/beneficiaries/sync/'
     headers = {
@@ -142,87 +178,172 @@ def sync_record(beneficiary, api_url: str, api_key: str, timeout: int = 30) -> b
         'X-FANS-Device': _device_id(),
     }
 
+    now = datetime.now(dt_timezone.utc)
+
     try:
         payload = _build_payload(beneficiary)
         response = requests.post(endpoint, json=payload, headers=headers, timeout=timeout)
-        response.raise_for_status()
 
-        beneficiary.is_synced = True
-        beneficiary.last_synced_at = datetime.now(dt_timezone.utc)
-        beneficiary.sync_error = ''
-        beneficiary.save(update_fields=['is_synced', 'last_synced_at', 'sync_error'])
+        # Stamp the attempt time regardless of outcome
+        beneficiary.sync_attempted_at = now
 
-        logger.info(
-            'SYNC OK | beneficiary=%s id=%s',
-            beneficiary.beneficiary_id,
-            beneficiary.id,
-        )
-        return True
+        if response.status_code in (200, 201):
+            # ── Accepted ──────────────────────────────────────────────────────
+            beneficiary.sync_status = Beneficiary.SYNC_SYNCED
+            beneficiary.last_synced_at = now
+            beneficiary.sync_error = ''
+            beneficiary.save(update_fields=[
+                'sync_status', 'last_synced_at', 'sync_error', 'sync_attempted_at'
+            ])
+            logger.info(
+                'SYNC OK | beneficiary=%s id=%s',
+                beneficiary.beneficiary_id,
+                beneficiary.id,
+            )
+            return Beneficiary.SYNC_SYNCED
+
+        elif response.status_code == 409:
+            # ── Conflict — server already has a different record for this ID ──
+            try:
+                reason = response.json().get('detail', response.text)[:500]
+            except Exception:
+                reason = response.text[:500]
+            beneficiary.sync_status = Beneficiary.SYNC_CONFLICT
+            beneficiary.sync_error = reason
+            beneficiary.save(update_fields=[
+                'sync_status', 'sync_error', 'sync_attempted_at'
+            ])
+            logger.warning(
+                'SYNC CONFLICT | beneficiary=%s id=%s reason=%s',
+                beneficiary.beneficiary_id,
+                beneficiary.id,
+                reason,
+            )
+            return Beneficiary.SYNC_CONFLICT
+
+        elif response.status_code in (400, 422):
+            # ── Rejected — payload is invalid; admin must review ──────────────
+            try:
+                reason = response.json().get('detail', response.text)[:500]
+            except Exception:
+                reason = response.text[:500]
+            beneficiary.sync_status = Beneficiary.SYNC_REJECTED
+            beneficiary.sync_error = reason
+            beneficiary.save(update_fields=[
+                'sync_status', 'sync_error', 'sync_attempted_at'
+            ])
+            logger.warning(
+                'SYNC REJECTED | beneficiary=%s id=%s status=%d reason=%s',
+                beneficiary.beneficiary_id,
+                beneficiary.id,
+                response.status_code,
+                reason,
+            )
+            return Beneficiary.SYNC_REJECTED
+
+        else:
+            # ── Other HTTP error (5xx, etc.) — transient, will retry ──────────
+            error_msg = f'HTTP {response.status_code}: {response.text[:200]}'
+            beneficiary.sync_error = error_msg
+            beneficiary.save(update_fields=['sync_error', 'sync_attempted_at'])
+            logger.warning(
+                'SYNC FAIL | beneficiary=%s id=%s error=%s',
+                beneficiary.beneficiary_id,
+                beneficiary.id,
+                error_msg,
+            )
+            return Beneficiary.SYNC_PENDING
 
     except Exception as exc:
-        error_msg = str(exc)
-        beneficiary.sync_error = error_msg[:500]
-        beneficiary.save(update_fields=['sync_error'])
-
+        # ── Network / timeout error — transient, will retry ───────────────────
+        error_msg = str(exc)[:500]
+        beneficiary.sync_attempted_at = now
+        beneficiary.sync_error = error_msg
+        beneficiary.save(update_fields=['sync_error', 'sync_attempted_at'])
         logger.warning(
             'SYNC FAIL | beneficiary=%s id=%s error=%s',
             beneficiary.beneficiary_id,
             beneficiary.id,
             error_msg,
         )
-        return False
+        return Beneficiary.SYNC_PENDING
 
 
 def sync_all(batch_size: int = 50) -> dict:
     """
-    Sync all unsynced Beneficiary records to the central server.
+    Sync all pending_sync Beneficiary records to the central server.
+
+    Only processes records with sync_status='pending_sync'.
+    Records in sync_conflict or sync_rejected are skipped — they require
+    admin review via the sync conflict dashboard before being retried.
 
     Returns a summary dict:
         {
-            'synced':  int,   # successfully synced this run
-            'failed':  int,   # failed (will be retried next run)
-            'skipped': int,   # skipped because SYNC_API_URL is not configured
+            'synced':    int,   # successfully accepted by server
+            'failed':    int,   # transient failures (will retry next run)
+            'conflicts': int,   # newly entered sync_conflict state
+            'rejected':  int,   # newly entered sync_rejected state
+            'skipped':   int,   # skipped because SYNC_API_URL is not configured
         }
     """
     from django.conf import settings
-    from beneficiaries.models import Beneficiary
+    from .models import Beneficiary
 
     api_url = getattr(settings, 'SYNC_API_URL', '').strip()
     api_key = getattr(settings, 'SYNC_API_KEY', '').strip()
     timeout = int(getattr(settings, 'SYNC_TIMEOUT', 30))
 
     if not api_url:
-        logger.debug('SYNC SKIP | SYNC_API_URL is not configured — offline mode only')
-        return {'synced': 0, 'failed': 0, 'skipped': 1}
+        logger.debug('SYNC SKIP | SYNC_API_URL not configured — offline mode only')
+        return {'synced': 0, 'failed': 0, 'conflicts': 0, 'rejected': 0, 'skipped': 1}
 
-    pending = Beneficiary.objects.filter(is_synced=False).order_by('created_at')[:batch_size]
+    pending = (
+        Beneficiary.objects
+        .filter(sync_status=Beneficiary.SYNC_PENDING)
+        .order_by('created_at')[:batch_size]
+    )
     count = pending.count()
 
     if count == 0:
-        logger.debug('SYNC OK | No unsynced records found')
-        return {'synced': 0, 'failed': 0, 'skipped': 0}
+        logger.debug('SYNC OK | No pending_sync records found')
+        return {'synced': 0, 'failed': 0, 'conflicts': 0, 'rejected': 0, 'skipped': 0}
 
-    logger.info('SYNC START | %d record(s) to sync', count)
-    synced = 0
-    failed = 0
+    logger.info('SYNC START | %d pending_sync record(s) to process', count)
+    synced = failed = conflicts = rejected = 0
 
     for beneficiary in pending:
-        if sync_record(beneficiary, api_url, api_key, timeout):
+        outcome = sync_record(beneficiary, api_url, api_key, timeout)
+        if outcome == Beneficiary.SYNC_SYNCED:
             synced += 1
+        elif outcome == Beneficiary.SYNC_CONFLICT:
+            conflicts += 1
+        elif outcome == Beneficiary.SYNC_REJECTED:
+            rejected += 1
         else:
             failed += 1
 
-    logger.info('SYNC DONE | synced=%d failed=%d', synced, failed)
-    return {'synced': synced, 'failed': failed, 'skipped': 0}
+    logger.info(
+        'SYNC DONE | synced=%d failed=%d conflicts=%d rejected=%d',
+        synced, failed, conflicts, rejected,
+    )
+    return {
+        'synced': synced,
+        'failed': failed,
+        'conflicts': conflicts,
+        'rejected': rejected,
+        'skipped': 0,
+    }
 
 
-# ── Helpers ────────────────────────────────────────────────────────────────
+# ── Helpers ────────────────────────────────────────────────────────────────────
 
 def _device_id() -> str:
     """
-    Return a stable device identifier (hostname) for the X-FANS-Device header.
+    Return a stable device identifier (hostname) for the X-FANS-Device header
+    and for the offline_device audit field.
+
     The central server can use this to identify which barangay workstation
-    sent a record.
+    originally created a record.
     """
     try:
         return socket.gethostname()
@@ -231,6 +352,18 @@ def _device_id() -> str:
 
 
 def pending_count() -> int:
-    """Return the number of beneficiary records not yet synced."""
-    from beneficiaries.models import Beneficiary
-    return Beneficiary.objects.filter(is_synced=False).count()
+    """Return the number of records awaiting sync (sync_status='pending_sync')."""
+    from .models import Beneficiary
+    return Beneficiary.objects.filter(sync_status=Beneficiary.SYNC_PENDING).count()
+
+
+def conflict_count() -> int:
+    """Return the number of records in sync_conflict state (require admin review)."""
+    from .models import Beneficiary
+    return Beneficiary.objects.filter(sync_status=Beneficiary.SYNC_CONFLICT).count()
+
+
+def rejected_count() -> int:
+    """Return the number of records in sync_rejected state (require admin review)."""
+    from .models import Beneficiary
+    return Beneficiary.objects.filter(sync_status=Beneficiary.SYNC_REJECTED).count()

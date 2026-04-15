@@ -138,12 +138,14 @@
           </tr>
         </tbody>
       </table>
+      {% if user.is_admin_it %}
       <div class="px-3 pb-3">
         <div class="small text-muted mt-1">
           To change these values, set <code>LIVENESS_REQUIRED</code> and <code>ANTI_SPOOF_THRESHOLD</code>
           in your <code>.env</code> file and restart the server.
         </div>
       </div>
+      {% endif %}
     </div>
   </div>
 

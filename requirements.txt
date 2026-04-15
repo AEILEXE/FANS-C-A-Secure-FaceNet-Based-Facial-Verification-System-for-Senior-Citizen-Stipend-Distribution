@@ -62,7 +62,9 @@ mtcnn==1.0.0
 # Uncomment if retinaface installs cleanly on your system.
 # retinaface>=0.0.13
 
-# ── Optional: PostgreSQL driver ────────────────────────────
-# Only required when USE_SQLITE=False in .env.
-# Leave commented out for the default SQLite configuration.
-# psycopg2-binary>=2.9.9
+# ── PostgreSQL driver ──────────────────────────────────────
+# Required for centralized server deployment (USE_SQLITE=False in .env).
+# psycopg2-binary bundles its own libpq so no system PostgreSQL install is
+# needed on the server running Django.  Safe to install even when using SQLite
+# locally -- Django simply won't load the PostgreSQL backend unless selected.
+psycopg2-binary>=2.9.9

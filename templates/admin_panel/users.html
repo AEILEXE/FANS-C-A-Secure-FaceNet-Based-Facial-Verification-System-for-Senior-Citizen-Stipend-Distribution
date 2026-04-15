@@ -40,7 +40,10 @@
           </td>
           <td><span class="font-mono small">{{ u.username }}</span></td>
           <td>
-            <span class="badge {% if u.role == 'admin' %}bg-danger{% else %}bg-primary{% endif %}">
+            <span class="badge
+              {% if u.role == 'admin_it' or u.role == 'admin' %}bg-danger
+              {% elif u.role == 'head_brgy' %}bg-warning text-dark
+              {% else %}bg-primary{% endif %}">
               {{ u.get_role_display }}
             </span>
           </td>

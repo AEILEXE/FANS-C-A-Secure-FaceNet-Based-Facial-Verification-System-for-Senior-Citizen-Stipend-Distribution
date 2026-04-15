@@ -22,4 +22,7 @@ urlpatterns = [
     path('users/', views.user_list, name='user_list'),
     path('users/create/', views.user_create, name='user_create'),
     path('users/<int:pk>/edit/', views.user_edit, name='user_edit'),
+    # Offline sync conflict review (admin only)
+    path('sync/conflicts/', views.sync_conflict_list, name='sync_conflict_list'),
+    path('sync/conflicts/<uuid:pk>/review/', views.sync_conflict_review, name='sync_conflict_review'),
 ]

@@ -248,8 +248,8 @@
     </div>
   </div>
 
-  <!-- Debug / Accuracy Panel -->
-  {% if attempt.similarity_score is not None %}
+  <!-- Debug / Accuracy Panel — IT/Admin only (raw scores, threshold gap, matched templates) -->
+  {% if attempt.similarity_score is not None and user.is_admin_it %}
   <div class="card mb-3 border-secondary">
     <div class="card-header d-flex justify-content-between align-items-center"
          style="background:#f1f5f9; cursor:pointer;"

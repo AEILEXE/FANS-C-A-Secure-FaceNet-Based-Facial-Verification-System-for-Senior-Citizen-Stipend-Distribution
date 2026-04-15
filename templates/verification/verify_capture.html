@@ -67,6 +67,8 @@
   {% endif %}
 
   {% if not liveness_required %}
+  {% if user.is_admin_it %}
+  {# IT/Admin: full technical explanation of Assisted Rollout Mode. #}
   <div class="alert d-flex gap-2 align-items-start mb-3" style="background:#f0f4ff; border:1px solid #c7d7fa; font-size:0.85rem;">
     <i class="bi bi-info-circle-fill text-qc-blue flex-shrink-0 mt-1"></i>
     <div>
@@ -75,6 +77,13 @@
       Set <code>LIVENESS_REQUIRED=True</code> to enable strict liveness enforcement for full production deployment.
     </div>
   </div>
+  {% else %}
+  {# Staff / Head Barangay: simple, friendly guidance only — no technical wording. #}
+  <div class="alert d-flex gap-2 align-items-center mb-3" style="background:#f0f4ff; border:1px solid #c7d7fa; font-size:0.85rem;">
+    <i class="bi bi-info-circle-fill text-qc-blue flex-shrink-0"></i>
+    <span>Follow the on-screen instructions and look at the camera. If verification does not proceed, contact the administrator.</span>
+  </div>
+  {% endif %}
   {% endif %}
 
   <div class="row g-4">

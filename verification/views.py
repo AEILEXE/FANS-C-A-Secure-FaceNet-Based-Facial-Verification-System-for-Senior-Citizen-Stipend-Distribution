@@ -40,6 +40,7 @@ import json
 import base64
 import uuid
 import logging
+from django.db import transaction
 from django.shortcuts import render, redirect, get_object_or_404
 
 logger = logging.getLogger('verification')
@@ -694,34 +695,43 @@ def verify_submit(request):
                     all_scores=comparison.get('all_scores', []))
 
         if decision == VerificationAttempt.DECISION_VERIFIED:
-            # Create ClaimRecord (race guard: skip if one already exists)
-            if stipend_event and not ClaimRecord.objects.filter(
-                beneficiary=beneficiary,
-                stipend_event=stipend_event,
-                status=ClaimRecord.STATUS_CLAIMED,
-            ).exists():
-                ClaimRecord.objects.create(
-                    beneficiary=beneficiary,
-                    stipend_event=stipend_event,
-                    claimant_type=claimant_type,
-                    representative=representative,
-                    claimed_by=request.user,
-                    verification_attempt=attempt,
-                    status=ClaimRecord.STATUS_CLAIMED,
-                )
-                AuditLog.log(
-                    action=AuditLog.ACTION_CLAIM,
-                    user=request.user,
-                    target_type='Beneficiary',
-                    target_id=beneficiary.id,
-                    details={
-                        'beneficiary_id': beneficiary.beneficiary_id,
-                        'stipend_event': stipend_event.title,
-                        'claimant_type': claimant_type,
-                        'attempt_id': str(attempt.id),
-                    },
-                    request=request,
-                )
+            # Create ClaimRecord atomically to prevent duplicate claims when
+            # multiple staff stations submit verification concurrently for the
+            # same beneficiary (centralized multi-user deployment).
+            if stipend_event:
+                with transaction.atomic():
+                    # Row-lock the beneficiary so concurrent requests queue up
+                    # here rather than racing past the .exists() check below.
+                    # select_for_update() is a no-op on SQLite (dev only).
+                    _locked_ben = Beneficiary.objects.select_for_update().get(
+                        pk=beneficiary.pk)
+                    if not ClaimRecord.objects.filter(
+                        beneficiary=_locked_ben,
+                        stipend_event=stipend_event,
+                        status=ClaimRecord.STATUS_CLAIMED,
+                    ).exists():
+                        ClaimRecord.objects.create(
+                            beneficiary=_locked_ben,
+                            stipend_event=stipend_event,
+                            claimant_type=claimant_type,
+                            representative=representative,
+                            claimed_by=request.user,
+                            verification_attempt=attempt,
+                            status=ClaimRecord.STATUS_CLAIMED,
+                        )
+                        AuditLog.log(
+                            action=AuditLog.ACTION_CLAIM,
+                            user=request.user,
+                            target_type='Beneficiary',
+                            target_id=beneficiary.id,
+                            details={
+                                'beneficiary_id': beneficiary.beneficiary_id,
+                                'stipend_event': stipend_event.title,
+                                'claimant_type': claimant_type,
+                                'attempt_id': str(attempt.id),
+                            },
+                            request=request,
+                        )
             request.session.pop('verification_session', None)
             return JsonResponse({
                 'success': True,
@@ -938,33 +948,37 @@ def verify_fallback(request, attempt_id):
                 },
                 request=request
             )
-            # Representative path verified — create ClaimRecord
-            if id_verified and attempt.stipend_event and not ClaimRecord.objects.filter(
-                beneficiary=attempt.beneficiary,
-                stipend_event=attempt.stipend_event,
-                status=ClaimRecord.STATUS_CLAIMED,
-            ).exists():
-                ClaimRecord.objects.create(
-                    beneficiary=attempt.beneficiary,
-                    stipend_event=attempt.stipend_event,
-                    claimant_type=attempt.claimant_type,
-                    claimed_by=request.user,
-                    verification_attempt=attempt,
-                    status=ClaimRecord.STATUS_CLAIMED,
-                )
-                AuditLog.log(
-                    action=AuditLog.ACTION_CLAIM,
-                    user=request.user,
-                    target_type='Beneficiary',
-                    target_id=attempt.beneficiary.id,
-                    details={
-                        'beneficiary_id': attempt.beneficiary.beneficiary_id,
-                        'stipend_event': attempt.stipend_event.title,
-                        'claimant_type': attempt.claimant_type,
-                        'via': 'representative_fallback',
-                    },
-                    request=request,
-                )
+            # Representative path verified — create ClaimRecord atomically.
+            if id_verified and attempt.stipend_event:
+                with transaction.atomic():
+                    _locked_ben = Beneficiary.objects.select_for_update().get(
+                        pk=attempt.beneficiary.pk)
+                    if not ClaimRecord.objects.filter(
+                        beneficiary=_locked_ben,
+                        stipend_event=attempt.stipend_event,
+                        status=ClaimRecord.STATUS_CLAIMED,
+                    ).exists():
+                        ClaimRecord.objects.create(
+                            beneficiary=_locked_ben,
+                            stipend_event=attempt.stipend_event,
+                            claimant_type=attempt.claimant_type,
+                            claimed_by=request.user,
+                            verification_attempt=attempt,
+                            status=ClaimRecord.STATUS_CLAIMED,
+                        )
+                        AuditLog.log(
+                            action=AuditLog.ACTION_CLAIM,
+                            user=request.user,
+                            target_type='Beneficiary',
+                            target_id=attempt.beneficiary.id,
+                            details={
+                                'beneficiary_id': attempt.beneficiary.beneficiary_id,
+                                'stipend_event': attempt.stipend_event.title,
+                                'claimant_type': attempt.claimant_type,
+                                'via': 'representative_fallback',
+                            },
+                            request=request,
+                        )
             return redirect('verification:verify_result', attempt_id=attempt.id)
 
         else:
@@ -1076,6 +1090,14 @@ def admin_override(request, attempt_id):
         return redirect('beneficiaries:dashboard')
 
     attempt = get_object_or_404(VerificationAttempt, pk=attempt_id)
+
+    if attempt.overridden:
+        from django.contrib import messages
+        messages.error(
+            request,
+            'This verification attempt has already been overridden and cannot be overridden again.'
+        )
+        return redirect('verification:verify_result', attempt_id=attempt.id)
 
     if request.method == 'POST':
         decision = request.POST.get('decision', '')
@@ -1548,100 +1570,117 @@ def manual_verify_review(request, request_id):
             messages.error(request, 'Invalid action.')
             return redirect('verification:manual_review')
 
-        mvr.reviewed_by = request.user
-        mvr.reviewed_at = timezone.now()
-        mvr.review_notes = review_notes
+        # Capture name before the atomic block for use in the flash message.
+        beneficiary_name = mvr.beneficiary.full_name
+        _approved = False
 
-        if action == 'approve':
-            mvr.status = ManualVerificationRequest.STATUS_APPROVED
-            # Update the linked verification attempt to verified
-            if mvr.verification_attempt:
-                attempt = mvr.verification_attempt
-                attempt.decision = VerificationAttempt.DECISION_VERIFIED
-                attempt.decision_reason = (
-                    f'Manual verification approved by '
-                    f'{request.user.get_full_name() or request.user.username}. '
-                    f'{review_notes[:200]}'
+        # Single atomic block covers the status check, all related saves, the
+        # audit log write, and the ClaimRecord creation.  Re-fetching the MVR
+        # with select_for_update() prevents two admins from concurrently
+        # approving the same request, which would otherwise produce duplicate
+        # audit log entries and a double attempt.save().
+        with transaction.atomic():
+            mvr = ManualVerificationRequest.objects.select_for_update().get(pk=request_id)
+            if mvr.status != ManualVerificationRequest.STATUS_PENDING:
+                messages.warning(
+                    request,
+                    'This request has already been reviewed by another admin.'
                 )
-                attempt.overridden = True
-                attempt.override_by = request.user
-                attempt.override_reason = f'Admin approved manual verification request: {review_notes}'
-                attempt.override_at = timezone.now()
-                attempt.save()
-            AuditLog.log(
-                action=AuditLog.ACTION_MANUAL_VERIFY_APPROVED,
-                user=request.user,
-                target_type='ManualVerificationRequest',
-                target_id=mvr.id,
-                details={
-                    'beneficiary_id': mvr.beneficiary.beneficiary_id,
-                    'review_notes': review_notes,
-                    'attempt_id': str(mvr.verification_attempt_id) if mvr.verification_attempt_id else None,
-                },
-                request=request,
-            )
-            # Create ClaimRecord for approved manual verification
-            if mvr.stipend_event and not ClaimRecord.objects.filter(
-                beneficiary=mvr.beneficiary,
-                stipend_event=mvr.stipend_event,
-                status=ClaimRecord.STATUS_CLAIMED,
-            ).exists():
-                ClaimRecord.objects.create(
-                    beneficiary=mvr.beneficiary,
-                    stipend_event=mvr.stipend_event,
-                    claimant_type=mvr.claimant_type,
-                    claimed_by=mvr.requested_by,
-                    verification_attempt=mvr.verification_attempt,
-                    approved_by=request.user,
-                    approved_at=timezone.now(),
-                    status=ClaimRecord.STATUS_CLAIMED,
-                    notes=f'Admin manual verification approved by {request.user.get_full_name() or request.user.username}.',
-                )
+                return redirect('verification:manual_review')
+
+            mvr.reviewed_by = request.user
+            mvr.reviewed_at = timezone.now()
+            mvr.review_notes = review_notes
+
+            if action == 'approve':
+                mvr.status = ManualVerificationRequest.STATUS_APPROVED
+                if mvr.verification_attempt:
+                    attempt = mvr.verification_attempt
+                    attempt.decision = VerificationAttempt.DECISION_VERIFIED
+                    attempt.decision_reason = (
+                        f'Manual verification approved by '
+                        f'{request.user.get_full_name() or request.user.username}. '
+                        f'{review_notes[:200]}'
+                    )
+                    attempt.overridden = True
+                    attempt.override_by = request.user
+                    attempt.override_reason = f'Admin approved manual verification request: {review_notes}'
+                    attempt.override_at = timezone.now()
+                    attempt.save()
                 AuditLog.log(
-                    action=AuditLog.ACTION_CLAIM,
+                    action=AuditLog.ACTION_MANUAL_VERIFY_APPROVED,
                     user=request.user,
-                    target_type='Beneficiary',
-                    target_id=mvr.beneficiary.id,
+                    target_type='ManualVerificationRequest',
+                    target_id=mvr.id,
                     details={
                         'beneficiary_id': mvr.beneficiary.beneficiary_id,
-                        'stipend_event': mvr.stipend_event.title,
-                        'claimant_type': mvr.claimant_type,
-                        'via': 'manual_verification_approved',
+                        'review_notes': review_notes,
+                        'attempt_id': str(mvr.verification_attempt_id) if mvr.verification_attempt_id else None,
                     },
                     request=request,
                 )
-            messages.success(
-                request,
-                f'Manual verification approved for {mvr.beneficiary.full_name}.'
-            )
-        else:
-            mvr.status = ManualVerificationRequest.STATUS_REJECTED
-            if mvr.verification_attempt:
-                attempt = mvr.verification_attempt
-                attempt.decision = VerificationAttempt.DECISION_DENIED
-                attempt.decision_reason = (
-                    f'Manual verification rejected by '
-                    f'{request.user.get_full_name() or request.user.username}. '
-                    f'{review_notes[:200]}'
+                if mvr.stipend_event:
+                    _locked_ben = Beneficiary.objects.select_for_update().get(
+                        pk=mvr.beneficiary.pk)
+                    if not ClaimRecord.objects.filter(
+                        beneficiary=_locked_ben,
+                        stipend_event=mvr.stipend_event,
+                        status=ClaimRecord.STATUS_CLAIMED,
+                    ).exists():
+                        ClaimRecord.objects.create(
+                            beneficiary=_locked_ben,
+                            stipend_event=mvr.stipend_event,
+                            claimant_type=mvr.claimant_type,
+                            claimed_by=mvr.requested_by,
+                            verification_attempt=mvr.verification_attempt,
+                            approved_by=request.user,
+                            approved_at=timezone.now(),
+                            status=ClaimRecord.STATUS_CLAIMED,
+                            notes=f'Admin manual verification approved by {request.user.get_full_name() or request.user.username}.',
+                        )
+                        AuditLog.log(
+                            action=AuditLog.ACTION_CLAIM,
+                            user=request.user,
+                            target_type='Beneficiary',
+                            target_id=mvr.beneficiary.id,
+                            details={
+                                'beneficiary_id': mvr.beneficiary.beneficiary_id,
+                                'stipend_event': mvr.stipend_event.title,
+                                'claimant_type': mvr.claimant_type,
+                                'via': 'manual_verification_approved',
+                            },
+                            request=request,
+                        )
+                _approved = True
+            else:
+                mvr.status = ManualVerificationRequest.STATUS_REJECTED
+                if mvr.verification_attempt:
+                    attempt = mvr.verification_attempt
+                    attempt.decision = VerificationAttempt.DECISION_DENIED
+                    attempt.decision_reason = (
+                        f'Manual verification rejected by '
+                        f'{request.user.get_full_name() or request.user.username}. '
+                        f'{review_notes[:200]}'
+                    )
+                    attempt.save()
+                AuditLog.log(
+                    action=AuditLog.ACTION_MANUAL_VERIFY_REJECTED,
+                    user=request.user,
+                    target_type='ManualVerificationRequest',
+                    target_id=mvr.id,
+                    details={
+                        'beneficiary_id': mvr.beneficiary.beneficiary_id,
+                        'review_notes': review_notes,
+                    },
+                    request=request,
                 )
-                attempt.save()
-            AuditLog.log(
-                action=AuditLog.ACTION_MANUAL_VERIFY_REJECTED,
-                user=request.user,
-                target_type='ManualVerificationRequest',
-                target_id=mvr.id,
-                details={
-                    'beneficiary_id': mvr.beneficiary.beneficiary_id,
-                    'review_notes': review_notes,
-                },
-                request=request,
-            )
-            messages.warning(
-                request,
-                f'Manual verification request rejected for {mvr.beneficiary.full_name}.'
-            )
 
-        mvr.save()
+            mvr.save()
+
+        if _approved:
+            messages.success(request, f'Manual verification approved for {beneficiary_name}.')
+        else:
+            messages.warning(request, f'Manual verification request rejected for {beneficiary_name}.')
         return redirect('verification:manual_review')
 
     return render(request, 'verification/manual_verify_review.html', {'mvr': mvr})
@@ -1667,92 +1706,103 @@ def face_update_review(request, request_id):
             messages.error(request, 'Invalid action.')
             return redirect('verification:manual_review')
 
-        fur.reviewed_by = request.user
-        fur.reviewed_at = timezone.now()
-        fur.review_notes = review_notes
+        beneficiary_name = fur.beneficiary.full_name
+        _approved = False
 
-        if action == 'approve':
-            fur.status = FaceUpdateRequest.STATUS_APPROVED
+        # Atomic block with a row lock prevents two admins from concurrently
+        # approving the same FaceUpdateRequest, which would otherwise apply
+        # the embedding twice and create two FaceUpdateLog records.
+        with transaction.atomic():
+            fur = FaceUpdateRequest.objects.select_for_update().get(pk=request_id)
+            if fur.status != FaceUpdateRequest.STATUS_PENDING:
+                messages.warning(
+                    request,
+                    'This face update request has already been reviewed by another admin.'
+                )
+                return redirect('verification:manual_review')
 
-            # Now apply the stored embedding to the active face data
-            beneficiary = fur.beneficiary
-            encrypted = bytes(fur.new_embedding_data)
+            fur.reviewed_by = request.user
+            fur.reviewed_at = timezone.now()
+            fur.review_notes = review_notes
 
-            if fur.action == FaceUpdateLog.ACTION_REPLACE:
-                if hasattr(beneficiary, 'face_embedding'):
-                    emb = beneficiary.face_embedding
-                    emb.embedding_data = encrypted
-                    emb.created_by = fur.requested_by
-                    emb.save()
+            if action == 'approve':
+                fur.status = FaceUpdateRequest.STATUS_APPROVED
+
+                beneficiary = fur.beneficiary
+                encrypted = bytes(fur.new_embedding_data)
+
+                if fur.action == FaceUpdateLog.ACTION_REPLACE:
+                    if hasattr(beneficiary, 'face_embedding'):
+                        emb = beneficiary.face_embedding
+                        emb.embedding_data = encrypted
+                        emb.created_by = fur.requested_by
+                        emb.save()
+                    else:
+                        FaceEmbedding.objects.create(
+                            beneficiary=beneficiary,
+                            embedding_data=encrypted,
+                            created_by=fur.requested_by,
+                        )
+                    action_label = 'Primary embedding replaced'
                 else:
-                    FaceEmbedding.objects.create(
+                    AdditionalFaceEmbedding.objects.create(
                         beneficiary=beneficiary,
                         embedding_data=encrypted,
+                        label=f'update-{fur.created_at.strftime("%Y-%m-%d")}',
                         created_by=fur.requested_by,
                     )
-                action_label = 'Primary embedding replaced'
-            else:
-                AdditionalFaceEmbedding.objects.create(
+                    action_label = 'Additional template added'
+
+                FaceUpdateLog.objects.create(
                     beneficiary=beneficiary,
-                    embedding_data=encrypted,
-                    label=f'update-{fur.created_at.strftime("%Y-%m-%d")}',
-                    created_by=fur.requested_by,
+                    performed_by=fur.requested_by,
+                    reason=fur.reason,
+                    action=fur.action,
+                    notes=f'Approved by {request.user.get_full_name() or request.user.username}. {review_notes}',
+                    success=True,
                 )
-                action_label = 'Additional template added'
+                AuditLog.log(
+                    action=AuditLog.ACTION_FACE_UPDATE_APPROVED,
+                    user=request.user,
+                    target_type='FaceUpdateRequest',
+                    target_id=fur.id,
+                    details={
+                        'beneficiary_id': beneficiary.beneficiary_id,
+                        'action': fur.action,
+                        'action_label': action_label,
+                        'review_notes': review_notes,
+                    },
+                    request=request,
+                )
+                _approved = True
+            else:
+                fur.status = FaceUpdateRequest.STATUS_REJECTED
+                FaceUpdateLog.objects.create(
+                    beneficiary=fur.beneficiary,
+                    performed_by=fur.requested_by,
+                    reason=fur.reason,
+                    action=fur.action,
+                    notes=f'Rejected by {request.user.get_full_name() or request.user.username}. {review_notes}',
+                    success=False,
+                )
+                AuditLog.log(
+                    action=AuditLog.ACTION_FACE_UPDATE_REJECTED,
+                    user=request.user,
+                    target_type='FaceUpdateRequest',
+                    target_id=fur.id,
+                    details={
+                        'beneficiary_id': fur.beneficiary.beneficiary_id,
+                        'review_notes': review_notes,
+                    },
+                    request=request,
+                )
 
-            FaceUpdateLog.objects.create(
-                beneficiary=beneficiary,
-                performed_by=fur.requested_by,
-                reason=fur.reason,
-                action=fur.action,
-                notes=f'Approved by {request.user.get_full_name() or request.user.username}. {review_notes}',
-                success=True,
-            )
+            fur.save()
 
-            AuditLog.log(
-                action=AuditLog.ACTION_FACE_UPDATE_APPROVED,
-                user=request.user,
-                target_type='FaceUpdateRequest',
-                target_id=fur.id,
-                details={
-                    'beneficiary_id': beneficiary.beneficiary_id,
-                    'action': fur.action,
-                    'action_label': action_label,
-                    'review_notes': review_notes,
-                },
-                request=request,
-            )
-            messages.success(
-                request,
-                f'Face update approved and applied for {beneficiary.full_name}.'
-            )
+        if _approved:
+            messages.success(request, f'Face update approved and applied for {beneficiary_name}.')
         else:
-            fur.status = FaceUpdateRequest.STATUS_REJECTED
-            FaceUpdateLog.objects.create(
-                beneficiary=fur.beneficiary,
-                performed_by=fur.requested_by,
-                reason=fur.reason,
-                action=fur.action,
-                notes=f'Rejected by {request.user.get_full_name() or request.user.username}. {review_notes}',
-                success=False,
-            )
-            AuditLog.log(
-                action=AuditLog.ACTION_FACE_UPDATE_REJECTED,
-                user=request.user,
-                target_type='FaceUpdateRequest',
-                target_id=fur.id,
-                details={
-                    'beneficiary_id': fur.beneficiary.beneficiary_id,
-                    'review_notes': review_notes,
-                },
-                request=request,
-            )
-            messages.warning(
-                request,
-                f'Face update request rejected for {fur.beneficiary.full_name}.'
-            )
-
-        fur.save()
+            messages.warning(request, f'Face update request rejected for {beneficiary_name}.')
         return redirect('verification:manual_review')
 
     return render(request, 'verification/face_update_review.html', {'fur': fur})
@@ -1852,63 +1902,78 @@ def special_claim_review(request, request_id):
             messages.error(request, 'Invalid action.')
             return redirect('verification:manual_review')
 
-        scr.reviewed_by = request.user
-        scr.reviewed_at = timezone.now()
-        scr.review_notes = review_notes
+        beneficiary_name = scr.beneficiary.full_name
+        _approved = False
 
-        if action == 'approve':
-            scr.status = SpecialClaimRequest.STATUS_APPROVED
+        # Atomic block with a row lock prevents two admins from concurrently
+        # approving the same SpecialClaimRequest, which would otherwise create
+        # two is_special_additional ClaimRecords for the same event.
+        with transaction.atomic():
+            scr = SpecialClaimRequest.objects.select_for_update().get(pk=request_id)
+            if scr.status != SpecialClaimRequest.STATUS_PENDING:
+                messages.warning(
+                    request,
+                    'This special claim request has already been reviewed by another admin.'
+                )
+                return redirect('verification:manual_review')
 
-            # Create the additional ClaimRecord
-            if scr.stipend_event:
-                ClaimRecord.objects.create(
-                    beneficiary=scr.beneficiary,
-                    stipend_event=scr.stipend_event,
-                    claimant_type=VerificationAttempt.CLAIMANT_BENEFICIARY,
-                    claimed_by=scr.requested_by,
-                    approved_by=request.user,
-                    approved_at=timezone.now(),
-                    status=ClaimRecord.STATUS_CLAIMED,
-                    is_special_additional=True,
-                    notes=f'Special additional claim approved by {request.user.get_full_name() or request.user.username}. {review_notes}',
+            scr.reviewed_by = request.user
+            scr.reviewed_at = timezone.now()
+            scr.review_notes = review_notes
+
+            if action == 'approve':
+                scr.status = SpecialClaimRequest.STATUS_APPROVED
+
+                if scr.stipend_event:
+                    ClaimRecord.objects.create(
+                        beneficiary=scr.beneficiary,
+                        stipend_event=scr.stipend_event,
+                        claimant_type=VerificationAttempt.CLAIMANT_BENEFICIARY,
+                        claimed_by=scr.requested_by,
+                        approved_by=request.user,
+                        approved_at=timezone.now(),
+                        status=ClaimRecord.STATUS_CLAIMED,
+                        is_special_additional=True,
+                        notes=f'Special additional claim approved by {request.user.get_full_name() or request.user.username}. {review_notes}',
+                    )
+
+                AuditLog.log(
+                    action=AuditLog.ACTION_SPECIAL_CLAIM_APPROVED,
+                    user=request.user,
+                    target_type='SpecialClaimRequest',
+                    target_id=scr.id,
+                    details={
+                        'beneficiary_id': scr.beneficiary.beneficiary_id,
+                        'stipend_event': scr.stipend_event.title if scr.stipend_event else None,
+                        'review_notes': review_notes,
+                    },
+                    request=request,
+                )
+                _approved = True
+            else:
+                scr.status = SpecialClaimRequest.STATUS_REJECTED
+                AuditLog.log(
+                    action=AuditLog.ACTION_SPECIAL_CLAIM_REJECTED,
+                    user=request.user,
+                    target_type='SpecialClaimRequest',
+                    target_id=scr.id,
+                    details={
+                        'beneficiary_id': scr.beneficiary.beneficiary_id,
+                        'stipend_event': scr.stipend_event.title if scr.stipend_event else None,
+                        'review_notes': review_notes,
+                    },
+                    request=request,
                 )
 
-            AuditLog.log(
-                action=AuditLog.ACTION_SPECIAL_CLAIM_APPROVED,
-                user=request.user,
-                target_type='SpecialClaimRequest',
-                target_id=scr.id,
-                details={
-                    'beneficiary_id': scr.beneficiary.beneficiary_id,
-                    'stipend_event': scr.stipend_event.title if scr.stipend_event else None,
-                    'review_notes': review_notes,
-                },
-                request=request,
-            )
+            scr.save()
+
+        if _approved:
             messages.success(
                 request,
-                f'Special claim approved for {scr.beneficiary.full_name}. A second claim record has been created.'
+                f'Special claim approved for {beneficiary_name}. A second claim record has been created.'
             )
         else:
-            scr.status = SpecialClaimRequest.STATUS_REJECTED
-            AuditLog.log(
-                action=AuditLog.ACTION_SPECIAL_CLAIM_REJECTED,
-                user=request.user,
-                target_type='SpecialClaimRequest',
-                target_id=scr.id,
-                details={
-                    'beneficiary_id': scr.beneficiary.beneficiary_id,
-                    'stipend_event': scr.stipend_event.title if scr.stipend_event else None,
-                    'review_notes': review_notes,
-                },
-                request=request,
-            )
-            messages.warning(
-                request,
-                f'Special claim request rejected for {scr.beneficiary.full_name}.'
-            )
-
-        scr.save()
+            messages.warning(request, f'Special claim request rejected for {beneficiary_name}.')
         return redirect('verification:manual_review')
 
     return render(request, 'verification/special_claim_review.html', {'scr': scr})
@@ -1946,7 +2011,11 @@ def registration_review(request, pk):
         messages.error(request, 'Admin access required.')
         return redirect('beneficiaries:dashboard')
 
-    beneficiary = get_object_or_404(Beneficiary, pk=pk, status=Beneficiary.STATUS_PENDING)
+    # Non-locking fetch for the GET page; POST re-fetches with a lock below.
+    beneficiary = get_object_or_404(Beneficiary, pk=pk)
+    if beneficiary.status != Beneficiary.STATUS_PENDING and request.method == 'GET':
+        messages.warning(request, 'This registration has already been reviewed.')
+        return redirect('verification:registration_review_list')
 
     if request.method == 'POST':
         action = request.POST.get('action', '')
@@ -1962,51 +2031,61 @@ def registration_review(request, pk):
                 'beneficiary': beneficiary,
             })
 
-        if action == 'approve':
-            beneficiary.status = Beneficiary.STATUS_ACTIVE
-            beneficiary.save()
+        # Atomic block with a row lock prevents two admins from concurrently
+        # approving the same pending registration, which would otherwise
+        # produce duplicate audit log entries and double status saves.
+        with transaction.atomic():
+            beneficiary = Beneficiary.objects.select_for_update().get(pk=pk)
+            if beneficiary.status != Beneficiary.STATUS_PENDING:
+                messages.warning(
+                    request,
+                    'This registration has already been reviewed by another admin.'
+                )
+                return redirect('verification:registration_review_list')
 
-            AuditLog.log(
-                action=AuditLog.ACTION_REGISTER_APPROVED,
-                user=request.user,
-                target_type='Beneficiary',
-                target_id=beneficiary.id,
-                details={
-                    'beneficiary_id': beneficiary.beneficiary_id,
-                    'name': beneficiary.full_name,
-                    'review_notes': review_notes,
-                },
-                request=request,
-            )
-            messages.success(
-                request,
-                f'Registration approved for {beneficiary.full_name} '
-                f'(ID: {beneficiary.beneficiary_id}). They are now active.'
-            )
-        else:
-            beneficiary.status = Beneficiary.STATUS_INACTIVE
-            beneficiary.deactivated_reason = (
-                f'Registration rejected by '
-                f'{request.user.get_full_name() or request.user.username}: {review_notes}'
-            )
-            beneficiary.save()
-
-            AuditLog.log(
-                action=AuditLog.ACTION_REGISTER_REJECTED,
-                user=request.user,
-                target_type='Beneficiary',
-                target_id=beneficiary.id,
-                details={
-                    'beneficiary_id': beneficiary.beneficiary_id,
-                    'name': beneficiary.full_name,
-                    'review_notes': review_notes,
-                },
-                request=request,
-            )
-            messages.warning(
-                request,
-                f'Registration rejected for {beneficiary.full_name}.'
-            )
+            if action == 'approve':
+                beneficiary.status = Beneficiary.STATUS_ACTIVE
+                beneficiary.save()
+                AuditLog.log(
+                    action=AuditLog.ACTION_REGISTER_APPROVED,
+                    user=request.user,
+                    target_type='Beneficiary',
+                    target_id=beneficiary.id,
+                    details={
+                        'beneficiary_id': beneficiary.beneficiary_id,
+                        'name': beneficiary.full_name,
+                        'review_notes': review_notes,
+                    },
+                    request=request,
+                )
+                messages.success(
+                    request,
+                    f'Registration approved for {beneficiary.full_name} '
+                    f'(ID: {beneficiary.beneficiary_id}). They are now active.'
+                )
+            else:
+                beneficiary.status = Beneficiary.STATUS_INACTIVE
+                beneficiary.deactivated_reason = (
+                    f'Registration rejected by '
+                    f'{request.user.get_full_name() or request.user.username}: {review_notes}'
+                )
+                beneficiary.save()
+                AuditLog.log(
+                    action=AuditLog.ACTION_REGISTER_REJECTED,
+                    user=request.user,
+                    target_type='Beneficiary',
+                    target_id=beneficiary.id,
+                    details={
+                        'beneficiary_id': beneficiary.beneficiary_id,
+                        'name': beneficiary.full_name,
+                        'review_notes': review_notes,
+                    },
+                    request=request,
+                )
+                messages.warning(
+                    request,
+                    f'Registration rejected for {beneficiary.full_name}.'
+                )
 
         return redirect('verification:registration_review_list')
 

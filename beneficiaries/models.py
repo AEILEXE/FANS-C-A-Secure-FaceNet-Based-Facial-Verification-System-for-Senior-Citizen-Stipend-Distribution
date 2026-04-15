@@ -6,9 +6,21 @@ Beneficiary        — core record for each senior citizen; includes personal in
 Representative     — authorised representative who may claim on behalf of a beneficiary.
                      Representatives have their own face embedding for biometric verification.
 
-Offline-sync fields (is_synced, sync_error, last_synced_at) are managed by
-beneficiaries/sync.py and the `sync_beneficiaries` management command. See those files
-for the full offline-first sync architecture.
+Sync-state fields (sync_status, sync_error, last_synced_at, offline_device,
+sync_attempted_at) track the lifecycle of offline-created records as they move
+through the central-server sync pipeline.  See beneficiaries/sync.py and the
+`sync_beneficiaries` management command for full details.
+
+Sync state machine:
+  pending_sync  — record created on this device, not yet accepted by the central server
+  synced        — central server accepted the record (HTTP 200/201)
+  sync_conflict — central server returned 409 (conflicting data already on server)
+  sync_rejected — central server returned 400/422 (invalid data, permanently rejected)
+
+In centralized deployment (SYNC_API_URL not configured) the sync pipeline is
+dormant and all records remain at pending_sync; this is harmless because no
+sync is ever attempted.  Admin-facing sync UI is only shown when conflicts or
+rejections are actually present.
 """
 from django.db import models
 from django.conf import settings
@@ -36,6 +48,18 @@ class Beneficiary(models.Model):
         (STATUS_INACTIVE, 'Inactive'),
         (STATUS_DECEASED, 'Deceased'),
         (STATUS_PENDING, 'Pending'),
+    ]
+
+    # Sync state machine — managed exclusively by beneficiaries/sync.py
+    SYNC_PENDING   = 'pending_sync'    # not yet accepted by central server
+    SYNC_SYNCED    = 'synced'          # central server accepted (HTTP 200/201)
+    SYNC_CONFLICT  = 'sync_conflict'   # server returned 409 (conflicting record)
+    SYNC_REJECTED  = 'sync_rejected'   # server returned 400/422 (invalid data)
+    SYNC_STATUS_CHOICES = [
+        (SYNC_PENDING,  'Pending Sync'),
+        (SYNC_SYNCED,   'Synced'),
+        (SYNC_CONFLICT, 'Sync Conflict'),
+        (SYNC_REJECTED, 'Sync Rejected'),
     ]
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -83,23 +107,40 @@ class Beneficiary(models.Model):
     )
     deactivated_reason = models.TextField(blank=True)
 
-    # Offline-first sync tracking
-    # False = record created locally and not yet sent to the central server.
-    # True  = record has been successfully synced to the central API.
-    # This field is managed by beneficiaries/sync.py and the sync_beneficiaries command.
-    is_synced = models.BooleanField(
-        default=False,
+    # ── Offline sync tracking ────────────────────────────────────────────────
+    # Managed exclusively by beneficiaries/sync.py — do not write these fields
+    # from any other code path.
+    sync_status = models.CharField(
+        max_length=15,
+        choices=SYNC_STATUS_CHOICES,
+        default=SYNC_PENDING,
         db_index=True,
-        help_text='True when this record has been synced to the central server.',
+        help_text='Current sync state (see SYNC_* constants). Set by sync.py.',
     )
     sync_error = models.TextField(
         blank=True,
-        help_text='Last sync error message, if any. Cleared on successful sync.',
+        help_text=(
+            'Human-readable reason for the last sync failure, conflict, or rejection. '
+            'Cleared on successful sync.'
+        ),
     )
     last_synced_at = models.DateTimeField(
         null=True,
         blank=True,
         help_text='Timestamp of the last successful sync to the central server.',
+    )
+    # Offline-device audit: which workstation created this record offline.
+    # Empty for records created directly on the central server.
+    offline_device = models.CharField(
+        max_length=255,
+        blank=True,
+        help_text='Hostname of the offline workstation that created this record, if any.',
+    )
+    # Timestamp of the most recent sync attempt (success or failure).
+    sync_attempted_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text='Timestamp of the most recent sync attempt (any outcome).',
     )
 
     profile_picture = models.ImageField(
@@ -121,6 +162,19 @@ class Beneficiary(models.Model):
     class Meta:
         db_table = 'fans_beneficiaries'
         ordering = ['last_name', 'first_name']
+        constraints = [
+            # Enforce uniqueness only for non-empty Senior Citizen IDs.
+            # This is a partial unique index: multiple beneficiaries may have
+            # an empty senior_citizen_id (field is optional), but no two
+            # beneficiaries may share the same non-empty value.
+            # Prevents the app-level duplicate check from being bypassed by
+            # concurrent registrations from multiple staff stations.
+            models.UniqueConstraint(
+                fields=['senior_citizen_id'],
+                condition=models.Q(senior_citizen_id__gt=''),
+                name='unique_nonempty_senior_citizen_id',
+            ),
+        ]
 
     @property
     def full_name(self):
@@ -157,6 +211,11 @@ class Beneficiary(models.Model):
             and self.consent_given
         )
 
+    @property
+    def is_synced(self) -> bool:
+        """Convenience property — True when sync_status == SYNC_SYNCED."""
+        return self.sync_status == self.SYNC_SYNCED
+
     def is_eligible_for_event(self, stipend_event) -> bool:
         """
         Check if this beneficiary is eligible for the given stipend event.
@@ -169,25 +228,33 @@ class Beneficiary(models.Model):
     def save(self, *args, **kwargs):
         if not self.beneficiary_id:
             import datetime
+            from django.db import transaction
             year = datetime.date.today().year
-            # Use select_for_update to avoid ID collision in concurrent requests
-            last = (
-                Beneficiary.objects.filter(
-                    beneficiary_id__startswith=f'BEN-{year}-'
+            with transaction.atomic():
+                # Lock existing IDs for this year so concurrent registrations
+                # from multiple staff stations cannot read the same "last" value
+                # and produce a duplicate beneficiary_id.
+                # select_for_update() serializes writes on PostgreSQL (shared
+                # central DB); it is a no-op on SQLite (local dev only).
+                last = (
+                    Beneficiary.objects
+                    .select_for_update()
+                    .filter(beneficiary_id__startswith=f'BEN-{year}-')
+                    .order_by('-beneficiary_id')
+                    .values_list('beneficiary_id', flat=True)
+                    .first()
                 )
-                .order_by('-beneficiary_id')
-                .values_list('beneficiary_id', flat=True)
-                .first()
-            )
-            if last:
-                try:
-                    last_num = int(last.split('-')[-1])
-                except (ValueError, IndexError):
+                if last:
+                    try:
+                        last_num = int(last.split('-')[-1])
+                    except (ValueError, IndexError):
+                        last_num = 0
+                else:
                     last_num = 0
-            else:
-                last_num = 0
-            self.beneficiary_id = f'BEN-{year}-{last_num + 1:05d}'
-        super().save(*args, **kwargs)
+                self.beneficiary_id = f'BEN-{year}-{last_num + 1:05d}'
+                super().save(*args, **kwargs)
+        else:
+            super().save(*args, **kwargs)
 
     def __str__(self):
         return f'{self.full_name} ({self.beneficiary_id})'

@@ -18,7 +18,7 @@
       - Auto-generates EMBEDDING_ENCRYPTION_KEY (Fernet) if missing
       - Runs all database migrations
       - Initialises system configuration
-      - Creates the default admin account
+      - Prompts to create the admin account via createsuperuser
       - Collects static files
       - Runs the system health check
 
@@ -331,14 +331,36 @@ Invoke-Checked $venvPython @('manage.py', 'init_config')
 Write-OK "System config initialised"
 
 # ---------------------------------------------------------------------------
-# Step 11: Create default admin user
+# Step 11: Create admin user (interactive)
+# ---------------------------------------------------------------------------
+# No credentials are hard-coded.  Django's createsuperuser prompts for
+# username, email, and password interactively so the person running setup
+# chooses the credentials at setup time.
+# Use -SkipAdminCreate if an admin account already exists.
 # ---------------------------------------------------------------------------
 if ($SkipAdminCreate) {
     Write-Step 11 "Skipping admin user creation (-SkipAdminCreate)"
 } else {
-    Write-Step 11 "Creating default admin user..."
-    Invoke-Checked $venvPython @('manage.py', 'create_admin')
-    Write-OK "Admin user ready"
+    Write-Step 11 "Creating admin user (you will be prompted for credentials)..."
+    Write-Host ""
+    Write-Host "      Django will now prompt for a username, email, and password." -ForegroundColor White
+    Write-Host "      Choose a strong password and store it securely." -ForegroundColor White
+    Write-Host ""
+    # Run createsuperuser interactively -- must not be called via Invoke-Checked
+    # because it reads from stdin.  Let it run with its normal exit code handling.
+    $prevEAP = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    & $venvPython manage.py createsuperuser
+    $suExitCode = $LASTEXITCODE
+    $ErrorActionPreference = $prevEAP
+    if ($suExitCode -ne 0) {
+        Write-Warn "createsuperuser exited with code $suExitCode."
+        Write-Warn "You can create the admin account later with:"
+        Write-Warn "  .\.venv\Scripts\Activate.ps1"
+        Write-Warn "  python manage.py createsuperuser"
+    } else {
+        Write-OK "Admin user created"
+    }
 }
 
 # ---------------------------------------------------------------------------
@@ -375,10 +397,11 @@ Write-Host "  Or manually:" -ForegroundColor White
 Write-Host "    .\.venv\Scripts\Activate.ps1" -ForegroundColor Cyan
 Write-Host "    python manage.py runserver" -ForegroundColor Cyan
 Write-Host ""
-Write-Host "  Default admin credentials:" -ForegroundColor White
-Write-Host "    URL      : http://127.0.0.1:8000/" -ForegroundColor Cyan
-Write-Host "    Username : admin" -ForegroundColor Yellow
-Write-Host "    Password : Admin@1234" -ForegroundColor Yellow
+Write-Host "  Open the app:" -ForegroundColor White
+Write-Host "    URL : http://127.0.0.1:8000/" -ForegroundColor Cyan
+Write-Host "    Log in with the admin account you created in Step 11." -ForegroundColor White
 Write-Host ""
-Write-Host "  CHANGE THE DEFAULT PASSWORD IMMEDIATELY AFTER FIRST LOGIN." -ForegroundColor Red
+Write-Host "  If you skipped Step 11, create the admin account now with:" -ForegroundColor White
+Write-Host "    .\.venv\Scripts\Activate.ps1" -ForegroundColor Cyan
+Write-Host "    python manage.py createsuperuser" -ForegroundColor Cyan
 Write-Host ""
