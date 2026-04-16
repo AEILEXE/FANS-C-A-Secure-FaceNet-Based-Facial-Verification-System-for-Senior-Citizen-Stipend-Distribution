@@ -23,8 +23,8 @@ $ErrorActionPreference = 'Stop'
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 
-$projectRoot  = $PSScriptRoot
-$launcherPath = Join-Path $projectRoot 'start-fans-quiet.bat'
+$projectRoot  = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
+$launcherPath = Join-Path $projectRoot 'scripts\start\start-fans-quiet.bat'
 $iconPath     = Join-Path $projectRoot 'assets\logo.ico'
 $shortcutName = 'FANS-C Verification System.lnk'
 $shortcutPath = Join-Path ([System.Environment]::GetFolderPath('Desktop')) $shortcutName

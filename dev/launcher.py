@@ -71,11 +71,12 @@ from pathlib import Path
 # the installed/dist directory.  All bundled project files (fans/, templates/,
 # static/, staticfiles/) are siblings of that executable.
 #
-# In source mode, __file__ is launcher.py at the project root.
+# In packaged mode, sys.executable is FANS-C.exe inside the installed directory.
+# In source mode, __file__ is dev/launcher.py — go one level up to project root.
 if getattr(sys, 'frozen', False):
     BASE_DIR = Path(sys.executable).parent
 else:
-    BASE_DIR = Path(__file__).resolve().parent
+    BASE_DIR = Path(__file__).resolve().parent.parent  # dev/ -> project root
 
 # Make sure all Django apps are importable.
 _base_dir_str = str(BASE_DIR)

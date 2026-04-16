@@ -31,7 +31,7 @@
 #>
 
 $ErrorActionPreference = 'SilentlyContinue'
-$projectRoot = $PSScriptRoot
+$projectRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
 
 Write-Host ''
 Write-Host '  ================================================================' -ForegroundColor DarkCyan
@@ -72,7 +72,7 @@ if ($stopped -gt 0) {
     Write-Host ''
     Write-Host '  The system will start again automatically at the next reboot.' -ForegroundColor DarkGray
     Write-Host '  To restart now without rebooting:' -ForegroundColor DarkGray
-    Write-Host '    - Double-click start-fans-quiet.bat' -ForegroundColor Cyan
+    Write-Host '    - Double-click scripts\start\start-fans-quiet.bat' -ForegroundColor Cyan
     Write-Host '    - Or: Task Scheduler → FANS-C Verification System → Run' -ForegroundColor Cyan
 } else {
     Write-Host '  No FANS-C services were found running.' -ForegroundColor DarkGray

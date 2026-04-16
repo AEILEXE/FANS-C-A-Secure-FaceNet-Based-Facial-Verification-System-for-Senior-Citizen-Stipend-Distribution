@@ -15,11 +15,19 @@
 ::  To stop the system:
 ::    - Close the two server windows that this script opens.
 ::
-::  NOTE: Run this script from the project root folder.
-::        Do NOT move this file without updating paths.
+::  NOTE: This script lives in scripts\start\ and computes the
+::        project root automatically. Do not move without updating paths.
 :: ============================================================
 
 title FANS-C Debug Launcher
+
+:: ----------------------------------------------------------
+:: Compute project root (two levels up: scripts\start\ -> root)
+:: ----------------------------------------------------------
+pushd "%~dp0..\.."
+set "PROJECT_ROOT=%CD%"
+popd
+cd /d "%PROJECT_ROOT%"
 
 echo.
 echo  ================================================================
@@ -29,25 +37,20 @@ echo  ================================================================
 echo.
 
 :: ----------------------------------------------------------
-:: Check: Are we in the right folder?
+:: Pre-flight checks
 :: ----------------------------------------------------------
 if not exist ".venv\Scripts\waitress-serve.exe" (
     echo  [FAIL] .venv\Scripts\waitress-serve.exe not found.
     echo.
-    echo         Make sure you:
-    echo           1. Run this script from the project root folder.
-    echo              Example: D:\FANS\fans-c\start-fans.bat
-    echo           2. Have already run setup.ps1 at least once.
+    echo         Make sure you have already run:
+    echo           scripts\setup\setup-secure-server.ps1
     echo.
     pause
     exit /b 1
 )
 
 if not exist "Caddyfile" (
-    echo  [FAIL] Caddyfile not found in the current folder.
-    echo.
-    echo         Make sure you run this script from the project root folder.
-    echo         The Caddyfile must be present alongside this script.
+    echo  [FAIL] Caddyfile not found in project root.
     echo.
     pause
     exit /b 1
@@ -56,9 +59,8 @@ if not exist "Caddyfile" (
 if not exist ".env" (
     echo  [FAIL] .env file not found.
     echo.
-    echo         The .env configuration file is required.
     echo         Copy .env.example to .env and fill in your values,
-    echo         then re-run setup.ps1.
+    echo         then re-run scripts\setup\setup-secure-server.ps1.
     echo.
     pause
     exit /b 1
@@ -68,7 +70,7 @@ if not exist "fans-cert.pem" (
     echo  [WARN] TLS certificate not found: fans-cert.pem
     echo.
     echo         Caddy may fail to start.
-    echo         Run setup-secure-server.ps1 to generate and install certificates.
+    echo         Run scripts\setup\setup-secure-server.ps1 to generate certificates.
     echo.
 )
 
@@ -79,9 +81,9 @@ echo.
 :: Start Waitress (Django app server) in a new window
 :: ----------------------------------------------------------
 echo  [1/2] Starting Waitress (Django WSGI server)...
-echo        This serves the FANS-C application on 127.0.0.0:8000
+echo        This serves the FANS-C application on 127.0.0.1:8000
 echo.
-start "FANS-C Waitress" cmd /k "cd /d %~dp0 && "%~dp0.venv\Scripts\waitress-serve.exe" --host=0.0.0.0 --port=8000 fans.wsgi:application"
+start "FANS-C Waitress" cmd /k "cd /d "%PROJECT_ROOT%" && "%PROJECT_ROOT%\.venv\Scripts\waitress-serve.exe" --host=0.0.0.0 --port=8000 fans.wsgi:application"
 
 :: Wait a few seconds for Waitress to initialize before Caddy starts
 echo  [..] Waiting 4 seconds for Waitress to initialize...
@@ -94,12 +96,12 @@ echo  [2/2] Starting Caddy (HTTPS reverse proxy)...
 echo        This handles HTTPS on port 443 and forwards to Waitress.
 echo.
 
-:: Locate caddy.exe: bundled (tools\caddy.exe.exe) -> D:\Tools\caddy.exe -> PATH
+:: Locate caddy.exe: bundled (tools\caddy.exe) -> D:\Tools\caddy.exe -> PATH
 set "CADDY_EXE="
 
-if exist "%~dp0tools\caddy.exe.exe" (
-    set "CADDY_EXE=%~dp0tools\caddy.exe.exe"
-    echo  [OK]  Caddy found (bundled): %~dp0tools\caddy.exe.exe
+if exist "%PROJECT_ROOT%\tools\caddy.exe" (
+    set "CADDY_EXE=%PROJECT_ROOT%\tools\caddy.exe"
+    echo  [OK]  Caddy found (bundled): %PROJECT_ROOT%\tools\caddy.exe
 ) else (
     if exist "D:\Tools\caddy.exe" (
         set "CADDY_EXE=D:\Tools\caddy.exe"
@@ -117,8 +119,8 @@ if not defined CADDY_EXE (
     echo  [FAIL] caddy.exe not found.
     echo.
     echo         Checked:
-    echo           - %~dp0tools\caddy.exe.exe  (bundled)
-    echo           - D:\Tools\caddy.exe        (custom path)
+    echo           - %PROJECT_ROOT%\tools\caddy.exe  (bundled)
+    echo           - D:\Tools\caddy.exe              (custom path)
     echo           - System PATH
     echo.
     echo         Place caddy.exe in the project's tools\ folder for automatic detection.
@@ -128,7 +130,7 @@ if not defined CADDY_EXE (
     exit /b 1
 )
 
-start "FANS-C Caddy" cmd /k "title FANS-C Caddy && echo. && echo   FANS-C Caddy - HTTPS Reverse Proxy && echo   DO NOT CLOSE THIS WINDOW while the system is in use. && echo. && cd /d %~dp0 && "%CADDY_EXE%" run --config Caddyfile"
+start "FANS-C Caddy" cmd /k "title FANS-C Caddy && echo. && echo   FANS-C Caddy - HTTPS Reverse Proxy && echo   DO NOT CLOSE THIS WINDOW while the system is in use. && echo. && cd /d "%PROJECT_ROOT%" && "%CADDY_EXE%" run --config Caddyfile"
 
 :: ----------------------------------------------------------
 :: Detect LAN IP (for staff connection guidance)

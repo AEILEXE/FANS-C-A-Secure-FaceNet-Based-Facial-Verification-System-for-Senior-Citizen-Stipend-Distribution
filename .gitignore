@@ -27,3 +27,4 @@ models/weights/
 *.key
 *.sqlite3
 /media/
+legacy/certs/

@@ -59,10 +59,10 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$projectRoot  = $PSScriptRoot
+$projectRoot  = Split-Path $PSScriptRoot -Parent
 $venvPython   = Join-Path $projectRoot '.venv\Scripts\python.exe'
 $venvPip      = Join-Path $projectRoot '.venv\Scripts\pip.exe'
-$specFile     = Join-Path $projectRoot 'fans_c.spec'
+$specFile     = Join-Path $PSScriptRoot 'fans_c.spec'
 $distDir      = Join-Path $projectRoot 'dist\FANS-C'
 
 Set-Location $projectRoot
@@ -222,7 +222,7 @@ Write-Host "        Subsequent builds use the cache and are much faster." -Foreg
 Write-Host ""
 
 # Run PyInstaller using the .venv Python so it picks up the .venv packages
-& $venvPython -m PyInstaller fans_c.spec --noconfirm
+& $venvPython -m PyInstaller $specFile --noconfirm
 if ($LASTEXITCODE -ne 0) {
     Write-Host ""
     Write-Host "  [FAIL] PyInstaller build failed (exit code $LASTEXITCODE)." -ForegroundColor Red

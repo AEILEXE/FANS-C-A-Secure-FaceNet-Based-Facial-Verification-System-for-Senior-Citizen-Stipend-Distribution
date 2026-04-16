@@ -50,15 +50,15 @@
 
 .NOTES
     Run from the project root as Administrator:
-      Right-click setup-secure-server.ps1 -> Run with PowerShell (as Admin)
+      Right-click scripts\setup\setup-secure-server.ps1 -> Run with PowerShell (as Admin)
       -- or --
-      Start-Process powershell -Verb RunAs -ArgumentList "-File .\setup-secure-server.ps1"
+      Start-Process powershell -Verb RunAs -ArgumentList "-File .\scripts\setup\setup-secure-server.ps1"
 
 .EXAMPLE
-    .\setup-secure-server.ps1
-    .\setup-secure-server.ps1 -SkipDeps
-    .\setup-secure-server.ps1 -SkipDeps -SkipAdminCreate
-    .\setup-secure-server.ps1 -SkipDeps -SkipStaticFiles -SkipAdminCreate
+    .\scripts\setup\setup-secure-server.ps1
+    .\scripts\setup\setup-secure-server.ps1 -SkipDeps
+    .\scripts\setup\setup-secure-server.ps1 -SkipDeps -SkipAdminCreate
+    .\scripts\setup\setup-secure-server.ps1 -SkipDeps -SkipStaticFiles -SkipAdminCreate
 #>
 
 param(
@@ -70,7 +70,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$projectRoot = $PSScriptRoot
+$projectRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
 Set-Location $projectRoot
 
 # -- Paths --------------------------------------------------------------------
@@ -571,7 +571,7 @@ if ($lanIp) {
 }
 Write-Host ""
 Write-Host "     2. Distribute the server root CA to each client device:" -ForegroundColor Yellow
-Write-Host "        Run trust-local-cert.ps1 (as Admin) on each client." -ForegroundColor DarkGray
+Write-Host "        Run CLIENT-SETUP\trust-local-cert.bat (as Admin) on each client." -ForegroundColor DarkGray
 
 $caRootDir = $null
 try {
@@ -599,7 +599,7 @@ if ($lanIp) {
     Write-Host "        Entry to add:  $lanIp  fans-barangay.local" -ForegroundColor DarkGray
 }
 Write-Host ""
-Write-Host "     4. Run setup-autostart.ps1 to enable automatic startup." -ForegroundColor Yellow
+Write-Host "     4. Run scripts\setup\setup-autostart.ps1 to enable automatic startup." -ForegroundColor Yellow
 Write-Host "  ================================================================" -ForegroundColor DarkCyan
 Write-Host ""
 

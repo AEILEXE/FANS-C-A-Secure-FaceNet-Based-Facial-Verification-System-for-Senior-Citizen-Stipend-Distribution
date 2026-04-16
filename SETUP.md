@@ -1,6 +1,8 @@
 # FANS-C Developer Setup Guide (Windows)
 
 > For barangay staff accessing the system from a browser, see [CLIENT_ACCESS.md](CLIENT_ACCESS.md) instead.
+>
+> **New to this repo?** The project was reorganized for clarity. Scripts are now under `scripts/` (setup, start, admin), dev/build tools under `dev/`, and deprecated files under `legacy/`. See the folder structure below.
 
 ---
 
@@ -40,7 +42,7 @@ The project includes a setup script that does everything automatically:
 
 ```powershell
 cd D:\FANS
-.\setup.ps1
+.\scripts\setup\setup-secure-server.ps1
 ```
 
 This will:
@@ -48,16 +50,32 @@ This will:
 - Install all dependencies (including TensorFlow — takes 5–15 minutes on first run)
 - Create a `.env` file from the example
 - Auto-generate `SECRET_KEY` and `EMBEDDING_ENCRYPTION_KEY`
+- Generate TLS certificates with mkcert
 - Run database migrations
+- Add a Windows Firewall rule for HTTPS (port 443)
 - Prompt you to create the admin account
 
 > If you get an error about execution policy, run this first:
 > `Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned`
 
-### Step 3 — Start the server
+### Step 3 — Enable auto-start (optional but recommended)
 
 ```powershell
-.\run.ps1
+.\scripts\setup\setup-autostart.ps1
+```
+
+This registers a Windows Task Scheduler task that starts FANS-C automatically at every boot (no login required).
+
+### Step 4 — Start the server (development / manual)
+
+For a visible debug start (shows all output):
+```powershell
+.\scripts\start\start-fans.bat
+```
+
+For normal daily use (minimized background services):
+```powershell
+.\scripts\start\start-fans-quiet.bat
 ```
 
 Or manually:
@@ -66,9 +84,9 @@ Or manually:
 python manage.py runserver
 ```
 
-### Step 4 — Open the app
+### Step 5 — Open the app
 
-Go to: http://127.0.0.1:8000/
+Go to: https://fans-barangay.local (production) or http://127.0.0.1:8000/ (dev)
 
 Log in with the admin account you created in Step 2.
 
@@ -108,7 +126,7 @@ reg add "HKLM\SYSTEM\CurrentControlSet\Control\FileSystem" /v LongPathsEnabled /
 ```
 Restart Windows, then retry.
 
-### Manual Setup (without setup.ps1)
+### Manual Setup (without setup-secure-server.ps1)
 
 If you prefer to set up manually instead of using `setup.ps1`:
 
@@ -192,7 +210,7 @@ To use PostgreSQL:
 
 ### Admin Account Setup
 
-`setup.ps1` calls `createsuperuser` interactively. If you need to set the FANS-C in-app admin role separately:
+`setup-secure-server.ps1` calls `createsuperuser` interactively. If you need to set the FANS-C in-app admin role separately:
 
 ```powershell
 python manage.py shell -c "
@@ -272,79 +290,63 @@ USE_X_FORWARDED_HOST=True
 
 The project does **not** need to be reinstalled after every reboot. The `.venv`, `.env`, database, and certificates all remain in place. Only the two server processes — Waitress and Caddy — need to be started again each time the server PC is turned on.
 
-### Option 1 — Double-click startup (simplest)
+### Option 1 — Auto-start via Task Scheduler (recommended)
 
-A startup batch script is included at the project root:
-
-```
-start-fans.bat
-```
-
-Double-click it from File Explorer to start both servers. It opens two windows:
-- **FANS-C Waitress** — Django app server
-- **FANS-C Caddy** — HTTPS reverse proxy
-
-Keep both windows open while the system is in use. Close them to shut down.
-
-> If Windows blocks the script, right-click → "Run as administrator", or right-click → "Properties" → Unblock.
-
-### Option 2 — PowerShell startup (with pre-flight checks)
-
-A more robust version with pre-flight validation is available at:
-
-```
-start-fans-production.ps1
-```
-
-Run it from PowerShell:
+Run this once to register a startup task:
 
 ```powershell
-cd D:\FANS\fans-c
-.\start-fans-production.ps1
+.\scripts\setup\setup-autostart.ps1
 ```
 
-This checks for `.venv`, `.env`, the encryption key, Caddyfile, TLS certificates, and caddy on PATH before starting anything.
+After this, the system starts automatically at every boot — no scripts, no windows, no IT visits required.
 
-### Option 3 — Windows Task Scheduler (auto-start on login)
+### Option 2 — Double-click startup (manual)
 
-To make the system start automatically every time the server PC is turned on and a user logs in:
+For normal daily use (minimized background, status window while starting):
 
-1. Press **Win + R**, type `taskschd.msc`, press Enter to open Task Scheduler.
-2. Click **Create Task** (not "Create Basic Task").
-3. **General tab:**
-   - Name: `FANS-C Server Startup`
-   - Check: **Run whether user is logged on or not** (optional — for headless server)
-   - Check: **Run with highest privileges**
-4. **Triggers tab → New:**
-   - Begin the task: `At log on`
-   - Any user (or a specific account)
-5. **Actions tab → New:**
-   - Action: `Start a program`
-   - Program: `C:\Windows\System32\cmd.exe`
-   - Arguments: `/c "D:\FANS\fans-c\start-fans.bat"`
-   - Start in: `D:\FANS\fans-c`
-6. **Conditions tab:**
-   - Uncheck "Start only if the computer is on AC power" (if it's a desktop, this is fine to leave on)
-7. Click **OK** and enter the Windows account password when prompted.
+```
+scripts\start\start-fans-quiet.bat
+```
 
-After this is configured, the system starts automatically after every reboot — no manual commands required.
+For debugging (all server windows visible, full output):
 
-> **Note:** With Task Scheduler, the two server windows open on the server PC desktop after login. They must remain open.
+```
+scripts\start\start-fans.bat
+```
 
-### Manual startup (original method)
+### Option 3 — PowerShell startup (with pre-flight checks)
+
+```powershell
+cd D:\FANS
+.\scripts\start\start-fans-production.ps1
+```
+
+This checks for `.venv`, `.env`, the encryption key, Caddyfile, TLS certificates, and caddy before starting anything.
+
+### Option 4 — Desktop shortcut
+
+Run once to create a branded shortcut on the Desktop:
+
+```powershell
+.\scripts\setup\Create-Desktop-Shortcut.ps1
+```
+
+The shortcut points to `scripts\start\start-fans-quiet.bat` with the correct working directory.
+
+### Manual startup
 
 If you prefer to start manually each time:
 
 **Window 1 — Waitress:**
 ```powershell
-cd D:\FANS\fans-c
+cd D:\FANS
 .\.venv\Scripts\Activate.ps1
 waitress-serve --listen=127.0.0.1:8000 fans.wsgi:application
 ```
 
-**Window 2 — Caddy:**
+**Window 2 — Caddy (run from project root so cert paths resolve):**
 ```powershell
-cd D:\FANS\fans-c
+cd D:\FANS
 caddy run --config Caddyfile
 ```
 
@@ -526,7 +528,7 @@ Virtual environments store absolute paths and break after a folder move.
 
 1. Delete the old `.venv`: `rmdir /s /q .venv`
 2. Move the project to a short path (e.g., `D:\FANS`)
-3. Re-run `.\setup.ps1`
+3. Re-run `.\scripts\setup\setup-secure-server.ps1`
 
 ---
 

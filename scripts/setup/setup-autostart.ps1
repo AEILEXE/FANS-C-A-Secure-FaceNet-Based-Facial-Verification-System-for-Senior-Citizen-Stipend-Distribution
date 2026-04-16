@@ -38,11 +38,11 @@
       Run stop-fans.ps1 (IT/Admin only).
 
 .EXAMPLE
-    Right-click setup-autostart.ps1 → Run with PowerShell
+    Right-click scripts\setup\setup-autostart.ps1 → Run with PowerShell
 #>
 
 $ErrorActionPreference = 'Stop'
-$projectRoot = $PSScriptRoot
+$projectRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
 
 # ── Banner ────────────────────────────────────────────────────────────────────
 Write-Host ''
@@ -66,7 +66,7 @@ if (-not $isAdmin) {
 Write-Host '  [OK]  Administrator rights confirmed.' -ForegroundColor Green
 
 # ── Step 2: Verify the hidden launcher exists ─────────────────────────────────
-$hiddenScript = Join-Path $projectRoot 'start-fans-hidden.ps1'
+$hiddenScript = Join-Path $projectRoot 'scripts\start\start-fans-hidden.ps1'
 if (-not (Test-Path $hiddenScript)) {
     Write-Host ''
     Write-Host '  [FAIL] start-fans-hidden.ps1 not found:' -ForegroundColor Red
@@ -156,9 +156,9 @@ Write-Host "     Script:   $hiddenScript" -ForegroundColor DarkGray
 Write-Host '     Log file: logs\fans-startup.log (in project folder)' -ForegroundColor DarkGray
 Write-Host ''
 Write-Host '   IT/Admin tools:' -ForegroundColor DarkGray
-Write-Host '     stop-fans.ps1          — stop Waitress + Caddy now' -ForegroundColor DarkGray
-Write-Host '     start-fans-quiet.bat   — manual start with status window' -ForegroundColor DarkGray
-Write-Host '     start-fans.bat         — debug start (all windows visible)' -ForegroundColor DarkGray
+Write-Host '     scripts\admin\stop-fans.ps1        — stop Waitress + Caddy now' -ForegroundColor DarkGray
+Write-Host '     scripts\start\start-fans-quiet.bat — manual start with status window' -ForegroundColor DarkGray
+Write-Host '     scripts\start\start-fans.bat       — debug start (all windows visible)' -ForegroundColor DarkGray
 Write-Host '  ================================================================' -ForegroundColor DarkCyan
 Write-Host ''
 

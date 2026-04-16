@@ -68,8 +68,8 @@ from PyInstaller.utils.hooks import collect_data_files, collect_submodules, coll
 
 block_cipher = None
 
-# The directory containing this spec file == the project root
-project_root = os.path.abspath(SPECPATH)   # SPECPATH is set by PyInstaller
+# The spec file lives in dev/, one level below the project root
+project_root = os.path.abspath(os.path.join(SPECPATH, '..'))   # SPECPATH is set by PyInstaller
 
 # ---------------------------------------------------------------------------
 # Collect data and binaries from heavyweight ML packages
@@ -265,8 +265,8 @@ all_hidden_imports = hidden_imports + tf_hiddenimports + keras_hiddenimports + c
 # ---------------------------------------------------------------------------
 
 a = Analysis(
-    # Entry point: the launcher script
-    ['launcher.py'],
+    # Entry point: the launcher script (lives in dev/ alongside this spec file)
+    [os.path.join(project_root, 'dev', 'launcher.py')],
 
     # pathex: additional directories to search for modules.
     # The project root ensures that `import fans`, `import accounts`, etc.

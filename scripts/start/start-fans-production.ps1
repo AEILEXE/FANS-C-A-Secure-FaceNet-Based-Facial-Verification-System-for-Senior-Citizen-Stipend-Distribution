@@ -35,7 +35,7 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$projectRoot = $PSScriptRoot
+$projectRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
 Set-Location $projectRoot
 
 $venvWaitress = Join-Path $projectRoot '.venv\Scripts\waitress-serve.exe'

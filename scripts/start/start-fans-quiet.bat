@@ -11,14 +11,22 @@
 ::  HOW TO USE:
 ::    Double-click this file — or use the desktop shortcut.
 ::    Keep the system running as long as staff need access.
-::    To stop: close the two minimized taskbar windows.
+::    To stop: run scripts\admin\stop-fans.ps1
 ::
-::  FIRST-TIME SETUP:  Run setup-secure-server.ps1 first.
-::  DESKTOP SHORTCUT:  Run Create-Desktop-Shortcut.ps1 once.
+::  FIRST-TIME SETUP:  Run scripts\setup\setup-secure-server.ps1 first.
+::  DESKTOP SHORTCUT:  Run scripts\setup\Create-Desktop-Shortcut.ps1 once.
 :: ============================================================
 
 title FANS-C Verification System
 mode con cols=68 lines=32
+
+:: ----------------------------------------------------------
+:: Compute project root (two levels up: scripts\start\ -> root)
+:: ----------------------------------------------------------
+pushd "%~dp0..\.."
+set "PROJECT_ROOT=%CD%"
+popd
+cd /d "%PROJECT_ROOT%"
 
 echo.
 echo  ================================================================
@@ -34,7 +42,7 @@ if not exist ".venv\Scripts\waitress-serve.exe" (
     echo  ERROR: System setup is not complete.
     echo.
     echo  Please ask your IT administrator to run
-    echo  setup-secure-server.ps1 before using this launcher.
+    echo  scripts\setup\setup-secure-server.ps1 before using this launcher.
     echo.
     pause
     exit /b 1
@@ -56,16 +64,13 @@ if not exist "Caddyfile" (
     echo  ERROR: This launcher must be run from the FANS-C project folder.
     echo.
     echo  Please do not move this file to another location.
-    echo  Use the desktop shortcut created by Create-Desktop-Shortcut.ps1.
+    echo  Use the desktop shortcut created by scripts\setup\Create-Desktop-Shortcut.ps1.
     echo.
     pause
     exit /b 1
 )
 
 :: -- Migrate old mkcert cert filenames to the stable name (one-time) --------
-:: setup-secure-server.ps1 now creates fans-cert.pem directly, but if the
-:: server was set up with an older version we copy the first matching cert
-:: we find so Caddy can always use the stable filename.
 if not exist "fans-cert.pem" (
     for %%F in ("fans-barangay.local+*.pem") do (
         if not "%%~nxF"=="fans-cert.pem" (
@@ -83,7 +88,7 @@ if not exist "fans-cert-key.pem" (
 if not exist "fans-cert.pem" (
     echo  NOTE: HTTPS certificate not found.
     echo        The secure connection may not work correctly.
-    echo        Contact your IT administrator to run setup-secure-server.ps1.
+    echo        Contact your IT administrator to run scripts\setup\setup-secure-server.ps1.
     echo.
 )
 
@@ -93,7 +98,7 @@ echo.
 :: ── Start Waitress minimized ──────────────────────────────────────
 
 echo  [1/2] Starting application server...
-start /MIN "FANS-C Waitress" cmd /k "cd /d %~dp0 && "%~dp0.venv\Scripts\waitress-serve.exe" --listen=127.0.0.1:8000 fans.wsgi:application"
+start /MIN "FANS-C Waitress" cmd /k "cd /d "%PROJECT_ROOT%" && "%PROJECT_ROOT%\.venv\Scripts\waitress-serve.exe" --listen=127.0.0.1:8000 fans.wsgi:application"
 
 :: Wait for Waitress to initialize before Caddy starts
 timeout /t 4 /nobreak >nul
@@ -102,11 +107,11 @@ timeout /t 4 /nobreak >nul
 
 echo  [2/2] Starting HTTPS service...
 
-:: Locate caddy.exe: bundled (tools\caddy.exe.exe) -> D:\Tools\caddy.exe -> PATH
+:: Locate caddy.exe: bundled (tools\caddy.exe) -> D:\Tools\caddy.exe -> PATH
 set "CADDY_EXE="
 
-if exist "%~dp0tools\caddy.exe.exe" (
-    set "CADDY_EXE=%~dp0tools\caddy.exe.exe"
+if exist "%PROJECT_ROOT%\tools\caddy.exe" (
+    set "CADDY_EXE=%PROJECT_ROOT%\tools\caddy.exe"
 ) else (
     if exist "D:\Tools\caddy.exe" (
         set "CADDY_EXE=D:\Tools\caddy.exe"
@@ -129,7 +134,7 @@ if not defined CADDY_EXE (
     exit /b 1
 )
 
-start /MIN "FANS-C Caddy" cmd /k "cd /d %~dp0 && "%CADDY_EXE%" run --config Caddyfile"
+start /MIN "FANS-C Caddy" cmd /k "cd /d "%PROJECT_ROOT%" && "%CADDY_EXE%" run --config Caddyfile"
 
 :: ── Detect LAN IP ─────────────────────────────────────────────────
 
@@ -162,9 +167,8 @@ echo   Both services are running minimized in the taskbar.
 echo   Do NOT close those taskbar windows while staff are using the system.
 echo.
 echo   TO SHUT DOWN:
-echo     1. Close this window
-echo     2. Close "FANS-C Waitress" in the taskbar
-echo     3. Close "FANS-C Caddy" in the taskbar
+echo     Run:  scripts\admin\stop-fans.ps1
+echo     Or close "FANS-C Waitress" and "FANS-C Caddy" in the taskbar.
 echo  ================================================================
 echo.
 echo  You may close this window.  The system will keep running.
