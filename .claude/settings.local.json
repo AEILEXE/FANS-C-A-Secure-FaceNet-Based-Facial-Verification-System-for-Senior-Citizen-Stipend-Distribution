@@ -1,9 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(.venv/Scripts/python.exe manage.py migrate --check)",
-      "Bash(.venv/Scripts/python.exe manage.py migrate --run-syncdb)",
-      "Bash(.venv/Scripts/python.exe -c ':*)"
-    ]
-  }
-}
