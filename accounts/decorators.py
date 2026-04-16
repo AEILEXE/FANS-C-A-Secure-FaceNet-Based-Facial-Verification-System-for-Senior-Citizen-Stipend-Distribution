@@ -18,9 +18,10 @@ def admin_required(view_func):
 
 
 def it_admin_required(view_func):
-    """Restrict to technical administrators only (IT/Admin role or superuser).
+    """Restrict to technical administrators only (IT/Admin or legacy admin role).
     Head Barangay and Staff are denied — use for system diagnostics and
-    network/connection pages that non-technical users should never see."""
+    network/connection pages that non-technical users should never see.
+    Django is_superuser does NOT bypass this check; access is role-based only."""
     @wraps(view_func)
     def wrapper(request, *args, **kwargs):
         if not request.user.is_authenticated:

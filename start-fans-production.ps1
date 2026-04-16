@@ -15,7 +15,7 @@
       - Starts Caddy in a new PowerShell window (HTTPS reverse proxy)
 
     Requirements:
-      - setup.ps1 must have been run at least once on this machine
+      - setup-secure-server.ps1 must have been run at least once on this machine
       - caddy.exe must be on the system PATH (or in this folder)
       - mkcert TLS certificates must exist in the project root
       - .env must be configured for production (DEBUG=False, etc.)
@@ -42,7 +42,7 @@ $venvWaitress = Join-Path $projectRoot '.venv\Scripts\waitress-serve.exe'
 $envFile      = Join-Path $projectRoot '.env'
 $caddyFile    = Join-Path $projectRoot 'Caddyfile'
 $certFile     = Join-Path $projectRoot 'fans-cert.pem'
-$caddyBundled = Join-Path $projectRoot 'tools\caddy.exe.exe'
+$caddyBundled = Join-Path $projectRoot 'tools\caddy.exe'
 
 # ---------------------------------------------------------------------------
 # Banner
@@ -63,14 +63,14 @@ $passed = $true
 if (-not (Test-Path $venvWaitress)) {
     Write-Host "  [FAIL] waitress-serve.exe not found at:" -ForegroundColor Red
     Write-Host "         $venvWaitress" -ForegroundColor Red
-    Write-Host "         Run .\setup.ps1 first to set up the virtual environment." -ForegroundColor Yellow
+    Write-Host "         Run .\setup-secure-server.ps1 first to set up the virtual environment." -ForegroundColor Yellow
     $passed = $false
 }
 
 # 2. .env
 if (-not (Test-Path $envFile)) {
     Write-Host "  [FAIL] .env not found." -ForegroundColor Red
-    Write-Host "         Copy .env.example to .env and run .\setup.ps1." -ForegroundColor Yellow
+    Write-Host "         Copy .env.example to .env and run .\setup-secure-server.ps1." -ForegroundColor Yellow
     $passed = $false
 }
 

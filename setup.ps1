@@ -1,38 +1,50 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    FANS-C Complete Setup Script for Windows.
-    Run ONCE after cloning or copying the project to a new device.
+    DEPRECATED -- DO NOT USE.
 
 .DESCRIPTION
-    Automates the entire FANS-C setup:
-      - Checks Python 3.11 (required for TensorFlow 2.13)
-      - Warns if project path is too long for Windows
-      - Creates the .venv virtual environment
-      - Upgrades pip safely
-      - Installs numpy 1.24.3 FIRST (must precede scipy and tensorflow)
-      - Installs tensorflow-cpu 2.13.1
-      - Installs all remaining requirements
-      - Auto-creates .env from .env.example if missing
-      - Auto-generates a secure Django SECRET_KEY if missing
-      - Auto-generates EMBEDDING_ENCRYPTION_KEY (Fernet) if missing
-      - Runs all database migrations
-      - Initialises system configuration
-      - Prompts to create the admin account via createsuperuser
-      - Collects static files
-      - Runs the system health check
+    This script has been superseded by setup-secure-server.ps1.
 
-.PARAMETER SkipStaticFiles
-    Skip the collectstatic step (useful for development restarts).
+    setup-secure-server.ps1 is now the ONLY required setup script.
+    It handles everything this script used to do, plus TLS certificate
+    generation and all secure-server configuration in a single run.
 
-.PARAMETER SkipAdminCreate
-    Skip creating the default admin user (use if admin already exists).
+    HOW TO SET UP FANS-C (current workflow):
+      1. Run: .\setup-secure-server.ps1   (one-time server setup)
+      2. Run: .\setup-autostart.ps1       (enable auto-start at boot)
+      3. Daily use: no scripts needed -- the system starts automatically.
 
-.EXAMPLE
-    .\setup.ps1
-    .\setup.ps1 -SkipStaticFiles
-    .\setup.ps1 -SkipAdminCreate -SkipStaticFiles
+    This file is kept only for reference. Do not run it.
+
+.NOTES
+    Deprecated: replaced by setup-secure-server.ps1
 #>
+
+Write-Host ""
+Write-Host "  ================================================================" -ForegroundColor Red
+Write-Host "   DEPRECATED SCRIPT -- DO NOT RUN THIS FILE                     " -ForegroundColor Red
+Write-Host "  ================================================================" -ForegroundColor Red
+Write-Host ""
+Write-Host "  setup.ps1 has been replaced by setup-secure-server.ps1." -ForegroundColor Yellow
+Write-Host ""
+Write-Host "  Run the correct setup script instead:" -ForegroundColor White
+Write-Host "    .\setup-secure-server.ps1" -ForegroundColor Cyan
+Write-Host ""
+Write-Host "  setup-secure-server.ps1 handles everything:" -ForegroundColor White
+Write-Host "    - Virtual environment and Python dependencies" -ForegroundColor DarkGray
+Write-Host "    - .env creation and key generation" -ForegroundColor DarkGray
+Write-Host "    - TLS certificate generation (mkcert)" -ForegroundColor DarkGray
+Write-Host "    - Django migrations and static files" -ForegroundColor DarkGray
+Write-Host "    - Firewall rule and admin user creation" -ForegroundColor DarkGray
+Write-Host ""
+Read-Host "  Press Enter to close"
+exit 0
+
+# ---------------------------------------------------------------------------
+# LEGACY CODE BELOW -- retained for reference only, not executed
+# ---------------------------------------------------------------------------
+return
 
 param(
     [switch]$SkipStaticFiles,

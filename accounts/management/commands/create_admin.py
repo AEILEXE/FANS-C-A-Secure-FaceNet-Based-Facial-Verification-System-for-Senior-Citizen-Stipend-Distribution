@@ -124,18 +124,25 @@ class Command(BaseCommand):
             return
 
         # ── Create the admin account ─────────────────────────────────────────
+        # Use create_user (not create_superuser) so that is_superuser and
+        # is_staff are NOT set automatically.  App-level admin access is
+        # granted exclusively via the role field (ROLE_ADMIN / ROLE_ADMIN_IT).
+        # Django's is_superuser flag is irrelevant for app permissions and
+        # should not be given out by default to avoid accidental privilege leaks.
         email = options['email'] or f'{username}@fans.local'
-        CustomUser.objects.create_superuser(
+        CustomUser.objects.create_user(
             username=username,
             email=email,
             password=password,
             first_name=options['first_name'],
             last_name=options['last_name'],
-            role=CustomUser.ROLE_ADMIN,
+            role=CustomUser.ROLE_ADMIN_IT,
             employee_id='ADM-001',
+            is_superuser=False,
+            is_staff=False,
         )
         self.stdout.write(self.style.SUCCESS(
-            f'Admin user "{username}" created successfully.\n'
+            f'IT/Admin user "{username}" created successfully.\n'
             'Keep the password secure.  Change it immediately if it was '
             'shared during setup or passed on the command line.'
         ))

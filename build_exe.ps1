@@ -22,7 +22,7 @@
     Prerequisites
     -------------
     * Python 3.11 must be installed and accessible via `py -3.11`.
-    * The project .venv must exist (run .\setup.ps1 first if it does not).
+    * The project .venv must exist (run .\setup-secure-server.ps1 first if it does not).
     * PyInstaller and waitress are installed into .venv by this script.
     * UPX (optional)  --  if present in PATH, it will compress binaries slightly.
       Download from https://upx.github.io/.  Not required.
@@ -84,7 +84,7 @@ Write-Host "  [1/6] Checking prerequisites ..." -ForegroundColor DarkGray
 # Require .venv
 if (-not (Test-Path $venvPython)) {
     Write-Host "  [FAIL] .venv not found at $venvPython" -ForegroundColor Red
-    Write-Host "         Run .\setup.ps1 first to create the virtual environment." -ForegroundColor Yellow
+    Write-Host "         Run .\setup-secure-server.ps1 first to create the virtual environment." -ForegroundColor Yellow
     exit 1
 }
 

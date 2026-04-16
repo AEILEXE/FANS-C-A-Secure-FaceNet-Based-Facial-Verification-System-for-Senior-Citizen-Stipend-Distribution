@@ -53,7 +53,7 @@ Write-Host ""
 # 1. .venv present?
 if (-not (Test-Path $venvActivate)) {
     Write-Host "  [FAIL] .venv not found at $venvActivate" -ForegroundColor Red
-    Write-Host "         Run .\setup.ps1 first to set up the project." -ForegroundColor Yellow
+    Write-Host "         Run .\setup-secure-server.ps1 first to set up the project." -ForegroundColor Yellow
     exit 1
 }
 
@@ -61,7 +61,7 @@ if (-not (Test-Path $venvActivate)) {
 if (-not (Test-Path $envFile)) {
     Write-Host "  [FAIL] .env not found." -ForegroundColor Red
     Write-Host "         Copy .env.example to .env and fill in your values." -ForegroundColor Yellow
-    Write-Host "         Then run .\setup.ps1 to complete setup." -ForegroundColor Yellow
+    Write-Host "         Then run .\setup-secure-server.ps1 to complete setup." -ForegroundColor Yellow
     exit 1
 }
 
@@ -69,7 +69,7 @@ if (-not (Test-Path $envFile)) {
 $envRaw = Get-Content $envFile -Raw -Encoding UTF8
 if ($envRaw -match '(?m)^EMBEDDING_ENCRYPTION_KEY\s*=\s*$') {
     Write-Host "  [FAIL] EMBEDDING_ENCRYPTION_KEY is not set in .env" -ForegroundColor Red
-    Write-Host "         Run .\setup.ps1 to auto-generate the key, or run:" -ForegroundColor Yellow
+    Write-Host "         Run .\setup-secure-server.ps1 to auto-generate the key, or run:" -ForegroundColor Yellow
     Write-Host "           .\.venv\Scripts\python.exe manage.py generate_key" -ForegroundColor Cyan
     Write-Host "         Then paste the key into .env as EMBEDDING_ENCRYPTION_KEY=<key>" -ForegroundColor Yellow
     exit 1

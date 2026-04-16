@@ -5,6 +5,9 @@ __pycache__/
 db.sqlite3
 media/
 *.log
+logs/
+.fans-waitress.pid
+.fans-caddy.pid
 .venv/
 venv/
 env/

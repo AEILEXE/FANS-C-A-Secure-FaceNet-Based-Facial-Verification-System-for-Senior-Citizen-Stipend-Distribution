@@ -50,10 +50,17 @@ class CustomUser(AbstractUser):
 
     @property
     def is_admin_it(self):
-        """True only for technical administrators (IT/Admin and legacy admin).
-        Use this to gate system diagnostics, connection info, and network pages
-        that the Head Barangay should NOT see."""
-        return self.role in (self.ROLE_ADMIN, self.ROLE_ADMIN_IT) or self.is_superuser
+        """True only for IT/Admin and legacy admin roles.
+
+        Permission is determined exclusively by the ``role`` field.
+        Django's ``is_superuser`` flag does NOT grant app-level IT admin
+        access — it only controls Django's built-in /admin/ panel, which
+        is entirely separate from this application's role system.
+
+        Use this to gate system diagnostics, connection info, and network
+        pages that Head Barangay and Staff must never see.
+        """
+        return self.role in (self.ROLE_ADMIN, self.ROLE_ADMIN_IT)
 
     @property
     def is_head_barangay(self):
