@@ -1,36 +1,40 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    FANS-C Hidden Launcher — called by Windows Task Scheduler at startup.
+    FANS-C Hidden Launcher -- called by Windows Task Scheduler at boot.
     Starts Waitress and Caddy as background processes with NO visible windows.
 
 .DESCRIPTION
-    This script is designed to be invoked automatically by Task Scheduler
-    every time the PC starts. The Head Barangay does not run it manually.
+    This script is invoked automatically by Task Scheduler every time the
+    PC boots. The Head Barangay does not run it manually.
 
     What it does:
       1. Waits 12 seconds for Windows networking to fully initialize
-      2. Starts Waitress (Django WSGI server) — no window
-      3. Waits 5 seconds for Waitress to be ready
-      4. Starts Caddy (HTTPS reverse proxy) — no window
-      5. Writes a startup log to logs\fans-startup.log
+      2. Verifies required files (.env, waitress-serve.exe, fans-cert.pem, caddy.exe)
+      3. Starts Waitress (Django WSGI server) -- no window, port 8000
+      4. Waits 6 seconds for Django to load
+      5. Starts Caddy (HTTPS reverse proxy) -- no window, port 443
+      6. Waits 8 seconds for Caddy to bind its port
+      7. Verifies port 8000 and port 443 are actually listening
+      8. Writes a detailed startup log to logs\fans-startup.log
 
-    After this script exits, both services keep running in the background.
-    The system is accessible at https://fans-barangay.local from any
-    browser on the LAN.
+    STARTUP STATUS values logged:
+      STARTUP OK      -- both ports responding, system is ready
+      STARTUP PARTIAL -- Waitress OK but HTTPS failed (HTTPS unavailable)
+      STARTUP FAILED  -- Waitress did not start (system unavailable)
 
-    FOR DAILY USE:   Runs automatically. Do nothing.
-    TO STOP:         Run stop-fans.ps1 (IT/Admin only).
-    TO DEBUG ISSUES: Check logs\fans-startup.log first,
-                     then use start-fans.bat (visible windows).
-    TO SET UP:       Run setup-autostart.ps1 once (IT/Admin, as Admin).
+    FOR DAILY USE:    Runs automatically. The Head Barangay does nothing.
+    TO CHECK STATUS:  Read logs\fans-startup.log or run check-system-health.ps1
+    TO STOP:          Run scripts\admin\stop-fans.ps1 (IT/Admin only)
+    TO DEBUG:         Run scripts\start\start-fans.bat (visible windows + full output)
+    TO SET UP:        Run scripts\setup\setup-complete.ps1 (IT/Admin, one-time)
 #>
 
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
 Set-Location $projectRoot
 
-# -- Log helper ----------------------------------------------------------------
+# -- Log setup ----------------------------------------------------------------
 $logsDir = Join-Path $projectRoot 'logs'
 if (-not (Test-Path $logsDir)) {
     New-Item -ItemType Directory -Path $logsDir -Force | Out-Null
@@ -43,76 +47,25 @@ function Write-Log {
     "$ts  $Message" | Add-Content -Path $logFile -Encoding UTF8
 }
 
-Write-Log '============================================================'
-Write-Log 'FANS-C auto-start: beginning startup sequence'
-
-# -- Wait for Windows networking to be fully available -------------------------
-# Task Scheduler fires at startup before all network adapters are ready.
-# A short delay prevents Caddy from failing to bind its interface.
-Write-Log 'Waiting 12 seconds for Windows networking...'
-Start-Sleep -Seconds 12
-
-# -- Locate waitress-serve.exe -------------------------------------------------
-$waitressExe = Join-Path $projectRoot '.venv\Scripts\waitress-serve.exe'
-if (-not (Test-Path $waitressExe)) {
-    Write-Log "FAIL: waitress-serve.exe not found at: $waitressExe"
-    Write-Log '      Run setup-secure-server.ps1 to complete installation.'
-    exit 1
+# -- Port check helper --------------------------------------------------------
+function Test-PortListening {
+    param([int]$Port, [int]$Retries = 6, [int]$DelayMs = 1000)
+    for ($i = 0; $i -lt $Retries; $i++) {
+        try {
+            $tcp = New-Object System.Net.Sockets.TcpClient
+            $tcp.Connect('127.0.0.1', $Port)
+            $tcp.Close()
+            return $true
+        } catch { }
+        if ($i -lt ($Retries - 1)) { Start-Sleep -Milliseconds $DelayMs }
+    }
+    return $false
 }
 
-# -- Check .env ----------------------------------------------------------------
-$envFile = Join-Path $projectRoot '.env'
-if (-not (Test-Path $envFile)) {
-    Write-Log "FAIL: .env not found at: $envFile"
-    Write-Log '      Ask IT to complete server configuration.'
-    exit 1
-}
-
-# -- Locate caddy.exe ----------------------------------------------------------
-$caddyExe = $null
-
-# 1. Bundled in tools\ (handles both caddy.exe and caddy.exe.exe naming)
-foreach ($candidate in @(
-        (Join-Path $projectRoot 'tools\caddy.exe'),
-        (Join-Path $projectRoot 'tools\caddy.exe.exe')
-    )) {
-    if (Test-Path $candidate) { $caddyExe = $candidate; break }
-}
-
-# 2. System PATH
-if (-not $caddyExe) {
-    try {
-        $found = Get-Command caddy -ErrorAction Stop
-        $caddyExe = $found.Source
-    } catch { }
-}
-
-# 3. Legacy fallback
-if (-not $caddyExe -and (Test-Path 'D:\Tools\caddy.exe')) {
-    $caddyExe = 'D:\Tools\caddy.exe'
-}
-
-if (-not $caddyExe) {
-    Write-Log 'FAIL: caddy.exe not found in tools\, PATH, or D:\Tools\'
-    Write-Log '      Waitress will still start; HTTPS will NOT be available.'
-    Write-Log '      Place caddy.exe in the project tools\ folder.'
-}
-
-# -- Warn if stable cert is missing --------------------------------------------
-$stableCert = Join-Path $projectRoot 'fans-cert.pem'
-if (-not (Test-Path $stableCert)) {
-    Write-Log 'WARN: fans-cert.pem not found. Caddy may fail to start.'
-    Write-Log '      Run setup-secure-server.ps1 to generate certificates.'
-}
-
-# -- Helper: start a process with NO console window ---------------------------
+# -- Hidden process launcher --------------------------------------------------
 function Start-Hidden {
-    param(
-        [string]$Exe,
-        [string]$Args,
-        [string]$WorkDir
-    )
-    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    param([string]$Exe, [string]$Args, [string]$WorkDir)
+    $psi                  = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName         = $Exe
     $psi.Arguments        = $Args
     $psi.WorkingDirectory = $WorkDir
@@ -121,42 +74,204 @@ function Start-Hidden {
     return [System.Diagnostics.Process]::Start($psi)
 }
 
-# -- Start Waitress (no window) ------------------------------------------------
-Write-Log "Starting Waitress: $waitressExe"
-try {
-    $procWaitress = Start-Hidden `
-        -Exe     $waitressExe `
-        -Args    '--listen=127.0.0.1:8000 fans.wsgi:application' `
-        -WorkDir $projectRoot
-    Write-Log "Waitress started (PID $($procWaitress.Id))"
-    $procWaitress.Id | Set-Content (Join-Path $projectRoot '.fans-waitress.pid') -Encoding UTF8
-} catch {
-    Write-Log "FAIL: Could not start Waitress: $_"
+# =============================================================================
+# BEGIN STARTUP
+# =============================================================================
+Write-Log '============================================================'
+Write-Log "FANS-C auto-start: beginning startup sequence"
+Write-Log "Project root: $projectRoot"
+
+# -- Wait for Windows networking ----------------------------------------------
+Write-Log 'Waiting 12 seconds for Windows networking to initialize...'
+Start-Sleep -Seconds 12
+
+# -- PRE-FLIGHT: verify waitress-serve.exe ------------------------------------
+$waitressExe = Join-Path $projectRoot '.venv\Scripts\waitress-serve.exe'
+if (-not (Test-Path $waitressExe)) {
+    Write-Log 'FAIL: waitress-serve.exe not found.'
+    Write-Log "      Expected: $waitressExe"
+    Write-Log '      Fix: IT/Admin must run scripts\setup\setup-complete.ps1 first.'
+    Write-Log 'STARTUP FAILED -- system is not installed correctly'
+    Write-Log '============================================================'
     exit 1
 }
 
-# Wait for Waitress to initialize before Caddy starts accepting connections
-Write-Log 'Waiting 5 seconds for Waitress to initialize...'
-Start-Sleep -Seconds 5
+# -- PRE-FLIGHT: verify .env --------------------------------------------------
+$envFile = Join-Path $projectRoot '.env'
+if (-not (Test-Path $envFile)) {
+    Write-Log 'FAIL: .env file not found.'
+    Write-Log "      Expected: $envFile"
+    Write-Log '      Fix: IT/Admin must run scripts\setup\setup-complete.ps1 first.'
+    Write-Log 'STARTUP FAILED -- server is not configured'
+    Write-Log '============================================================'
+    exit 1
+}
 
-# -- Start Caddy (no window) ---------------------------------------------------
-if ($caddyExe) {
+# -- PRE-FLIGHT: verify TLS certificate (REQUIRED for HTTPS) ------------------
+$stableCert    = Join-Path $projectRoot 'fans-cert.pem'
+$stableCertKey = Join-Path $projectRoot 'fans-cert-key.pem'
+$certAvailable = $true
+
+if (-not (Test-Path $stableCert)) {
+    Write-Log 'FAIL: fans-cert.pem is missing.'
+    Write-Log '      Caddy cannot start without a TLS certificate.'
+    Write-Log '      HTTPS will NOT be available this session.'
+    Write-Log '      Fix: IT/Admin must run scripts\setup\setup-complete.ps1 to regenerate.'
+    $certAvailable = $false
+}
+
+if (-not (Test-Path $stableCertKey)) {
+    Write-Log 'FAIL: fans-cert-key.pem is missing.'
+    Write-Log '      Caddy cannot start without the private key.'
+    Write-Log '      HTTPS will NOT be available this session.'
+    Write-Log '      Fix: IT/Admin must run scripts\setup\setup-complete.ps1 to regenerate.'
+    $certAvailable = $false
+}
+
+# -- PRE-FLIGHT: locate caddy.exe ---------------------------------------------
+$caddyExe = $null
+
+foreach ($candidate in @(
+    (Join-Path $projectRoot 'tools\caddy.exe'),
+    (Join-Path $projectRoot 'tools\caddy.exe.exe')
+)) {
+    if (Test-Path $candidate) { $caddyExe = $candidate; break }
+}
+
+if (-not $caddyExe) {
+    try {
+        $found    = Get-Command caddy -ErrorAction Stop
+        $caddyExe = $found.Source
+    } catch { }
+}
+
+if (-not $caddyExe -and (Test-Path 'D:\Tools\caddy.exe')) {
+    $caddyExe = 'D:\Tools\caddy.exe'
+}
+
+if (-not $caddyExe) {
+    Write-Log 'FAIL: caddy.exe not found (checked tools\, PATH, D:\Tools\).'
+    Write-Log '      HTTPS will NOT be available this session.'
+    Write-Log '      Fix: place caddy.exe in the project tools\ folder.'
+}
+
+# -- START WAITRESS (no window) -----------------------------------------------
+Write-Log "Starting Waitress: $waitressExe"
+
+$wProc = $null
+try {
+    $wProc = Start-Hidden `
+        -Exe     $waitressExe `
+        -Args    '--listen=127.0.0.1:8000 fans.wsgi:application' `
+        -WorkDir $projectRoot
+    $wProc.Id | Set-Content (Join-Path $projectRoot '.fans-waitress.pid') -Encoding UTF8
+    Write-Log "Waitress launched (PID $($wProc.Id)). Waiting 6 seconds for Django to load..."
+} catch {
+    Write-Log "FAIL: Could not launch Waitress: $_"
+    Write-Log 'STARTUP FAILED -- Waitress did not start'
+    Write-Log '============================================================'
+    exit 1
+}
+
+Start-Sleep -Seconds 6
+
+# -- START CADDY (no window, only if cert exists and caddy found) -------------
+$cProc = $null
+
+if ($caddyExe -and $certAvailable) {
     Write-Log "Starting Caddy: $caddyExe"
     try {
-        $procCaddy = Start-Hidden `
+        $cProc = Start-Hidden `
             -Exe     $caddyExe `
             -Args    'run --config Caddyfile' `
             -WorkDir $projectRoot
-        Write-Log "Caddy started (PID $($procCaddy.Id))"
-        $procCaddy.Id | Set-Content (Join-Path $projectRoot '.fans-caddy.pid') -Encoding UTF8
+        $cProc.Id | Set-Content (Join-Path $projectRoot '.fans-caddy.pid') -Encoding UTF8
+        Write-Log "Caddy launched (PID $($cProc.Id)). Waiting 8 seconds for HTTPS to bind..."
     } catch {
-        Write-Log "FAIL: Could not start Caddy: $_"
-        Write-Log '      Waitress is still running. Direct HTTP access works.'
+        Write-Log "FAIL: Could not launch Caddy: $_"
+        Write-Log '      Waitress is still running. HTTP fallback is available.'
         Write-Log '      HTTPS will NOT be available until Caddy is fixed.'
     }
+    Start-Sleep -Seconds 8
+} elseif (-not $certAvailable) {
+    Write-Log 'SKIP: Caddy not started -- TLS certificate is missing (see FAIL above).'
+    Write-Log '      Waitress will still run. HTTP access at port 8000 is available.'
+    Write-Log '      To restore HTTPS: IT/Admin must re-run setup-complete.ps1 and reboot.'
 } else {
-    Write-Log 'SKIP: Caddy not found — skipping HTTPS proxy startup.'
+    Write-Log 'SKIP: Caddy not started -- caddy.exe not found.'
+    Write-Log '      Waitress will still run. HTTP access at port 8000 is available.'
 }
 
-Write-Log 'Startup sequence complete.'
+# =============================================================================
+# VERIFY PORTS ARE ACTUALLY LISTENING
+# =============================================================================
+Write-Log 'Verifying services are actually listening...'
+
+# -- Check port 8000 (Waitress) -----------------------------------------------
+$port8000OK = Test-PortListening -Port 8000 -Retries 6 -DelayMs 1000
+
+if ($port8000OK) {
+    Write-Log 'CHECK port 8000 (Waitress)  : LISTENING -- OK'
+} else {
+    Write-Log 'CHECK port 8000 (Waitress)  : NOT RESPONDING -- FAIL'
+    Write-Log '      The Django application did not start correctly.'
+    Write-Log '      Possible causes:'
+    Write-Log '        - .env EMBEDDING_ENCRYPTION_KEY is missing or invalid'
+    Write-Log '        - Database migrations have not been applied (manage.py migrate)'
+    Write-Log '        - Python import error during Django startup'
+    Write-Log '      For details: ask IT/Admin to run scripts\start\start-fans.bat'
+    Write-Log '                   (shows Waitress error output in a visible window)'
+}
+
+# -- Check port 443 (Caddy) ---------------------------------------------------
+$port443OK = $false
+
+if ($cProc) {
+    if ($cProc.HasExited) {
+        Write-Log "CHECK port 443  (Caddy)     : PROCESS EXITED (code $($cProc.ExitCode)) -- FAIL"
+        Write-Log '      Caddy crashed immediately after launch.'
+        Write-Log '      Possible causes:'
+        Write-Log '        - fans-cert.pem referenced incorrectly in Caddyfile'
+        Write-Log '        - Caddyfile syntax error'
+        Write-Log '        - Port 443 already in use by another process'
+        Write-Log '      For details: ask IT/Admin to run scripts\start\start-fans.bat'
+    } else {
+        $port443OK = Test-PortListening -Port 443 -Retries 6 -DelayMs 1000
+        if ($port443OK) {
+            Write-Log 'CHECK port 443  (Caddy)     : LISTENING -- OK'
+        } else {
+            Write-Log 'CHECK port 443  (Caddy)     : NOT RESPONDING -- FAIL'
+            Write-Log '      Caddy process is running but port 443 is not accepting connections.'
+            Write-Log '      Possible causes:'
+            Write-Log '        - fans-cert.pem path in Caddyfile does not match actual file location'
+            Write-Log '        - Windows Firewall blocking port 443'
+            Write-Log '        - Caddyfile TLS configuration error'
+            Write-Log '      For details: ask IT/Admin to run scripts\start\start-fans.bat'
+        }
+    }
+} else {
+    Write-Log 'CHECK port 443  (Caddy)     : SKIPPED (Caddy not started)'
+    Write-Log '      HTTPS is unavailable. HTTP fallback (port 8000) may still work.'
+}
+
+# =============================================================================
+# STARTUP STATUS SUMMARY
+# =============================================================================
+if ($port8000OK -and $port443OK) {
+    Write-Log 'STARTUP STATUS: OK -- Waitress (8000) and Caddy (443) are ready'
+    Write-Log '                System is accessible at https://fans-barangay.local'
+} elseif ($port8000OK -and -not $cProc) {
+    Write-Log 'STARTUP STATUS: PARTIAL -- Waitress OK, Caddy not started (missing cert or exe)'
+    Write-Log '                HTTPS is unavailable. IT/Admin action required.'
+} elseif ($port8000OK) {
+    Write-Log 'STARTUP STATUS: PARTIAL -- Waitress OK, but Caddy (port 443) failed'
+    Write-Log '                HTTPS is unavailable. IT/Admin action required.'
+    Write-Log '                Run scripts\start\start-fans.bat to see Caddy error details.'
+} else {
+    Write-Log 'STARTUP STATUS: FAILED -- Waitress (port 8000) did not respond'
+    Write-Log '                System is NOT accessible from any browser.'
+    Write-Log '                IT/Admin must investigate immediately.'
+    Write-Log '                Run scripts\start\start-fans.bat to see error details.'
+}
+
 Write-Log '============================================================'

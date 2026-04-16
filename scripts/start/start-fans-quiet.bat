@@ -1,24 +1,25 @@
 @echo off
 :: ============================================================
-::  FANS-C Daily Launcher  (recommended for normal daily use)
-::  ─────────────────────────────────────────────────────────
+::  FANS-C Daily Launcher  (recommended for manual daily use)
+::  ----------------------------------------------------------
 ::  Starts the verification system with both services running
-::  minimized in the background.  Only this window is visible
-::  while starting up, then you can close it.
+::  minimized in the background.  This window shows startup
+::  status and port verification.  Close it when done.
 ::
 ::  FOR DEBUGGING (full visible windows): use start-fans.bat
 ::
 ::  HOW TO USE:
-::    Double-click this file — or use the desktop shortcut.
+::    Double-click this file -- or use the desktop shortcut.
 ::    Keep the system running as long as staff need access.
 ::    To stop: run scripts\admin\stop-fans.ps1
 ::
-::  FIRST-TIME SETUP:  Run scripts\setup\setup-secure-server.ps1 first.
+::  FIRST-TIME SETUP:  Run scripts\setup\setup-complete.ps1
 ::  DESKTOP SHORTCUT:  Run scripts\setup\Create-Desktop-Shortcut.ps1 once.
+::  AUTO-START:        Run scripts\setup\setup-autostart.ps1 once (recommended).
 :: ============================================================
 
 title FANS-C Verification System
-mode con cols=68 lines=32
+mode con cols=68 lines=38
 
 :: ----------------------------------------------------------
 :: Compute project root (two levels up: scripts\start\ -> root)
@@ -35,79 +36,79 @@ echo   Starting up...
 echo  ================================================================
 echo.
 
-:: ── Pre-flight checks ─────────────────────────────────────────────
+:: ============================================================
+:: PRE-FLIGHT CHECKS
+:: ============================================================
 
-if not exist ".venv\Scripts\waitress-serve.exe" (
+:: Check .venv
+if not exist "%PROJECT_ROOT%\.venv\Scripts\waitress-serve.exe" (
+    echo  [FAIL] System setup is not complete.
     echo.
-    echo  ERROR: System setup is not complete.
+    echo         waitress-serve.exe was not found.
     echo.
-    echo  Please ask your IT administrator to run
-    echo  scripts\setup\setup-secure-server.ps1 before using this launcher.
+    echo         IT/Admin action required:
+    echo           Run scripts\setup\setup-complete.ps1 before using this launcher.
     echo.
     pause
     exit /b 1
 )
 
-if not exist ".env" (
+:: Check .env
+if not exist "%PROJECT_ROOT%\.env" (
+    echo  [FAIL] Configuration file (.env) is missing.
     echo.
-    echo  ERROR: Configuration file is missing.
-    echo.
-    echo  Please ask your IT administrator to complete
-    echo  the server configuration before starting.
-    echo.
-    pause
-    exit /b 1
-)
-
-if not exist "Caddyfile" (
-    echo.
-    echo  ERROR: This launcher must be run from the FANS-C project folder.
-    echo.
-    echo  Please do not move this file to another location.
-    echo  Use the desktop shortcut created by scripts\setup\Create-Desktop-Shortcut.ps1.
+    echo         IT/Admin action required:
+    echo           Run scripts\setup\setup-complete.ps1 to complete configuration.
     echo.
     pause
     exit /b 1
 )
 
-:: -- Migrate old mkcert cert filenames to the stable name (one-time) --------
-if not exist "fans-cert.pem" (
-    for %%F in ("fans-barangay.local+*.pem") do (
-        if not "%%~nxF"=="fans-cert.pem" (
-            echo  NOTE: Migrating certificate to stable filename...
-            copy "%%F" "fans-cert.pem" >nul
-        )
-    )
-)
-if not exist "fans-cert-key.pem" (
-    for %%F in ("fans-barangay.local+*-key.pem") do (
-        copy "%%F" "fans-cert-key.pem" >nul
-    )
-)
-
-if not exist "fans-cert.pem" (
-    echo  NOTE: HTTPS certificate not found.
-    echo        The secure connection may not work correctly.
-    echo        Contact your IT administrator to run scripts\setup\setup-secure-server.ps1.
+:: Check Caddyfile
+if not exist "%PROJECT_ROOT%\Caddyfile" (
+    echo  [FAIL] Caddyfile not found in the project root.
     echo.
+    echo         Do not move this launcher to another folder.
+    echo         Use the desktop shortcut created by Create-Desktop-Shortcut.ps1.
+    echo.
+    pause
+    exit /b 1
 )
 
-echo  All checks passed.  Starting services...
+:: Check TLS certificate -- REQUIRED for HTTPS, hard fail if missing
+if not exist "%PROJECT_ROOT%\fans-cert.pem" (
+    echo  [FAIL] TLS certificate not found: fans-cert.pem
+    echo.
+    echo         HTTPS cannot start without a valid certificate.
+    echo         The system will NOT be accessible at https://fans-barangay.local.
+    echo.
+    echo         IT/Admin action required:
+    echo           Run scripts\setup\setup-complete.ps1
+    echo           This will regenerate the certificate and verify the full setup.
+    echo.
+    pause
+    exit /b 1
+)
+
+if not exist "%PROJECT_ROOT%\fans-cert-key.pem" (
+    echo  [FAIL] TLS private key not found: fans-cert-key.pem
+    echo.
+    echo         HTTPS cannot start without the private key.
+    echo.
+    echo         IT/Admin action required:
+    echo           Run scripts\setup\setup-complete.ps1 to regenerate the certificate.
+    echo.
+    pause
+    exit /b 1
+)
+
+echo  [OK]  Pre-flight checks passed.
 echo.
 
-:: ── Start Waitress minimized ──────────────────────────────────────
+:: ============================================================
+:: LOCATE CADDY
+:: ============================================================
 
-echo  [1/2] Starting application server...
-start /MIN "FANS-C Waitress" cmd /k "cd /d "%PROJECT_ROOT%" && "%PROJECT_ROOT%\.venv\Scripts\waitress-serve.exe" --listen=127.0.0.1:8000 fans.wsgi:application"
-
-:: Wait for Waitress to initialize before Caddy starts
-timeout /t 4 /nobreak >nul
-
-:: ── Start Caddy minimized ─────────────────────────────────────────
-
-echo  [2/2] Starting HTTPS service...
-
-:: Locate caddy.exe: bundled (tools\caddy.exe) -> D:\Tools\caddy.exe -> PATH
 set "CADDY_EXE="
 
 if exist "%PROJECT_ROOT%\tools\caddy.exe" (
@@ -124,19 +125,116 @@ if exist "%PROJECT_ROOT%\tools\caddy.exe" (
 )
 
 if not defined CADDY_EXE (
+    echo  [FAIL] Caddy not found.
     echo.
-    echo  ERROR: HTTPS service component (Caddy) could not be found.
+    echo         caddy.exe must be placed in the project's tools\ folder.
     echo.
-    echo  Please contact your IT administrator.
-    echo  Caddy must be placed in the project's tools\ folder.
+    echo         Checked:
+    echo           - %PROJECT_ROOT%\tools\caddy.exe
+    echo           - D:\Tools\caddy.exe
+    echo           - System PATH
+    echo.
+    echo         IT/Admin action required:
+    echo           Download caddy.exe from https://caddyserver.com/docs/install
+    echo           Place it in: %PROJECT_ROOT%\tools\caddy.exe
     echo.
     pause
     exit /b 1
 )
 
-start /MIN "FANS-C Caddy" cmd /k "cd /d "%PROJECT_ROOT%" && "%CADDY_EXE%" run --config Caddyfile"
+:: ============================================================
+:: START SERVICES (MINIMIZED)
+:: ============================================================
 
-:: ── Detect LAN IP ─────────────────────────────────────────────────
+echo  [1/2] Starting application server (Waitress)...
+start /MIN "FANS-C Waitress" "%PROJECT_ROOT%\.venv\Scripts\waitress-serve.exe" --listen=127.0.0.1:8000 fans.wsgi:application
+
+echo  [..] Waiting 6 seconds for Django to load...
+timeout /t 6 /nobreak >nul
+
+echo  [2/2] Starting HTTPS service (Caddy)...
+start /MIN "FANS-C Caddy" "%CADDY_EXE%" run --config "%PROJECT_ROOT%\Caddyfile"
+
+echo  [..] Waiting 8 seconds for HTTPS to bind...
+timeout /t 8 /nobreak >nul
+
+:: ============================================================
+:: PORT VERIFICATION -- confirm services are actually listening
+:: ============================================================
+
+echo.
+echo  Verifying services...
+echo.
+
+:: Check port 8000 (Waitress)
+set "PORT_8000=FAIL"
+netstat -an 2>nul | findstr ":8000" | findstr "LISTENING" >nul 2>&1
+if not errorlevel 1 set "PORT_8000=OK"
+
+:: Check port 443 (Caddy)
+set "PORT_443=FAIL"
+netstat -an 2>nul | findstr ":443" | findstr "LISTENING" >nul 2>&1
+if not errorlevel 1 set "PORT_443=OK"
+
+if "%PORT_8000%"=="OK" (
+    echo  [OK]   Port 8000  ^(Waitress app server^)  -- LISTENING
+) else (
+    echo  [FAIL] Port 8000  ^(Waitress app server^)  -- NOT RESPONDING
+)
+
+if "%PORT_443%"=="OK" (
+    echo  [OK]   Port 443   ^(Caddy HTTPS^)          -- LISTENING
+) else (
+    echo  [FAIL] Port 443   ^(Caddy HTTPS^)          -- NOT RESPONDING
+)
+
+echo.
+
+:: ============================================================
+:: RESULT + DIAGNOSTIC MESSAGES
+:: ============================================================
+
+if "%PORT_8000%"=="FAIL" (
+    echo  ================================================================
+    echo   WARNING: Application server did not start correctly.
+    echo.
+    echo   The system may not be accessible from any browser.
+    echo.
+    echo   Probable causes:
+    echo     - .env missing EMBEDDING_ENCRYPTION_KEY
+    echo     - Django startup error ^(import error, missing migration^)
+    echo.
+    echo   For details: close this window and run start-fans.bat instead.
+    echo   That shows full error output in a visible window.
+    echo  ================================================================
+    echo.
+    pause
+    exit /b 1
+)
+
+if "%PORT_443%"=="FAIL" (
+    echo  ================================================================
+    echo   WARNING: HTTPS service did not start correctly.
+    echo.
+    echo   The system may NOT be accessible at https://fans-barangay.local.
+    echo   The application server ^(port 8000^) is running.
+    echo.
+    echo   Probable causes:
+    echo     - Caddyfile configuration error ^(TLS cert path wrong?^)
+    echo     - Port 443 already in use by another process
+    echo     - Windows Firewall blocking port 443
+    echo.
+    echo   For details: close this window and run start-fans.bat instead.
+    echo   The Caddy window will show the exact error message.
+    echo  ================================================================
+    echo.
+    pause
+    exit /b 1
+)
+
+:: ============================================================
+:: DETECT LAN IP FOR STATUS DISPLAY
+:: ============================================================
 
 set "LAN_IP="
 for /f "tokens=2 delims=:" %%A in ('ipconfig ^| findstr /i "IPv4 Address"') do (
@@ -145,11 +243,12 @@ for /f "tokens=2 delims=:" %%A in ('ipconfig ^| findstr /i "IPv4 Address"') do (
     )
 )
 
-:: ── Status display ────────────────────────────────────────────────
+:: ============================================================
+:: SUCCESS STATUS DISPLAY
+:: ============================================================
 
-echo.
 echo  ================================================================
-echo   FANS-C is running.  Staff can now open the system.
+echo   FANS-C is running.  Both services verified.
 echo.
 echo   OPEN THIS ADDRESS IN THE BROWSER:
 echo     https://fans-barangay.local
@@ -158,18 +257,21 @@ echo.
 echo   BACKUP ADDRESS (if browser shows a security warning):
 if defined LAN_IP (
 echo     http://%LAN_IP%:8000
-echo     (Camera disabled -- for troubleshooting only)
+echo     Camera disabled -- for troubleshooting only
 ) else (
 echo     Not available -- connect this PC to the network first.
 )
 echo.
 echo   Both services are running minimized in the taskbar.
-echo   Do NOT close those taskbar windows while staff are using the system.
+echo   Do NOT close those taskbar windows while staff use the system.
 echo.
 echo   TO SHUT DOWN:
-echo     Run:  scripts\admin\stop-fans.ps1
+echo     Run: scripts\admin\stop-fans.ps1
 echo     Or close "FANS-C Waitress" and "FANS-C Caddy" in the taskbar.
+echo.
+echo   HEALTH CHECK (IT/Admin):
+echo     Run: scripts\admin\check-system-health.ps1
 echo  ================================================================
 echo.
-echo  You may close this window.  The system will keep running.
+echo  You may close this window. The system will keep running.
 pause >nul

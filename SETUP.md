@@ -6,23 +6,26 @@
 
 ---
 
-## Quick Setup
+## Quick Setup — Barangay Server (IT/Admin)
 
-For a developer on a fresh Windows laptop. Follow these steps in order.
+> **This is the recommended IT/Admin setup path.** Run `setup-complete.ps1` once on the server machine. It orchestrates every required step, verifies the result of each one, and confirms the system is actually serving before declaring success.
 
 ### Prerequisites
 
-Before you begin, make sure you have installed:
+Before running setup, ensure:
 
-- **Python 3.11** — required (TensorFlow does not support 3.12 or 3.13)
+- **Python 3.11** is installed (TensorFlow does not support 3.12 or 3.13)
   Download: https://www.python.org/downloads/release/python-3119/
   During install, check **"Add Python to PATH"**
-- **Git** — for cloning (or use GitHub Desktop)
+- **caddy.exe** is placed in `tools\caddy.exe` — download from https://caddyserver.com/docs/install
+- **mkcert.exe** is placed in `tools\mkcert\mkcert.exe` — download from https://github.com/FiloSottile/mkcert/releases
 
 Confirm Python 3.11 is installed:
 ```powershell
 py -3.11 --version
 ```
+
+> Tip: Keep the project at a short path like `D:\FANS`. Windows has a 260-character path limit that causes TensorFlow installs to fail on long paths.
 
 ### Step 1 — Clone the repo
 
@@ -34,39 +37,104 @@ git clone <repo-url> D:\FANS
 cd D:\FANS
 ```
 
-> Tip: Keep the project at a short path like `D:\FANS`. Windows has a 260-character path limit that causes TensorFlow installs to fail on long paths.
+### Step 2 — Run the master setup (recommended)
 
-### Step 2 — Run setup
-
-The project includes a setup script that does everything automatically:
+Right-click `scripts\setup\setup-complete.ps1` and choose **Run with PowerShell** (as Admin), or:
 
 ```powershell
 cd D:\FANS
-.\scripts\setup\setup-secure-server.ps1
+.\scripts\setup\setup-complete.ps1
 ```
 
-This will:
-- Create a Python virtual environment (`.venv`)
-- Install all dependencies (including TensorFlow — takes 5–15 minutes on first run)
-- Create a `.env` file from the example
-- Auto-generate `SECRET_KEY` and `EMBEDDING_ENCRYPTION_KEY`
-- Generate TLS certificates with mkcert
-- Run database migrations
-- Add a Windows Firewall rule for HTTPS (port 443)
-- Prompt you to create the admin account
+This single script runs every required setup step in order:
+
+1. Runs `setup-secure-server.ps1` — creates `.venv`, installs dependencies, generates TLS certs, runs Django migrations
+2. Verifies `fans-cert.pem` and `fans-cert-key.pem` exist
+3. Verifies `caddy.exe` is found
+4. Verifies `.env` has `SECRET_KEY` and `EMBEDDING_ENCRYPTION_KEY`
+5. Runs `setup-autostart.ps1` — registers the Task Scheduler task for automatic startup at boot
+6. Optionally creates a desktop shortcut
+7. Runs a **live startup validation** — starts services and confirms ports 8000 and 443 are actually listening
+
+At the end, prints a clear PASS / FAIL summary for every step.
 
 > If you get an error about execution policy, run this first:
 > `Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned`
 
-### Step 3 — Enable auto-start (optional but recommended)
+> **Re-running setup:** Pass `-SkipDeps` to skip the long pip install when `.venv` already exists:
+> `.\scripts\setup\setup-complete.ps1 -SkipDeps`
 
-```powershell
-.\scripts\setup\setup-autostart.ps1
+### Step 3 — Edit .env (required for production)
+
+After setup completes, open `.env` and set:
+
+```
+ALLOWED_HOSTS=fans-barangay.local,192.168.1.77,localhost,127.0.0.1
+CSRF_TRUSTED_ORIGINS=https://fans-barangay.local
+DEBUG=False
 ```
 
-This registers a Windows Task Scheduler task that starts FANS-C automatically at every boot (no login required).
+Replace `192.168.1.77` with your server's actual LAN IP (shown during setup).
 
-### Step 4 — Start the server (development / manual)
+### Step 4 — Set up client devices
+
+Copy the `CLIENT-SETUP\` folder to a USB drive. On each client PC, run:
+
+```
+CLIENT-SETUP\trust-local-cert.bat
+```
+
+(as Administrator — double-click and approve the UAC prompt)
+
+### Step 5 — Daily use
+
+After setup is complete, the Head Barangay workflow is:
+
+1. Turn on the PC
+2. Wait about 30 seconds for the system to start automatically
+3. Open any browser
+4. Go to `https://fans-barangay.local`
+5. Log in normally
+
+No scripts, no terminal, no troubleshooting for daily use.
+
+---
+
+## Script Reference
+
+| Script | Who runs it | When |
+|---|---|---|
+| `scripts\setup\setup-complete.ps1` | IT/Admin | **Once** — recommended master setup entry point |
+| `scripts\setup\setup-secure-server.ps1` | IT/Admin | Once (called by setup-complete, or standalone) |
+| `scripts\setup\setup-autostart.ps1` | IT/Admin | Once (called by setup-complete, or standalone) |
+| `scripts\setup\Create-Desktop-Shortcut.ps1` | IT/Admin | Optional, once |
+| `CLIENT-SETUP\trust-local-cert.bat` | IT/Admin | Once per client device |
+| `scripts\admin\stop-fans.ps1` | IT/Admin | To stop services for maintenance |
+| `scripts\admin\check-system-health.ps1` | IT/Admin | Diagnostics — anytime |
+| `scripts\start\start-fans-quiet.bat` | IT/Admin | Manual start (if auto-start not configured) |
+| `scripts\start\start-fans.bat` | IT/Admin | Debug start (visible windows, full output) |
+| `scripts\start\start-fans-hidden.ps1` | Task Scheduler | Called automatically at boot — never run manually |
+
+---
+
+## Quick Setup — Developer
+
+For a developer on a fresh Windows laptop running the app locally:
+
+### Step 1 — Clone
+
+```powershell
+git clone <repo-url> D:\FANS
+cd D:\FANS
+```
+
+### Step 2 — Run setup
+
+```powershell
+.\scripts\setup\setup-secure-server.ps1
+```
+
+### Step 3 — Start the server
 
 For a visible debug start (shows all output):
 ```powershell
@@ -84,11 +152,11 @@ Or manually:
 python manage.py runserver
 ```
 
-### Step 5 — Open the app
+### Step 4 — Open the app
 
 Go to: https://fans-barangay.local (production) or http://127.0.0.1:8000/ (dev)
 
-Log in with the admin account you created in Step 2.
+Log in with the admin account you created during setup.
 
 ---
 
@@ -292,21 +360,27 @@ The project does **not** need to be reinstalled after every reboot. The `.venv`,
 
 ### Option 1 — Auto-start via Task Scheduler (recommended)
 
-Run this once to register a startup task:
+If you ran `setup-complete.ps1`, the Task Scheduler task is already registered. The system starts automatically at every boot — no scripts, no windows, no IT visits required.
 
+To verify the task is registered:
+```powershell
+.\scripts\admin\check-system-health.ps1
+```
+
+To register the task manually (if not already done):
 ```powershell
 .\scripts\setup\setup-autostart.ps1
 ```
 
-After this, the system starts automatically at every boot — no scripts, no windows, no IT visits required.
+### Option 2 — Double-click startup (manual, with verification)
 
-### Option 2 — Double-click startup (manual)
-
-For normal daily use (minimized background, status window while starting):
+For normal manual start (minimized background, verifies ports after startup):
 
 ```
 scripts\start\start-fans-quiet.bat
 ```
+
+This now verifies that ports 8000 and 443 are actually listening before reporting success.
 
 For debugging (all server windows visible, full output):
 
@@ -314,16 +388,7 @@ For debugging (all server windows visible, full output):
 scripts\start\start-fans.bat
 ```
 
-### Option 3 — PowerShell startup (with pre-flight checks)
-
-```powershell
-cd D:\FANS
-.\scripts\start\start-fans-production.ps1
-```
-
-This checks for `.venv`, `.env`, the encryption key, Caddyfile, TLS certificates, and caddy before starting anything.
-
-### Option 4 — Desktop shortcut
+### Option 3 — Desktop shortcut
 
 Run once to create a branded shortcut on the Desktop:
 
@@ -333,7 +398,7 @@ Run once to create a branded shortcut on the Desktop:
 
 The shortcut points to `scripts\start\start-fans-quiet.bat` with the correct working directory.
 
-### Manual startup
+### Option 4 — Manual startup
 
 If you prefer to start manually each time:
 
@@ -349,6 +414,16 @@ waitress-serve --listen=127.0.0.1:8000 fans.wsgi:application
 cd D:\FANS
 caddy run --config Caddyfile
 ```
+
+### Diagnosing startup problems
+
+If the browser shows `ERR_CONNECTION_REFUSED` or `This site can't be reached`:
+
+```powershell
+.\scripts\admin\check-system-health.ps1
+```
+
+This reports which services are running, which ports are listening, whether certs are present, and shows the last startup log — without changing anything.
 
 ---
 

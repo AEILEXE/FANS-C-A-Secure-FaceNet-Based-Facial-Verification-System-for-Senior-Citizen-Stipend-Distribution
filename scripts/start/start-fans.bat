@@ -39,7 +39,7 @@ echo.
 :: ----------------------------------------------------------
 :: Pre-flight checks
 :: ----------------------------------------------------------
-if not exist ".venv\Scripts\waitress-serve.exe" (
+if not exist "%PROJECT_ROOT%\.venv\Scripts\waitress-serve.exe" (
     echo  [FAIL] .venv\Scripts\waitress-serve.exe not found.
     echo.
     echo         Make sure you have already run:
@@ -49,14 +49,14 @@ if not exist ".venv\Scripts\waitress-serve.exe" (
     exit /b 1
 )
 
-if not exist "Caddyfile" (
+if not exist "%PROJECT_ROOT%\Caddyfile" (
     echo  [FAIL] Caddyfile not found in project root.
     echo.
     pause
     exit /b 1
 )
 
-if not exist ".env" (
+if not exist "%PROJECT_ROOT%\.env" (
     echo  [FAIL] .env file not found.
     echo.
     echo         Copy .env.example to .env and fill in your values,
@@ -66,7 +66,7 @@ if not exist ".env" (
     exit /b 1
 )
 
-if not exist "fans-cert.pem" (
+if not exist "%PROJECT_ROOT%\fans-cert.pem" (
     echo  [WARN] TLS certificate not found: fans-cert.pem
     echo.
     echo         Caddy may fail to start.
@@ -83,7 +83,7 @@ echo.
 echo  [1/2] Starting Waitress (Django WSGI server)...
 echo        This serves the FANS-C application on 127.0.0.1:8000
 echo.
-start "FANS-C Waitress" cmd /k "cd /d "%PROJECT_ROOT%" && "%PROJECT_ROOT%\.venv\Scripts\waitress-serve.exe" --host=0.0.0.0 --port=8000 fans.wsgi:application"
+start "FANS-C Waitress" "%PROJECT_ROOT%\.venv\Scripts\waitress-serve.exe" --host=0.0.0.0 --port=8000 fans.wsgi:application
 
 :: Wait a few seconds for Waitress to initialize before Caddy starts
 echo  [..] Waiting 4 seconds for Waitress to initialize...
@@ -96,31 +96,22 @@ echo  [2/2] Starting Caddy (HTTPS reverse proxy)...
 echo        This handles HTTPS on port 443 and forwards to Waitress.
 echo.
 
-:: Locate caddy.exe: bundled (tools\caddy.exe) -> D:\Tools\caddy.exe -> PATH
+:: Locate caddy.exe: tools\caddy.exe -> D:\Tools\caddy.exe -> PATH
 set "CADDY_EXE="
-
-if exist "%PROJECT_ROOT%\tools\caddy.exe" (
-    set "CADDY_EXE=%PROJECT_ROOT%\tools\caddy.exe"
-    echo  [OK]  Caddy found (bundled): %PROJECT_ROOT%\tools\caddy.exe
-) else (
-    if exist "D:\Tools\caddy.exe" (
-        set "CADDY_EXE=D:\Tools\caddy.exe"
-        echo  [OK]  Caddy found (D:\Tools): D:\Tools\caddy.exe
-    ) else (
-        where caddy >nul 2>&1
-        if not errorlevel 1 (
-            for /f "delims=" %%C in ('where caddy') do if not defined CADDY_EXE set "CADDY_EXE=%%C"
-            echo  [OK]  Caddy found on PATH: %CADDY_EXE%
-        )
-    )
+if exist "%PROJECT_ROOT%\tools\caddy.exe" set "CADDY_EXE=%PROJECT_ROOT%\tools\caddy.exe"
+if not defined CADDY_EXE if exist "D:\Tools\caddy.exe" set "CADDY_EXE=D:\Tools\caddy.exe"
+if not defined CADDY_EXE (
+    where caddy >nul 2>&1
+    if not errorlevel 1 for /f "delims=" %%C in ('where caddy') do if not defined CADDY_EXE set "CADDY_EXE=%%C"
 )
+if defined CADDY_EXE echo  [OK]  Caddy found: "%CADDY_EXE%"
 
 if not defined CADDY_EXE (
     echo  [FAIL] caddy.exe not found.
     echo.
     echo         Checked:
-    echo           - %PROJECT_ROOT%\tools\caddy.exe  (bundled)
-    echo           - D:\Tools\caddy.exe              (custom path)
+    echo           - %PROJECT_ROOT%\tools\caddy.exe
+    echo           - D:\Tools\caddy.exe
     echo           - System PATH
     echo.
     echo         Place caddy.exe in the project's tools\ folder for automatic detection.
@@ -130,7 +121,7 @@ if not defined CADDY_EXE (
     exit /b 1
 )
 
-start "FANS-C Caddy" cmd /k "title FANS-C Caddy && echo. && echo   FANS-C Caddy - HTTPS Reverse Proxy && echo   DO NOT CLOSE THIS WINDOW while the system is in use. && echo. && cd /d "%PROJECT_ROOT%" && "%CADDY_EXE%" run --config Caddyfile"
+start "FANS-C Caddy" "%CADDY_EXE%" run --config "%PROJECT_ROOT%\Caddyfile"
 
 :: ----------------------------------------------------------
 :: Detect LAN IP (for staff connection guidance)
@@ -158,7 +149,7 @@ if defined LAN_IP (
 echo     http://%LAN_IP%:8000
 echo     Works immediately - no hosts file - camera disabled
 ) else (
-echo     (LAN IP not detected -- connect server to the network)
+echo     LAN IP not detected -- connect server to the network
 )
 echo.
 echo   Server only (this device): http://127.0.0.1:8000
