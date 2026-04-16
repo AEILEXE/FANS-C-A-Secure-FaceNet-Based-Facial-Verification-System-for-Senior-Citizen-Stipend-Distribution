@@ -55,6 +55,7 @@ This single script runs every required setup step in order:
 5. Runs `setup-autostart.ps1` — registers the Task Scheduler task for automatic startup at boot
 6. Optionally creates a desktop shortcut
 7. Runs a **live startup validation** — starts services and confirms ports 8000 and 443 are actually listening
+8. Registers the **watchdog task** — a self-healing background monitor that automatically restarts Waitress or Caddy if either stops responding during the day
 
 At the end, prints a clear PASS / FAIL summary for every step.
 
@@ -98,6 +99,8 @@ After setup is complete, the Head Barangay workflow is:
 
 No scripts, no terminal, no troubleshooting for daily use.
 
+The system is now **self-healing**: if Waitress or Caddy stops responding during the day, the watchdog detects it within 45 seconds and restarts the failed service automatically. The Head Barangay does not need to do anything.
+
 ---
 
 ## Script Reference
@@ -111,6 +114,7 @@ No scripts, no terminal, no troubleshooting for daily use.
 | `CLIENT-SETUP\trust-local-cert.bat` | IT/Admin | Once per client device |
 | `scripts\admin\stop-fans.ps1` | IT/Admin | To stop services for maintenance |
 | `scripts\admin\check-system-health.ps1` | IT/Admin | Diagnostics — anytime |
+| `scripts\admin\watchdog.ps1` | Task Scheduler | Called automatically 90s after boot — never run manually |
 | `scripts\start\start-fans-quiet.bat` | IT/Admin | Manual start (if auto-start not configured) |
 | `scripts\start\start-fans.bat` | IT/Admin | Debug start (visible windows, full output) |
 | `scripts\start\start-fans-hidden.ps1` | Task Scheduler | Called automatically at boot — never run manually |
@@ -423,7 +427,70 @@ If the browser shows `ERR_CONNECTION_REFUSED` or `This site can't be reached`:
 .\scripts\admin\check-system-health.ps1
 ```
 
-This reports which services are running, which ports are listening, whether certs are present, and shows the last startup log — without changing anything.
+This reports which services are running, which ports are listening, whether certs are present, and shows the last startup log and recent watchdog activity — without changing anything.
+
+---
+
+## Self-Healing Watchdog
+
+The watchdog is a background monitor registered automatically by `setup-complete.ps1`. It runs continuously after every boot and catches failures that startup validation cannot — problems that happen hours into the day while the system is in use.
+
+### What it does
+
+- Checks Waitress and Caddy every **45 seconds**
+- If Waitress is down: stops any stale process and starts a clean replacement
+- If Caddy is down: stops any stale process and starts a clean replacement
+- Confirms recovery by re-checking the port after restart
+
+### Safeguards
+
+| Safeguard | Detail |
+|---|---|
+| No duplicate processes | Kills any stale instance before starting a new one |
+| Pre-restart port check | If the port recovered on its own, skips the restart |
+| 60-second cooldown | Waits 60 seconds between successive restart attempts |
+| Max 3 restarts per 10 minutes | Stops trying after 3 failures in a 10-minute window |
+| ALERT on repeated failure | Logs a clear ALERT message and instructs IT/Admin to inspect |
+| Auto-reset | If services recover (e.g., IT/Admin manually fixed them), resets failure counters |
+
+### Log file
+
+```
+logs\fans-watchdog.log
+```
+
+Entries use these levels:
+
+| Level | Meaning |
+|---|---|
+| `HEALTHY` | All services OK (logged every ~7.5 minutes to reduce noise) |
+| `WARN` | A service is not responding |
+| `ACTION` | A restart is being attempted |
+| `OK` | Recovery was successful |
+| `FAIL` | Restart was attempted but service still not responding |
+| `ALERT` | Max restart attempts reached — IT/Admin inspection required |
+| `WAIT` | Cooldown period — restart deferred |
+| `SKIP` | Recovery skipped (already gave up after repeated failures) |
+
+### How to read ALERT entries
+
+If the watchdog log shows `[ALERT]` entries:
+
+1. Run `scripts\admin\check-system-health.ps1` to see current state
+2. Run `scripts\start\start-fans.bat` to see the full error output from Waitress or Caddy
+3. After fixing the underlying issue, reset the watchdog by restarting the `FANS-C Watchdog` task in Windows Task Scheduler
+
+### Task Scheduler details
+
+| Property | Value |
+|---|---|
+| Task name | `FANS-C Watchdog` |
+| Trigger | System startup + 90-second delay |
+| Account | SYSTEM (no UAC, always elevated) |
+| Window | Hidden (no visible window) |
+| Auto-restart if crashed | Yes (up to 3 times, 2-minute interval) |
+
+The 90-second delay ensures the main startup task (`FANS-C Verification System`) has fully started Waitress and Caddy before the watchdog takes its first reading.
 
 ---
 

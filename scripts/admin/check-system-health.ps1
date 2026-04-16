@@ -255,6 +255,34 @@ try {
 
 Write-Host ''
 
+# -- Watchdog task (self-healing monitor) -------------------------------------
+$watchdogTaskName = 'FANS-C Watchdog'
+try {
+    $wdTask      = Get-ScheduledTask -TaskName $watchdogTaskName -ErrorAction Stop
+    $wdState     = $wdTask.State.ToString()
+    $wdTaskOK    = ($wdTask.State -eq 'Ready' -or $wdTask.State -eq 'Running')
+    Write-Check 'Watchdog task' $true 'Found' ''
+    Write-Info  'Watchdog state' $wdState
+
+    if (-not $wdTaskOK) {
+        Write-Warn "Watchdog task state is '$wdState' (expected: Ready)."
+        Write-Warn 'Re-run scripts\setup\setup-complete.ps1 to re-register it.'
+    }
+
+    try {
+        $wdInfo = Get-ScheduledTaskInfo -TaskName $watchdogTaskName -ErrorAction Stop
+        if ($wdInfo.LastRunTime -and $wdInfo.LastRunTime -gt [DateTime]::MinValue) {
+            Write-Info 'Watchdog last run' $wdInfo.LastRunTime.ToString('yyyy-MM-dd HH:mm:ss')
+        }
+    } catch { }
+} catch {
+    Write-Check 'Watchdog task' $false '' 'NOT registered -- self-healing is disabled'
+    Write-Warn 'The watchdog is not running. Service failures will not be auto-corrected.'
+    Write-Warn 'Fix: re-run scripts\setup\setup-complete.ps1 (as Admin) to register it.'
+}
+
+Write-Host ''
+
 # =============================================================================
 # 8: RECENT STARTUP LOG
 # =============================================================================
@@ -320,6 +348,52 @@ if (-not (Test-Path $logFile)) {
 Write-Host ''
 
 # =============================================================================
+# 9: WATCHDOG LOG (recent activity)
+# =============================================================================
+Write-Host '  -- Watchdog Log (recent self-healing activity) --------------' -ForegroundColor DarkCyan
+
+$watchdogLogFile = Join-Path $projectRoot 'logs\fans-watchdog.log'
+
+if (-not (Test-Path $watchdogLogFile)) {
+    Write-Info 'Watchdog log' 'Not found (watchdog has not run yet -- check Task Scheduler)'
+} else {
+    $wdAge = (Get-Date) - (Get-Item $watchdogLogFile).LastWriteTime
+    $wdAgeStr = if ($wdAge.TotalMinutes -lt 60) {
+        "$([int]$wdAge.TotalMinutes) minutes ago"
+    } elseif ($wdAge.TotalHours -lt 24) {
+        "$([int]$wdAge.TotalHours) hours ago"
+    } else {
+        "$([int]$wdAge.TotalDays) days ago"
+    }
+    Write-Info 'Watchdog log' "Found (last entry: $wdAgeStr)"
+
+    $wdLines = Get-Content $watchdogLogFile -Encoding UTF8 -ErrorAction SilentlyContinue
+    if ($wdLines) {
+        # Show the last 15 lines of watchdog activity
+        $recentLines = $wdLines | Select-Object -Last 15
+        Write-Host ''
+        Write-Host '  Recent watchdog activity (last 15 lines):' -ForegroundColor DarkGray
+        foreach ($line in $recentLines) {
+            if ($line -match '\[ALERT\]') {
+                Write-Host "    $line" -ForegroundColor Red
+            } elseif ($line -match '\[FAIL\]') {
+                Write-Host "    $line" -ForegroundColor Red
+            } elseif ($line -match '\[WARN\]') {
+                Write-Host "    $line" -ForegroundColor Yellow
+            } elseif ($line -match '\[ACTION\]') {
+                Write-Host "    $line" -ForegroundColor Cyan
+            } elseif ($line -match '\[OK\]|\[HEALTHY\]') {
+                Write-Host "    $line" -ForegroundColor Green
+            } else {
+                Write-Host "    $line" -ForegroundColor DarkGray
+            }
+        }
+    }
+}
+
+Write-Host ''
+
+# =============================================================================
 # SUMMARY
 # =============================================================================
 Write-Host '  ================================================================' -ForegroundColor DarkCyan
@@ -352,12 +426,20 @@ if ($anyFail) {
         Write-Host '     Option A (auto-start): reboot the server PC.' -ForegroundColor DarkGray
         Write-Host '     Option B (manual):     double-click start-fans-quiet.bat.' -ForegroundColor DarkGray
         Write-Host '     Option C (debug):      run start-fans.bat to see all output.' -ForegroundColor DarkGray
+        Write-Host ''
     }
+
+    Write-Host '   Watchdog recovery history:' -ForegroundColor Yellow
+    Write-Host '     See logs\fans-watchdog.log for automatic recovery attempts.' -ForegroundColor DarkGray
+    Write-Host '     If watchdog shows repeated ALERT entries, IT/Admin inspection is required.' -ForegroundColor DarkGray
+    Write-Host '     To reset watchdog after resolving issues: restart "FANS-C Watchdog" in Task Scheduler.' -ForegroundColor DarkGray
 } else {
     Write-Host '   HEALTH: ALL CHECKS PASSED' -ForegroundColor Green
     Write-Host ''
     Write-Host '   System is running correctly.' -ForegroundColor Green
     Write-Host '   Staff can access:  https://fans-barangay.local' -ForegroundColor Cyan
+    Write-Host ''
+    Write-Host '   Watchdog is active -- services will restart automatically if they fail.' -ForegroundColor DarkGray
 }
 
 Write-Host ''

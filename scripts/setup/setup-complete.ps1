@@ -18,6 +18,7 @@
       5. Runs setup-autostart.ps1      (Task Scheduler registration)
       6. Creates desktop shortcut      (optional, prompts user)
       7. Runs live startup validation  (starts services, checks ports 8000 + 443)
+      8. Registers watchdog task       (self-healing monitor, auto-restarts on failure)
 
     At the end, prints a clear PASS / FAIL summary for every step.
 
@@ -146,13 +147,14 @@ Write-Host '  each result, and confirms the system is actually serving' -Foregro
 Write-Host '  before declaring setup complete.' -ForegroundColor White
 Write-Host ''
 Write-Host '  Steps:' -ForegroundColor DarkGray
-Write-Host '    [1/7] setup-secure-server.ps1  -- venv, deps, certs, Django' -ForegroundColor DarkGray
-Write-Host '    [2/7] Verify certificate files -- fans-cert.pem exists' -ForegroundColor DarkGray
-Write-Host '    [3/7] Verify Caddy executable  -- caddy.exe found' -ForegroundColor DarkGray
-Write-Host '    [4/7] Verify .env keys         -- SECRET_KEY + encryption key' -ForegroundColor DarkGray
-Write-Host '    [5/7] setup-autostart.ps1      -- Task Scheduler registration' -ForegroundColor DarkGray
-Write-Host '    [6/7] Desktop shortcut         -- optional' -ForegroundColor DarkGray
-Write-Host '    [7/7] Live startup validation  -- verify ports 8000 + 443' -ForegroundColor DarkGray
+Write-Host '    [1/8] setup-secure-server.ps1  -- venv, deps, certs, Django' -ForegroundColor DarkGray
+Write-Host '    [2/8] Verify certificate files -- fans-cert.pem exists' -ForegroundColor DarkGray
+Write-Host '    [3/8] Verify Caddy executable  -- caddy.exe found' -ForegroundColor DarkGray
+Write-Host '    [4/8] Verify .env keys         -- SECRET_KEY + encryption key' -ForegroundColor DarkGray
+Write-Host '    [5/8] setup-autostart.ps1      -- Task Scheduler registration' -ForegroundColor DarkGray
+Write-Host '    [6/8] Desktop shortcut         -- optional' -ForegroundColor DarkGray
+Write-Host '    [7/8] Live startup validation  -- verify ports 8000 + 443' -ForegroundColor DarkGray
+Write-Host '    [8/8] Watchdog task            -- self-healing background monitor' -ForegroundColor DarkGray
 Write-Host ''
 Write-Host "  Project: $projectRoot" -ForegroundColor DarkGray
 Write-Host "  Date   : $(Get-Date -Format 'yyyy-MM-dd HH:mm')" -ForegroundColor DarkGray
@@ -162,7 +164,7 @@ Read-Host '  Press Enter to begin setup'
 # =============================================================================
 # STEP 1 -- Run setup-secure-server.ps1
 # =============================================================================
-Write-Step '1/7' 'Running setup-secure-server.ps1 (venv, dependencies, certs, Django)...'
+Write-Step '1/8' 'Running setup-secure-server.ps1 (venv, dependencies, certs, Django)...'
 Write-Info 'This sub-script runs below. Follow its prompts.'
 Write-Info 'It will install Python packages and generate TLS certificates.'
 if ($SkipDeps) {
@@ -172,7 +174,7 @@ Write-Host ''
 
 if (-not (Test-Path $setupServerScript)) {
     Write-Fail "setup-secure-server.ps1 not found at: $setupServerScript"
-    $results['[1/7] Server Setup'] = 'FAIL -- script missing'
+    $results['[1/8] Server Setup'] = 'FAIL -- script missing'
     Read-Host '  Press Enter to exit'
     exit 1
 }
@@ -187,18 +189,18 @@ if ($proc1.ExitCode -ne 0) {
     Write-Fail "setup-secure-server.ps1 exited with code $($proc1.ExitCode)."
     Write-Fail 'Server setup did not complete successfully.'
     Write-Warn 'Review the output above, fix the reported error, then re-run this script.'
-    $results['[1/7] Server Setup'] = "FAIL (exit code $($proc1.ExitCode))"
+    $results['[1/8] Server Setup'] = "FAIL (exit code $($proc1.ExitCode))"
     Read-Host '  Press Enter to exit'
     exit 1
 }
 
 Write-OK 'setup-secure-server.ps1 completed.'
-$results['[1/7] Server Setup'] = 'PASS'
+$results['[1/8] Server Setup'] = 'PASS'
 
 # =============================================================================
 # STEP 2 -- Verify certificate files
 # =============================================================================
-Write-Step '2/7' 'Verifying TLS certificate files...'
+Write-Step '2/8' 'Verifying TLS certificate files...'
 
 $certOK = $true
 
@@ -219,7 +221,7 @@ if (Test-Path $stableCertKey) {
     $certOK = $false
 }
 
-$results['[2/7] Cert Files'] = if ($certOK) { 'PASS' } else { 'FAIL -- cert file(s) missing' }
+$results['[2/8] Cert Files'] = if ($certOK) { 'PASS' } else { 'FAIL -- cert file(s) missing' }
 
 if (-not $certOK) {
     Write-Host ''
@@ -232,19 +234,19 @@ if (-not $certOK) {
 # =============================================================================
 # STEP 3 -- Verify Caddy executable
 # =============================================================================
-Write-Step '3/7' 'Verifying Caddy executable...'
+Write-Step '3/8' 'Verifying Caddy executable...'
 
 $caddyExe = Find-CaddyExe
 if ($caddyExe) {
     Write-OK "Caddy found: $caddyExe"
-    $results['[3/7] Caddy Exe'] = 'PASS'
+    $results['[3/8] Caddy Exe'] = 'PASS'
 } else {
     Write-Fail 'caddy.exe not found.'
     Write-Warn "Expected bundled location  : $caddyBundled"
     Write-Warn 'Or place caddy.exe on PATH : C:\Windows\System32\ or similar'
     Write-Warn 'Download from              : https://caddyserver.com/docs/install'
     Write-Warn 'Place as                   : tools\caddy.exe  (recommended)'
-    $results['[3/7] Caddy Exe'] = 'FAIL -- caddy.exe not found'
+    $results['[3/8] Caddy Exe'] = 'FAIL -- caddy.exe not found'
     Read-Host '  Press Enter to exit'
     exit 1
 }
@@ -252,14 +254,14 @@ if ($caddyExe) {
 # =============================================================================
 # STEP 4 -- Verify .env configuration
 # =============================================================================
-Write-Step '4/7' 'Verifying .env configuration...'
+Write-Step '4/8' 'Verifying .env configuration...'
 
 $envOK = $true
 
 if (-not (Test-Path $envFile)) {
     Write-Fail '.env file is missing.'
     Write-Warn 'Run setup-secure-server.ps1 to create and configure it.'
-    $results['[4/7] .env Config'] = 'FAIL -- .env missing'
+    $results['[4/8] .env Config'] = 'FAIL -- .env missing'
     Read-Host '  Press Enter to exit'
     exit 1
 }
@@ -293,7 +295,7 @@ if ($envRaw -match '(?m)^DEBUG\s*=\s*True') {
     Write-OK 'DEBUG is not True (production-safe).'
 }
 
-$results['[4/7] .env Config'] = if ($envOK) { 'PASS' } else { 'FAIL -- required key(s) missing' }
+$results['[4/8] .env Config'] = if ($envOK) { 'PASS' } else { 'FAIL -- required key(s) missing' }
 
 if (-not $envOK) {
     Write-Host ''
@@ -305,14 +307,14 @@ if (-not $envOK) {
 # =============================================================================
 # STEP 5 -- Run setup-autostart.ps1
 # =============================================================================
-Write-Step '5/7' 'Running setup-autostart.ps1 (Task Scheduler registration)...'
+Write-Step '5/8' 'Running setup-autostart.ps1 (Task Scheduler registration)...'
 Write-Info 'This registers a scheduled task so FANS-C starts automatically at every boot.'
 Write-Info 'The Head Barangay will never need to start it manually.'
 Write-Host ''
 
 if (-not (Test-Path $setupAutoStart)) {
     Write-Fail "setup-autostart.ps1 not found at: $setupAutoStart"
-    $results['[5/7] Auto-Start'] = 'FAIL -- script missing'
+    $results['[5/8] Auto-Start'] = 'FAIL -- script missing'
     Read-Host '  Press Enter to exit'
     exit 1
 }
@@ -326,16 +328,16 @@ if ($proc2.ExitCode -ne 0) {
     Write-Warn "setup-autostart.ps1 exited with code $($proc2.ExitCode)."
     Write-Warn 'Auto-start may not have been registered correctly.'
     Write-Warn 'You can re-run scripts\setup\setup-autostart.ps1 separately.'
-    $results['[5/7] Auto-Start'] = "WARN (exit code $($proc2.ExitCode))"
+    $results['[5/8] Auto-Start'] = "WARN (exit code $($proc2.ExitCode))"
 } else {
     Write-OK 'Auto-start task registered.'
-    $results['[5/7] Auto-Start'] = 'PASS'
+    $results['[5/8] Auto-Start'] = 'PASS'
 }
 
 # =============================================================================
 # STEP 6 -- Create desktop shortcut (optional)
 # =============================================================================
-Write-Step '6/7' 'Desktop shortcut (optional)...'
+Write-Step '6/8' 'Desktop shortcut (optional)...'
 
 $createSC = Read-Host '  Create a desktop shortcut for the manual daily launcher? [Y/N]'
 if ($createSC -match '^[Yy]') {
@@ -346,25 +348,25 @@ if ($createSC -match '^[Yy]') {
         Write-Host ''
         if ($proc3.ExitCode -eq 0) {
             Write-OK 'Desktop shortcut created.'
-            $results['[6/7] Desktop Shortcut'] = 'PASS'
+            $results['[6/8] Desktop Shortcut'] = 'PASS'
         } else {
             Write-Warn "Shortcut script exited with code $($proc3.ExitCode)."
             Write-Warn 'Run scripts\setup\Create-Desktop-Shortcut.ps1 manually to retry.'
-            $results['[6/7] Desktop Shortcut'] = "WARN (exit code $($proc3.ExitCode))"
+            $results['[6/8] Desktop Shortcut'] = "WARN (exit code $($proc3.ExitCode))"
         }
     } else {
         Write-Warn "Create-Desktop-Shortcut.ps1 not found: $shortcutScript"
-        $results['[6/7] Desktop Shortcut'] = 'SKIPPED -- script not found'
+        $results['[6/8] Desktop Shortcut'] = 'SKIPPED -- script not found'
     }
 } else {
     Write-Info 'Skipped. Run scripts\setup\Create-Desktop-Shortcut.ps1 later if needed.'
-    $results['[6/7] Desktop Shortcut'] = 'SKIPPED (user choice)'
+    $results['[6/8] Desktop Shortcut'] = 'SKIPPED (user choice)'
 }
 
 # =============================================================================
 # STEP 7 -- Live startup validation
 # =============================================================================
-Write-Step '7/7' 'Live startup validation...'
+Write-Step '7/8' 'Live startup validation...'
 Write-Host ''
 Write-Host '  This test starts Waitress and Caddy in the background,' -ForegroundColor White
 Write-Host '  then verifies they are actually accepting connections.' -ForegroundColor White
@@ -374,7 +376,7 @@ Write-Host ''
 $runVal = Read-Host '  Run live startup validation? [Y/N] (strongly recommended: Y)'
 if ($runVal -notmatch '^[Yy]') {
     Write-Info 'Skipped. Run scripts\admin\check-system-health.ps1 to validate later.'
-    $results['[7/7] Startup Validation'] = 'SKIPPED (user choice)'
+    $results['[7/8] Startup Validation'] = 'SKIPPED (user choice)'
 } else {
     # Stop any already-running instances for a clean test
     Write-Info 'Stopping any existing Waitress / Caddy for a clean test...'
@@ -385,7 +387,7 @@ if ($runVal -notmatch '^[Yy]') {
     if (-not (Test-Path $venvWaitress)) {
         Write-Fail "waitress-serve.exe not found: $venvWaitress"
         Write-Warn 'Re-run setup-secure-server.ps1 to install Python dependencies.'
-        $results['[7/7] Startup Validation'] = 'FAIL -- waitress-serve.exe missing'
+        $results['[7/8] Startup Validation'] = 'FAIL -- waitress-serve.exe missing'
     } else {
         $wProc = $null
         $cProc = $null
@@ -456,13 +458,13 @@ if ($runVal -notmatch '^[Yy]') {
 
         # -- Record result ----------------------------------------------------
         if ($port8000OK -and $port443OK) {
-            $results['[7/7] Startup Validation'] = 'PASS -- ports 8000 and 443 responding'
+            $results['[7/8] Startup Validation'] = 'PASS -- ports 8000 and 443 responding'
         } elseif ($port8000OK) {
-            $results['[7/7] Startup Validation'] = 'FAIL -- port 8000 OK but port 443 NOT responding'
+            $results['[7/8] Startup Validation'] = 'FAIL -- port 8000 OK but port 443 NOT responding'
         } elseif ($port443OK) {
-            $results['[7/7] Startup Validation'] = 'FAIL -- port 443 OK but port 8000 NOT responding'
+            $results['[7/8] Startup Validation'] = 'FAIL -- port 443 OK but port 8000 NOT responding'
         } else {
-            $results['[7/7] Startup Validation'] = 'FAIL -- neither port 8000 nor 443 is responding'
+            $results['[7/8] Startup Validation'] = 'FAIL -- neither port 8000 nor 443 is responding'
         }
 
         # -- Stop test services -----------------------------------------------
@@ -478,6 +480,75 @@ if ($runVal -notmatch '^[Yy]') {
         Start-Sleep -Seconds 1
         Write-Info 'Test services stopped.'
         Write-Info 'The system will start automatically at next boot via Task Scheduler.'
+    }
+}
+
+# =============================================================================
+# STEP 8 -- Register watchdog task
+# =============================================================================
+Write-Step '8/8' 'Registering watchdog task (self-healing background monitor)...'
+Write-Info 'The watchdog checks Waitress and Caddy every 45 seconds while the PC is on.'
+Write-Info 'If either service stops, it restarts it automatically -- no IT visit needed.'
+Write-Info 'It starts 90 seconds after every boot, after the main startup task finishes.'
+Write-Host ''
+
+$watchdogScript   = Join-Path $projectRoot 'scripts\admin\watchdog.ps1'
+$watchdogTaskName = 'FANS-C Watchdog'
+
+if (-not (Test-Path $watchdogScript)) {
+    Write-Fail "watchdog.ps1 not found: $watchdogScript"
+    Write-Warn 'Self-healing will not be available until this file is restored.'
+    $results['[8/8] Watchdog Task'] = 'FAIL -- watchdog.ps1 missing'
+} else {
+    try {
+        $wdArgs = "-WindowStyle Hidden -ExecutionPolicy Bypass -NonInteractive -File `"$watchdogScript`""
+        $wdAction = New-ScheduledTaskAction `
+            -Execute          'powershell.exe' `
+            -Argument         $wdArgs `
+            -WorkingDirectory $projectRoot
+
+        # Fire at system startup, delayed 90 seconds so main startup task finishes first
+        $wdTrigger       = New-ScheduledTaskTrigger -AtStartup
+        $wdTrigger.Delay = 'PT90S'
+
+        $wdSettings = New-ScheduledTaskSettingsSet `
+            -ExecutionTimeLimit      (New-TimeSpan -Hours 0) `
+            -MultipleInstances       IgnoreNew `
+            -StartWhenAvailable      `
+            -AllowStartIfOnBatteries `
+            -DontStopIfGoingOnBatteries `
+            -RestartCount            3 `
+            -RestartInterval         (New-TimeSpan -Minutes 2)
+
+        $wdPrincipal = New-ScheduledTaskPrincipal `
+            -UserId    'SYSTEM' `
+            -LogonType ServiceAccount `
+            -RunLevel  Highest
+
+        $existing = Get-ScheduledTask -TaskName $watchdogTaskName -ErrorAction SilentlyContinue
+        if ($existing) {
+            Write-Info 'Existing watchdog task found -- replacing with updated definition...'
+            Unregister-ScheduledTask -TaskName $watchdogTaskName -Confirm:$false
+        }
+
+        Register-ScheduledTask `
+            -TaskName    $watchdogTaskName `
+            -Action      $wdAction `
+            -Trigger     $wdTrigger `
+            -Settings    $wdSettings `
+            -Principal   $wdPrincipal `
+            -Description 'Self-healing watchdog for FANS-C. Monitors Waitress and Caddy every 45 seconds. Automatically restarts failed services. Managed by IT/Admin via setup-complete.ps1. Do not delete or disable.' `
+            -Force | Out-Null
+
+        Write-OK "Watchdog task registered: '$watchdogTaskName'"
+        Write-Info 'Starts 90 seconds after every boot (after main startup task).'
+        Write-Info "Watchdog log: $projectRoot\logs\fans-watchdog.log"
+        $results['[8/8] Watchdog Task'] = 'PASS'
+    } catch {
+        Write-Warn "Could not register watchdog task: $($_.Exception.Message)"
+        Write-Warn 'The system will still run -- watchdog provides self-healing but is not required.'
+        Write-Warn 'To register manually: re-run this script, or register FANS-C Watchdog in Task Scheduler.'
+        $results['[8/8] Watchdog Task'] = "WARN (registration failed: $($_.Exception.Message))"
     }
 }
 
@@ -532,6 +603,10 @@ if ($anyFail) {
         Write-Host '  (with warnings -- review [WARN] items above)' -ForegroundColor Yellow
     }
     Write-Host ''
+    Write-Host '  Auto-start and self-healing are now active:' -ForegroundColor Green
+    Write-Host '    - FANS-C Verification System  : starts Waitress + Caddy at every boot' -ForegroundColor DarkGray
+    Write-Host '    - FANS-C Watchdog             : checks health every 45s, auto-restarts on failure' -ForegroundColor DarkGray
+    Write-Host ''
     Write-Host '  IT/Admin -- remaining tasks:' -ForegroundColor Yellow
     Write-Host ''
     Write-Host '    1. Edit .env -- verify ALLOWED_HOSTS and CSRF_TRUSTED_ORIGINS' -ForegroundColor Yellow
@@ -553,8 +628,10 @@ if ($anyFail) {
     Write-Host '    4. Go to:  https://fans-barangay.local' -ForegroundColor Cyan
     Write-Host '    5. Log in normally' -ForegroundColor White
     Write-Host ''
-    Write-Host '  Diagnostic tool (IT/Admin):' -ForegroundColor DarkGray
+    Write-Host '  IT/Admin diagnostic tools:' -ForegroundColor DarkGray
     Write-Host '    scripts\admin\check-system-health.ps1  -- live health status anytime' -ForegroundColor DarkGray
+    Write-Host '    logs\fans-startup.log                  -- last boot startup result' -ForegroundColor DarkGray
+    Write-Host '    logs\fans-watchdog.log                 -- watchdog activity and recovery history' -ForegroundColor DarkGray
 }
 
 Write-Host ''
