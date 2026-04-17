@@ -241,13 +241,13 @@ function Invoke-WaitressRecovery {
 
         $script:waitressLastRestart = [datetime]::Now
         $script:waitressRestartTimes.Add([datetime]::Now)
-        Write-WatchLog 'ACTION' "Waitress restarted (PID $($proc.Id)). Waiting 10 seconds for Django to initialize..."
-        Start-Sleep -Seconds 10
+        Write-WatchLog 'ACTION' "Waitress restarted (PID $($proc.Id)). Waiting 25 seconds for Django and FaceNet to initialize..."
+        Start-Sleep -Seconds 25
 
         if (Test-PortOpen -Port 8000) {
             Write-WatchLog 'OK' 'Recovery successful -- Waitress is now responding on port 8000.'
         } else {
-            Write-WatchLog 'FAIL' 'Waitress restarted but port 8000 is still not responding after 10 seconds.'
+            Write-WatchLog 'FAIL' 'Waitress restarted but port 8000 is still not responding after 25 seconds.'
             Write-WatchLog 'FAIL' 'Likely cause: Django startup error (.env misconfiguration or missing migration).'
             Write-WatchLog 'FAIL' 'IT/Admin: run scripts\start\start-fans.bat to see the Django error output.'
         }
@@ -355,6 +355,9 @@ while ($true) {
     $cycleCount++
     $cycleStart = [datetime]::Now
 
+    # Rotate log if it has grown past 5 MB (checked every cycle, rotates silently)
+    Rotate-WatchLog
+
     # ---- Collect health state ------------------------------------------------
     $waitressProcs = Get-Process -Name 'waitress-serve' -ErrorAction SilentlyContinue
     $waitressAlive = ($null -ne $waitressProcs -and $waitressProcs.Count -gt 0)
@@ -378,19 +381,6 @@ while ($true) {
         if ($cycleCount % 10 -eq 1) {
             Write-WatchLog 'HEALTHY' 'All services running normally. Waitress OK (port 8000, HTTP probe OK). Caddy OK (port 443).'
         }
-
-        # If services recovered externally (e.g. IT/Admin manually restarted them),
-        # reset our failure tracking so the watchdog can take over again
-        if ($waitressGivenUp) {
-            $waitressGivenUp = $false
-            $waitressRestartTimes.Clear()
-            Write-WatchLog 'OK' 'Waitress is now healthy -- failure counter has been reset.'
-        }
-        if ($caddyGivenUp) {
-            $caddyGivenUp = $false
-            $caddyRestartTimes.Clear()
-            Write-WatchLog 'OK' 'Caddy is now healthy -- failure counter has been reset.'
-        }
     } else {
         # Log each specific problem clearly for IT/Admin reading the log
         if (-not $waitressAlive) {
@@ -406,6 +396,20 @@ while ($true) {
         } elseif (-not $port443) {
             Write-WatchLog 'WARN' 'Caddy is running but port 443 is not listening.'
         }
+    }
+
+    # Reset failure counters independently -- each service recovers on its own terms.
+    # Previously this only fired when both were healthy, which meant a broken Caddy
+    # would permanently block Waitress counter resets even after Waitress recovered.
+    if ($waitressOK -and $waitressGivenUp) {
+        $waitressGivenUp = $false
+        $waitressRestartTimes.Clear()
+        Write-WatchLog 'OK' 'Waitress is now healthy -- failure counter has been reset.'
+    }
+    if ($caddyOK -and $caddyGivenUp) {
+        $caddyGivenUp = $false
+        $caddyRestartTimes.Clear()
+        Write-WatchLog 'OK' 'Caddy is now healthy -- failure counter has been reset.'
     }
 
     # ---- Attempt recovery if unhealthy --------------------------------------

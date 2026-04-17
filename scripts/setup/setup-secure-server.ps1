@@ -33,7 +33,7 @@
 
     What still requires manual steps after this script:
       - Editing .env for ALLOWED_HOSTS / CSRF_TRUSTED_ORIGINS
-      - Installing the mkcert root CA on client devices (use trust-local-cert.ps1)
+      - Installing the mkcert root CA on client devices (use trust-local-cert.bat)
       - Adding fans-barangay.local to each client hosts file
 
 .PARAMETER SkipDeps
@@ -310,7 +310,9 @@ Write-Step "6/12" "Verifying Django SECRET_KEY..."
 
 $envRaw   = Get-Content $envFile -Raw -Encoding UTF8
 $needsKey = ($envRaw -match '(?m)^SECRET_KEY\s*=\s*$') -or
-            ($envRaw -match '(?m)^SECRET_KEY\s*=\s*your-secret-key')
+            ($envRaw -match '(?m)^SECRET_KEY\s*=\s*your-secret-key') -or
+            ($envRaw -match '(?im)^SECRET_KEY\s*=\s*REPLACE_ME') -or
+            ($envRaw -match '(?m)^SECRET_KEY\s*=\s*SECRET_KEY=')
 
 if ($needsKey) {
     $secretKey = & $venvPython -c "import secrets; print(secrets.token_urlsafe(50))"
@@ -326,7 +328,8 @@ if ($needsKey) {
 Write-Step "7/12" "Verifying EMBEDDING_ENCRYPTION_KEY..."
 
 $envRaw      = Get-Content $envFile -Raw -Encoding UTF8
-$needsEmbKey = $envRaw -match '(?m)^EMBEDDING_ENCRYPTION_KEY\s*=\s*$'
+$needsEmbKey = ($envRaw -match '(?m)^EMBEDDING_ENCRYPTION_KEY\s*=\s*$') -or
+               ($envRaw -match '(?im)^EMBEDDING_ENCRYPTION_KEY\s*=\s*REPLACE_ME')
 
 if ($needsEmbKey) {
     $fernetKey = & $venvPython -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
@@ -346,8 +349,9 @@ if ($needsEmbKey) {
 
 # Final check -- key must not be empty at this point
 $envRaw = Get-Content $envFile -Raw -Encoding UTF8
-if ($envRaw -match '(?m)^EMBEDDING_ENCRYPTION_KEY\s*=\s*$') {
-    Write-Fail "EMBEDDING_ENCRYPTION_KEY is still empty in .env."
+if (($envRaw -match '(?m)^EMBEDDING_ENCRYPTION_KEY\s*=\s*$') -or
+    ($envRaw -match '(?im)^EMBEDDING_ENCRYPTION_KEY\s*=\s*REPLACE_ME')) {
+    Write-Fail "EMBEDDING_ENCRYPTION_KEY is still empty or contains a placeholder in .env."
     Write-Host "         Run: .\.venv\Scripts\python.exe manage.py generate_key" -ForegroundColor Yellow
     Write-Host "         Then paste the output into .env as EMBEDDING_ENCRYPTION_KEY=<value>" -ForegroundColor Yellow
     Read-Host "  Press Enter to exit"
@@ -583,18 +587,18 @@ if ($caRootDir -and (Test-Path $caRootDir)) {
     Write-Host ""
     Write-Host "        Server root CA file:" -ForegroundColor Yellow
     Write-Host "          $rootCaPem" -ForegroundColor Cyan
-    Write-Host "        Copy this file + trust-local-cert.ps1 to each client device." -ForegroundColor Yellow
+    Write-Host "        Copy this file + trust-local-cert.bat to each client device." -ForegroundColor Yellow
 } else {
     Write-Host "        Find the server root CA:" -ForegroundColor DarkGray
     Write-Host "          Run: mkcert -CAROOT  (on this server, in any terminal)" -ForegroundColor DarkGray
-    Write-Host "          Copy rootCA.pem to each client, then run trust-local-cert.ps1." -ForegroundColor DarkGray
+    Write-Host "          Copy rootCA.pem to each client, then run trust-local-cert.bat." -ForegroundColor DarkGray
 }
 Write-Host ""
 Write-Host "        NOTE: Do NOT run 'mkcert -install' on client devices." -ForegroundColor Yellow
 Write-Host "              That creates a different CA that does not trust this server." -ForegroundColor Yellow
 Write-Host ""
 Write-Host "     3. On each client device: add fans-barangay.local to hosts file" -ForegroundColor Yellow
-Write-Host "        (trust-local-cert.ps1 handles this step too)" -ForegroundColor DarkGray
+Write-Host "        (trust-local-cert.bat handles this step too)" -ForegroundColor DarkGray
 if ($lanIp) {
     Write-Host "        Entry to add:  $lanIp  fans-barangay.local" -ForegroundColor DarkGray
 }
@@ -610,7 +614,7 @@ if ($startNow -match '^[Yy]') {
     Write-Host "  Starting Waitress and Caddy..." -ForegroundColor Cyan
 
     # Waitress (minimized window)
-    $waitressCmd = "Set-Location '$projectRoot'; & '$venvWaitress' --host=0.0.0.0 --port=8000 fans.wsgi:application; Read-Host 'Waitress stopped. Press Enter'"
+    $waitressCmd = "Set-Location '$projectRoot'; & '$venvWaitress' --listen=127.0.0.1:8000 fans.wsgi:application; Read-Host 'Waitress stopped. Press Enter'"
     Start-Process powershell.exe -ArgumentList "-NoExit", "-Command", $waitressCmd -WindowStyle Minimized
 
     Start-Sleep -Seconds 4

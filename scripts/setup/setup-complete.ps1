@@ -396,20 +396,22 @@ if ($runVal -notmatch '^[Yy]') {
 
         # -- Start Waitress ---------------------------------------------------
         Write-Info 'Starting Waitress on port 8000...'
+        Write-Warn 'On first run, Django downloads the FaceNet model (~90 MB). Port 8000 may take up to 90 seconds.'
+        Write-Warn 'If the port check below reports FAIL on a brand-new install, wait 2 minutes and run check-system-health.ps1.'
         try {
             $wProc = Start-Hidden `
                 -Exe       $venvWaitress `
                 -Arguments '--listen=127.0.0.1:8000 fans.wsgi:application' `
                 -WorkDir   $projectRoot
-            Write-Info "Waitress started (PID $($wProc.Id)). Waiting 8 seconds for Django to load..."
-            Start-Sleep -Seconds 8
+            Write-Info "Waitress started (PID $($wProc.Id)). Waiting 25 seconds for Django to load..."
+            Start-Sleep -Seconds 25
         } catch {
             Write-Fail "Could not launch Waitress: $_"
         }
 
         # -- Check port 8000 --------------------------------------------------
         if ($wProc -and -not $wProc.HasExited) {
-            $port8000OK = Test-PortOpen -Port 8000 -Retries 5 -DelayMs 1000
+            $port8000OK = Test-PortOpen -Port 8000 -Retries 12 -DelayMs 5000
             if ($port8000OK) {
                 Write-OK 'Port 8000 (Waitress)  -- LISTENING'
             } else {
@@ -489,7 +491,7 @@ if ($runVal -notmatch '^[Yy]') {
 Write-Step '8/8' 'Registering watchdog task (self-healing background monitor)...'
 Write-Info 'The watchdog checks Waitress and Caddy every 45 seconds while the PC is on.'
 Write-Info 'If either service stops, it restarts it automatically -- no IT visit needed.'
-Write-Info 'It starts 90 seconds after every boot, after the main startup task finishes.'
+Write-Info 'It starts 150 seconds after every boot, after the main startup task and FaceNet model load finish.'
 Write-Host ''
 
 $watchdogScript   = Join-Path $projectRoot 'scripts\admin\watchdog.ps1'
@@ -507,9 +509,9 @@ if (-not (Test-Path $watchdogScript)) {
             -Argument         $wdArgs `
             -WorkingDirectory $projectRoot
 
-        # Fire at system startup, delayed 90 seconds so main startup task finishes first
+        # Fire at system startup, delayed 150 seconds so main startup task and FaceNet load finish first
         $wdTrigger       = New-ScheduledTaskTrigger -AtStartup
-        $wdTrigger.Delay = 'PT90S'
+        $wdTrigger.Delay = 'PT150S'
 
         $wdSettings = New-ScheduledTaskSettingsSet `
             -ExecutionTimeLimit      (New-TimeSpan -Hours 0) `
@@ -541,7 +543,7 @@ if (-not (Test-Path $watchdogScript)) {
             -Force | Out-Null
 
         Write-OK "Watchdog task registered: '$watchdogTaskName'"
-        Write-Info 'Starts 90 seconds after every boot (after main startup task).'
+        Write-Info 'Starts 150 seconds after every boot (after main startup task and FaceNet load).'
         Write-Info "Watchdog log: $projectRoot\logs\fans-watchdog.log"
         $results['[8/8] Watchdog Task'] = 'PASS'
     } catch {

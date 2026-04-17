@@ -200,7 +200,7 @@ Restart Windows, then retry.
 
 ### Manual Setup (without setup-secure-server.ps1)
 
-If you prefer to set up manually instead of using `setup.ps1`:
+If you prefer to set up manually instead of using `setup-secure-server.ps1`:
 
 ```powershell
 # Create virtual environment
@@ -239,7 +239,6 @@ Paste the output into `.env` as `EMBEDDING_ENCRYPTION_KEY=<value>`.
 
 Run migrations and finish setup:
 ```powershell
-python manage.py makemigrations
 python manage.py migrate
 python manage.py init_config
 python manage.py createsuperuser
@@ -348,8 +347,8 @@ USE_X_FORWARDED_HOST=True
 |---|---|
 | Run `mkcert -install` (as Admin) | Once per server machine — creates the server's local CA |
 | Run `mkcert fans-barangay.local 192.168.1.77 localhost 127.0.0.1` | Once; redo only if cert expires or IP changes |
-| Run `mkcert -CAROOT` and copy `rootCA.pem` to each client device | Once; distribute to clients alongside `trust-local-cert.ps1` |
-| On each client: run `trust-local-cert.ps1` (as Admin) | Once per client device — imports the **server's** rootCA.pem into Windows trust store |
+| Run `mkcert -CAROOT` and copy `rootCA.pem` to each client device | Once; distribute to clients alongside `trust-local-cert.bat` |
+| On each client: run `trust-local-cert.bat` (as Admin) | Once per client device — imports the **server's** rootCA.pem into Windows trust store |
 | Add firewall rule for port 443 (as Admin) | Once per server machine |
 | Start Waitress and Caddy after each reboot | Every time the server restarts (see startup scripts below) |
 | Configure hostname resolution on client devices | Once-total if router DNS is used; once per device if hosts file fallback is used (see CLIENT_ACCESS.md) |

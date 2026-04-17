@@ -55,11 +55,11 @@ The client device needs to trust the server's Certificate Authority — this is 
    ```
    This prints a folder path. Copy `rootCA.pem` from that folder.
 
-2. Put `rootCA.pem` and `trust-local-cert.ps1` on the client device (USB, network share, etc.).
+2. Put `rootCA.pem` and `trust-local-cert.bat` on the client device (USB, network share, etc.).
 
 3. On the **client device**, run as Administrator:
    ```
-   trust-local-cert.ps1
+   trust-local-cert.bat
    ```
    This imports the server's `rootCA.pem` into Windows Trusted Root Certification Authorities using `certutil`. After that, the browser will trust the FANS-C certificate.
 
@@ -177,10 +177,4 @@ If your device loses connection to the server while you are working:
 - **In-progress actions** (e.g., a verification you were in the middle of) may need to be restarted once connection is restored.
 - **Wait for Wi-Fi to reconnect**, then refresh the browser and try again.
 
-If the server supports offline mode and your device was set up for it:
-
-- Some low-risk actions (such as registering a new beneficiary) may be allowed offline.
-- Any records created while offline are marked as **provisional** and must be reviewed and synced when the connection returns.
-- Actions such as **sync conflict review** and **admin approvals with server-side context** require a live server connection and cannot be completed offline.
-
-When in doubt, wait for the connection to return and contact the administrator if records appear to be missing or need review.
+Wait for Wi-Fi to reconnect, then refresh the browser and continue. Contact the administrator if the problem persists.

@@ -30,7 +30,7 @@
     TO SET UP:        Run scripts\setup\setup-complete.ps1 (IT/Admin, one-time)
 #>
 
-$ErrorActionPreference = 'Stop'
+$ErrorActionPreference = 'Continue'
 $projectRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
 Set-Location $projectRoot
 
@@ -131,12 +131,8 @@ if (-not (Test-Path $stableCertKey)) {
 # -- PRE-FLIGHT: locate caddy.exe ---------------------------------------------
 $caddyExe = $null
 
-foreach ($candidate in @(
-    (Join-Path $projectRoot 'tools\caddy.exe'),
-    (Join-Path $projectRoot 'tools\caddy.exe.exe')
-)) {
-    if (Test-Path $candidate) { $caddyExe = $candidate; break }
-}
+$candidate = Join-Path $projectRoot 'tools\caddy.exe'
+if (Test-Path $candidate) { $caddyExe = $candidate }
 
 if (-not $caddyExe) {
     try {
