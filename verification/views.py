@@ -98,15 +98,25 @@ def _get_liveness_required():
 
 @login_required
 def verify_select(request):
+    from django.db.models import Q
     query = request.GET.get('q', '')
     beneficiaries = []
     if query:
+        # Single query with OR conditions — faster than unioning four separate querysets.
         beneficiaries = (
-            Beneficiary.objects.filter(status=Beneficiary.STATUS_ACTIVE, last_name__icontains=query) |
-            Beneficiary.objects.filter(status=Beneficiary.STATUS_ACTIVE, first_name__icontains=query) |
-            Beneficiary.objects.filter(status=Beneficiary.STATUS_ACTIVE, beneficiary_id__icontains=query) |
-            Beneficiary.objects.filter(status=Beneficiary.STATUS_ACTIVE, senior_citizen_id__icontains=query)
-        ).distinct().order_by('last_name', 'first_name').prefetch_related('representatives__face_embedding')
+            Beneficiary.objects
+            .filter(
+                Q(last_name__icontains=query) |
+                Q(first_name__icontains=query) |
+                Q(beneficiary_id__icontains=query) |
+                Q(senior_citizen_id__icontains=query),
+                status=Beneficiary.STATUS_ACTIVE,
+            )
+            .distinct()
+            .order_by('last_name', 'first_name')
+            .select_related('face_embedding')
+            .prefetch_related('representatives__face_embedding')
+        )
 
     today = timezone.now().date()
     active_event = StipendEvent.get_active_event_for_date(today)
@@ -143,7 +153,10 @@ def verify_start(request, pk):
       head-movement challenge is always required (True for rep claims) or risk-based
       (False for self-claims — JS decides dynamically from anti-spoof + quality signals).
     """
-    beneficiary = get_object_or_404(Beneficiary, pk=pk)
+    beneficiary = get_object_or_404(
+        Beneficiary.objects.select_related('face_embedding'),
+        pk=pk,
+    )
 
     # Guard: only active beneficiaries can claim
     if not beneficiary.is_eligible_to_claim:
@@ -695,14 +708,12 @@ def verify_submit(request):
                     all_scores=comparison.get('all_scores', []))
 
         if decision == VerificationAttempt.DECISION_VERIFIED:
-            # Create ClaimRecord atomically to prevent duplicate claims when
-            # multiple staff stations submit verification concurrently for the
-            # same beneficiary (centralized multi-user deployment).
+            # ── Create ClaimRecord ────────────────────────────────────────────
+            # Case A: active stipend event exists → claim directly.
+            # Case B: no event → Head Barangay may claim directly; all other
+            #         roles create a pending_approval record for HB to approve.
             if stipend_event:
                 with transaction.atomic():
-                    # Row-lock the beneficiary so concurrent requests queue up
-                    # here rather than racing past the .exists() check below.
-                    # select_for_update() is a no-op on SQLite (dev only).
                     _locked_ben = Beneficiary.objects.select_for_update().get(
                         pk=beneficiary.pk)
                     if not ClaimRecord.objects.filter(
@@ -732,6 +743,65 @@ def verify_submit(request):
                             },
                             request=request,
                         )
+            else:
+                # No active stipend event.
+                if request.user.is_head_barangay:
+                    # Head Barangay may finalize directly even without an event.
+                    ClaimRecord.objects.create(
+                        beneficiary=beneficiary,
+                        stipend_event=None,
+                        claimant_type=claimant_type,
+                        representative=representative,
+                        claimed_by=request.user,
+                        verification_attempt=attempt,
+                        approved_by=request.user,
+                        approved_at=timezone.now(),
+                        status=ClaimRecord.STATUS_CLAIMED,
+                        notes='Recorded by Head Barangay outside an active payout event.',
+                    )
+                    AuditLog.log(
+                        action=AuditLog.ACTION_CLAIM,
+                        user=request.user,
+                        target_type='Beneficiary',
+                        target_id=beneficiary.id,
+                        details={
+                            'beneficiary_id': beneficiary.beneficiary_id,
+                            'claimant_type': claimant_type,
+                            'via': 'head_barangay_no_event',
+                            'attempt_id': str(attempt.id),
+                        },
+                        request=request,
+                    )
+                else:
+                    # Staff / IT Admin — must go through HB approval.
+                    ClaimRecord.objects.create(
+                        beneficiary=beneficiary,
+                        stipend_event=None,
+                        claimant_type=claimant_type,
+                        representative=representative,
+                        claimed_by=request.user,
+                        verification_attempt=attempt,
+                        status=ClaimRecord.STATUS_PENDING_APPROVAL,
+                        notes=(
+                            f'Verification passed but no active payout event. '
+                            f'Submitted by {request.user.get_full_name() or request.user.username} '
+                            f'for Head Barangay approval.'
+                        ),
+                    )
+                    AuditLog.log(
+                        action=AuditLog.ACTION_CLAIM_PENDING,
+                        user=request.user,
+                        target_type='Beneficiary',
+                        target_id=beneficiary.id,
+                        details={
+                            'beneficiary_id': beneficiary.beneficiary_id,
+                            'claimant_type': claimant_type,
+                            'reason': 'No active payout event — pending HB approval',
+                            'attempt_id': str(attempt.id),
+                        },
+                        request=request,
+                    )
+
             request.session.pop('verification_session', None)
             return JsonResponse({
                 'success': True,
@@ -1541,12 +1611,19 @@ def manual_review_list(request):
         .order_by('created_at')
     )
 
+    # Claims queued because there was no active payout event (needs HB approval)
+    pending_no_event_claims = ClaimRecord.objects.filter(
+        status=ClaimRecord.STATUS_PENDING_APPROVAL,
+        stipend_event__isnull=True,
+    ).select_related('beneficiary', 'claimed_by', 'verification_attempt').order_by('-created_at')
+
     return render(request, 'verification/manual_review.html', {
         'pending': pending_verifications,
         'pending_manual_requests': pending_manual_requests,
         'pending_face_requests': pending_face_requests,
         'pending_special_claims': pending_special_claims,
         'pending_registrations': pending_registrations,
+        'pending_no_event_claims': pending_no_event_claims,
     })
 
 
@@ -2157,3 +2234,307 @@ def register_rep_face_submit(request, pk, rep_pk):
         })
     except Exception as e:
         return JsonResponse({'success': False, 'error': str(e)})
+
+
+# ─── Pending Claim Review (no active payout event) ────────────────────────────
+
+@login_required
+@require_http_methods(['GET', 'POST'])
+def pending_claim_review(request, claim_id):
+    """
+    Head Barangay approves or rejects a claim that was recorded when no
+    active payout event existed. Only Head Barangay (and IT/Admin) may act.
+    """
+    from django.contrib import messages
+
+    if not request.user.is_admin:
+        messages.error(request, 'Admin access required.')
+        return redirect('beneficiaries:dashboard')
+
+    claim = get_object_or_404(
+        ClaimRecord.objects.select_related('beneficiary', 'claimed_by', 'verification_attempt'),
+        pk=claim_id,
+        status=ClaimRecord.STATUS_PENDING_APPROVAL,
+    )
+
+    if request.method == 'POST':
+        action = request.POST.get('action', '')
+        review_notes = request.POST.get('review_notes', '').strip()
+
+        if action not in ('approve', 'reject'):
+            messages.error(request, 'Invalid action.')
+            return redirect('verification:manual_review')
+
+        beneficiary_name = claim.beneficiary.full_name
+
+        with transaction.atomic():
+            claim = ClaimRecord.objects.select_for_update().get(pk=claim_id)
+            if claim.status != ClaimRecord.STATUS_PENDING_APPROVAL:
+                messages.warning(request, 'This claim has already been reviewed.')
+                return redirect('verification:manual_review')
+
+            claim.reviewed_by = request.user
+            claim.approved_by = request.user
+            claim.approved_at = timezone.now()
+            claim.notes = (claim.notes or '') + f' | Review: {review_notes}'
+
+            if action == 'approve':
+                claim.status = ClaimRecord.STATUS_CLAIMED
+                claim.save()
+                AuditLog.log(
+                    action=AuditLog.ACTION_CLAIM_PENDING_APPROVED,
+                    user=request.user,
+                    target_type='ClaimRecord',
+                    target_id=claim.id,
+                    details={
+                        'beneficiary_id': claim.beneficiary.beneficiary_id,
+                        'claimed_by': claim.claimed_by.username if claim.claimed_by else None,
+                        'review_notes': review_notes,
+                    },
+                    request=request,
+                )
+                messages.success(request, f'Pending claim approved for {beneficiary_name}.')
+            else:
+                claim.status = ClaimRecord.STATUS_REJECTED
+                claim.save()
+                AuditLog.log(
+                    action=AuditLog.ACTION_CLAIM_PENDING_REJECTED,
+                    user=request.user,
+                    target_type='ClaimRecord',
+                    target_id=claim.id,
+                    details={
+                        'beneficiary_id': claim.beneficiary.beneficiary_id,
+                        'claimed_by': claim.claimed_by.username if claim.claimed_by else None,
+                        'review_notes': review_notes,
+                    },
+                    request=request,
+                )
+                messages.warning(request, f'Pending claim rejected for {beneficiary_name}.')
+
+        return redirect('verification:manual_review')
+
+    return render(request, 'verification/pending_claim_review.html', {'claim': claim})
+
+
+# ─── Reports / Export ────────────────────────────────────────────────────────
+
+def _parse_date(val):
+    import datetime
+    if not val:
+        return None
+    try:
+        return datetime.date.fromisoformat(val)
+    except ValueError:
+        return None
+
+
+@login_required
+def report_claims(request):
+    """
+    Filterable claims report — export as print/PDF view or Excel download.
+    Roles: Head Barangay + IT/Admin only.
+    """
+    from django.contrib import messages
+
+    if not request.user.is_admin:
+        messages.error(request, 'Admin access required.')
+        return redirect('beneficiaries:dashboard')
+
+    # ── Filters ───────────────────────────────────────────────────────────────
+    date_from    = _parse_date(request.GET.get('date_from', ''))
+    date_to      = _parse_date(request.GET.get('date_to', ''))
+    event_id     = request.GET.get('event', '')
+    status_f     = request.GET.get('status', '')
+    claimant_f   = request.GET.get('claimant', '')
+    export_fmt   = request.GET.get('export', '')   # '' | 'excel' | 'print'
+
+    qs = (
+        ClaimRecord.objects
+        .select_related('beneficiary', 'stipend_event', 'claimed_by', 'approved_by', 'representative')
+        .order_by('-created_at')
+    )
+
+    if date_from:
+        qs = qs.filter(created_at__date__gte=date_from)
+    if date_to:
+        qs = qs.filter(created_at__date__lte=date_to)
+    if event_id:
+        qs = qs.filter(stipend_event_id=event_id)
+    if status_f:
+        qs = qs.filter(status=status_f)
+    if claimant_f:
+        qs = qs.filter(claimant_type=claimant_f)
+
+    events = StipendEvent.objects.order_by('-date')
+
+    # ── Excel export ──────────────────────────────────────────────────────────
+    if export_fmt == 'excel':
+        import openpyxl
+        from django.http import HttpResponse
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = 'Claims Report'
+
+        headers = [
+            'Beneficiary ID', 'Full Name', 'Stipend Event', 'Status',
+            'Claimant Type', 'Representative', 'Claimed By',
+            'Approved By', 'Claim Date',
+        ]
+        ws.append(headers)
+
+        for r in qs:
+            ws.append([
+                r.beneficiary.beneficiary_id,
+                r.beneficiary.full_name,
+                r.stipend_event.title if r.stipend_event else '(No Event)',
+                r.get_status_display(),
+                r.get_claimant_type_display() if hasattr(r, 'get_claimant_type_display') else r.claimant_type,
+                r.representative.full_name if r.representative else '',
+                r.claimed_by.get_full_name() or r.claimed_by.username if r.claimed_by else '',
+                r.approved_by.get_full_name() or r.approved_by.username if r.approved_by else '',
+                r.created_at.astimezone().strftime('%Y-%m-%d %H:%M') if r.created_at else '',
+            ])
+
+        AuditLog.log(
+            action=AuditLog.ACTION_REPORT_EXPORT,
+            user=request.user,
+            details={
+                'report': 'claims',
+                'format': 'excel',
+                'filters': {
+                    'date_from': str(date_from) if date_from else None,
+                    'date_to': str(date_to) if date_to else None,
+                    'event': event_id or None,
+                    'status': status_f or None,
+                },
+                'row_count': qs.count(),
+            },
+            request=request,
+        )
+
+        response = HttpResponse(
+            content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        )
+        response['Content-Disposition'] = 'attachment; filename="fans-claims-report.xlsx"'
+        wb.save(response)
+        return response
+
+    # ── Print / HTML export ───────────────────────────────────────────────────
+    if export_fmt == 'print':
+        AuditLog.log(
+            action=AuditLog.ACTION_REPORT_EXPORT,
+            user=request.user,
+            details={
+                'report': 'claims',
+                'format': 'print',
+                'row_count': qs.count(),
+            },
+            request=request,
+        )
+        return render(request, 'verification/report_claims_print.html', {
+            'claims': qs,
+            'date_from': date_from,
+            'date_to': date_to,
+            'event_id': event_id,
+            'status_f': status_f,
+        })
+
+    return render(request, 'verification/report_claims.html', {
+        'claims': qs,
+        'events': events,
+        'date_from': date_from,
+        'date_to': date_to,
+        'event_id': event_id,
+        'status_f': status_f,
+        'claimant_f': claimant_f,
+        'status_choices': ClaimRecord.STATUS_CHOICES,
+        'claimant_choices': VerificationAttempt.CLAIMANT_CHOICES,
+        'total': qs.count(),
+    })
+
+
+@login_required
+def report_event_summary(request):
+    """
+    Per-event payout summary: total eligible, claimed, pending, fallback, denied.
+    Roles: Head Barangay + IT/Admin only.
+    """
+    from django.contrib import messages
+    from django.db.models import Count, Q as Qm
+
+    if not request.user.is_admin:
+        messages.error(request, 'Admin access required.')
+        return redirect('beneficiaries:dashboard')
+
+    export_fmt = request.GET.get('export', '')
+    event_qs = StipendEvent.objects.order_by('-date')
+
+    summaries = []
+    for ev in event_qs:
+        claims_qs = ClaimRecord.objects.filter(stipend_event=ev)
+        total_claimed    = claims_qs.filter(status=ClaimRecord.STATUS_CLAIMED).count()
+        total_pending    = claims_qs.filter(status=ClaimRecord.STATUS_PENDING_APPROVAL).count()
+        total_rejected   = claims_qs.filter(status=ClaimRecord.STATUS_REJECTED).count()
+        total_attempts   = VerificationAttempt.objects.filter(stipend_event=ev).count()
+        total_fallback   = VerificationAttempt.objects.filter(
+            stipend_event=ev, fallback_triggered=True
+        ).count()
+        summaries.append({
+            'event': ev,
+            'claimed': total_claimed,
+            'pending': total_pending,
+            'rejected': total_rejected,
+            'attempts': total_attempts,
+            'fallback': total_fallback,
+        })
+
+    if export_fmt == 'excel':
+        import openpyxl
+        from django.http import HttpResponse
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = 'Event Summary'
+        ws.append(['Event', 'Date', 'Type', 'Claimed', 'Pending Approval',
+                   'Rejected', 'Total Attempts', 'Fallbacks'])
+        for s in summaries:
+            ws.append([
+                s['event'].title,
+                str(s['event'].date),
+                s['event'].get_event_type_display(),
+                s['claimed'],
+                s['pending'],
+                s['rejected'],
+                s['attempts'],
+                s['fallback'],
+            ])
+
+        AuditLog.log(
+            action=AuditLog.ACTION_REPORT_EXPORT,
+            user=request.user,
+            details={'report': 'event_summary', 'format': 'excel'},
+            request=request,
+        )
+
+        response = HttpResponse(
+            content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        )
+        response['Content-Disposition'] = 'attachment; filename="fans-event-summary.xlsx"'
+        wb.save(response)
+        return response
+
+    if export_fmt == 'print':
+        AuditLog.log(
+            action=AuditLog.ACTION_REPORT_EXPORT,
+            user=request.user,
+            details={'report': 'event_summary', 'format': 'print'},
+            request=request,
+        )
+        return render(request, 'verification/report_event_summary_print.html', {
+            'summaries': summaries,
+        })
+
+    return render(request, 'verification/report_event_summary.html', {
+        'summaries': summaries,
+    })

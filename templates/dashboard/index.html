@@ -111,7 +111,7 @@
         <div class="stat-icon amber"><i class="bi bi-camera-video-fill"></i></div>
         <div>
           <div class="stat-value" style="color:#a16207;">{{ verifications_today }}</div>
-          <div class="stat-label">Verifications Today</div>
+          <div class="stat-label">{% if user.is_staff_member %}My Verifications Today{% else %}Verifications Today{% endif %}</div>
         </div>
       </div>
     </div>
@@ -124,7 +124,7 @@
         <div class="stat-icon green"><i class="bi bi-patch-check-fill"></i></div>
         <div>
           <div class="stat-value" style="color:#15803d;">{{ verified_today }}</div>
-          <div class="stat-label">Verified Today</div>
+          <div class="stat-label">{% if user.is_staff_member %}My Verified Today{% else %}Verified Today{% endif %}</div>
         </div>
       </div>
     </div>

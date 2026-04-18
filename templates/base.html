@@ -106,7 +106,18 @@
             </li>
             <li>
               <a class="dropdown-item" href="{% url 'verification:stipend_list' %}">
-                <i class="bi bi-calendar3 me-2 text-success"></i>Stipend Schedule
+                <i class="bi bi-calendar3 me-2 text-success"></i>Distribution Schedule
+              </a>
+            </li>
+            <li><hr class="dropdown-divider"></li>
+            <li>
+              <a class="dropdown-item" href="{% url 'verification:report_claims' %}">
+                <i class="bi bi-file-earmark-bar-graph me-2 text-info"></i>Claims Report
+              </a>
+            </li>
+            <li>
+              <a class="dropdown-item" href="{% url 'verification:report_event_summary' %}">
+                <i class="bi bi-bar-chart-line me-2 text-info"></i>Event Summary
               </a>
             </li>
             <li><hr class="dropdown-divider"></li>
@@ -143,7 +154,12 @@
             <div class="text-muted" style="font-size:0.75rem;">{{ user.email|default:user.username }}</div>
           </li>
           <li>
-            <a class="dropdown-item text-danger mt-1" href="{% url 'accounts:logout' %}">
+            <a class="dropdown-item" href="{% url 'accounts:change_password' %}">
+              <i class="bi bi-key me-2"></i>Change Password
+            </a>
+          </li>
+          <li>
+            <a class="dropdown-item text-danger" href="{% url 'accounts:logout' %}">
               <i class="bi bi-box-arrow-right me-2"></i>Sign Out
             </a>
           </li>

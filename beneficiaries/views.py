@@ -25,14 +25,27 @@ def dashboard(request):
 
     from verification.models import VerificationAttempt, StipendEvent
     today = timezone.now().date()
-    verifications_today = VerificationAttempt.objects.filter(timestamp__date=today).count()
-    verified_today = VerificationAttempt.objects.filter(
-        timestamp__date=today, decision='verified'
-    ).count()
-    manual_review_pending = VerificationAttempt.objects.filter(
-        decision=VerificationAttempt.DECISION_MANUAL_REVIEW,
-        overridden=False,
-    ).count()
+
+    # Staff see only their own verification stats so the dashboard cards stay
+    # consistent with what they see in the Verification Logs page (which also
+    # filters by performed_by=request.user for non-admin users).
+    if request.user.is_staff_member:
+        va_qs = VerificationAttempt.objects.filter(performed_by=request.user)
+    else:
+        va_qs = VerificationAttempt.objects.all()
+
+    verifications_today = va_qs.filter(timestamp__date=today).count()
+    verified_today = va_qs.filter(timestamp__date=today, decision='verified').count()
+
+    # Pending manual review is an admin action queue — only compute it for
+    # roles that can actually access the review page.
+    if request.user.is_admin:
+        manual_review_pending = VerificationAttempt.objects.filter(
+            decision=VerificationAttempt.DECISION_MANUAL_REVIEW,
+            overridden=False,
+        ).count()
+    else:
+        manual_review_pending = None
 
     recent_logs = AuditLog.objects.select_related('user').order_by('-timestamp')[:10]
 

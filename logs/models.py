@@ -34,6 +34,18 @@ class AuditLog(models.Model):
     ACTION_SYNC_CONFLICT               = 'sync_conflict'   # central server returned 409
     ACTION_SYNC_REJECTED               = 'sync_rejected'   # central server returned 400/422
 
+    # Password management
+    ACTION_PASSWORD_CHANGE = 'password_change'   # user changed own password
+    ACTION_PASSWORD_RESET  = 'password_reset'    # admin reset another user's password
+
+    # Report/export
+    ACTION_REPORT_EXPORT = 'report_export'        # admin exported a report
+
+    # Pending claim (no active payout event)
+    ACTION_CLAIM_PENDING          = 'claim_pending'           # claim queued for approval (no event)
+    ACTION_CLAIM_PENDING_APPROVED = 'claim_pending_approved'  # Head Barangay approved pending claim
+    ACTION_CLAIM_PENDING_REJECTED = 'claim_pending_rejected'  # Head Barangay rejected pending claim
+
     ACTION_CHOICES = [
         (ACTION_LOGIN, 'Login'),
         (ACTION_LOGOUT, 'Logout'),
@@ -63,6 +75,12 @@ class AuditLog(models.Model):
         (ACTION_SYNC_ACCEPTED,          'Sync Accepted'),
         (ACTION_SYNC_CONFLICT,          'Sync Conflict'),
         (ACTION_SYNC_REJECTED,          'Sync Rejected'),
+        (ACTION_PASSWORD_CHANGE,        'Password Changed'),
+        (ACTION_PASSWORD_RESET,         'Password Reset by Admin'),
+        (ACTION_REPORT_EXPORT,          'Report Exported'),
+        (ACTION_CLAIM_PENDING,          'Claim Queued (No Event)'),
+        (ACTION_CLAIM_PENDING_APPROVED, 'Pending Claim Approved'),
+        (ACTION_CLAIM_PENDING_REJECTED, 'Pending Claim Rejected'),
     ]
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)

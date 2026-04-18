@@ -103,6 +103,65 @@ The system is now **self-healing**: if Waitress or Caddy stops responding during
 
 ---
 
+## Quick Deployment Guide
+
+> A simplified step-by-step reference for IT/Admin deploying FANS-C for the first time.
+> For detailed configuration, see the sections below.
+
+---
+
+### Part 1 — Server PC Setup (once)
+
+**Before you start:**
+- Python 3.11 installed (check "Add Python to PATH")
+- `caddy.exe` in `tools\caddy.exe`
+- `mkcert.exe` in `tools\mkcert\mkcert.exe`
+- Logged in as Administrator
+- Project at a short path, e.g. `D:\FANS`
+
+**Steps:**
+
+1. Open the project folder (`D:\FANS`)
+2. Right-click `scripts\setup\setup-complete.ps1` → **Run with PowerShell**
+3. Wait until all steps show **PASS**
+4. Note the **Server IP** shown at the end (e.g., `192.168.1.77`)
+
+The system will now auto-start every time the server PC boots.
+
+---
+
+### Part 2 — Staff PC Setup (once per device)
+
+**You need:**
+- The `CLIENT-SETUP` folder (copy to USB from the server)
+- The server's IP address from Part 1
+
+**Steps:**
+
+1. Copy `CLIENT-SETUP` folder to the staff PC
+2. Double-click `CLIENT-SETUP\trust-local-cert.bat` → approve the prompt
+3. Open `C:\Windows\System32\drivers\etc\hosts` in Notepad **(as Administrator)**
+4. Add this line at the bottom (use your actual server IP):
+   ```
+   192.168.1.77   fans-barangay.local
+   ```
+5. Save and close
+
+> **Better alternative:** Configure "Local DNS" or "Hostname Mapping" on your office router once, and skip the hosts file step on every device entirely. See [Recommended Network Setup](#recommended-network-setup-no-per-device-configuration) below.
+
+---
+
+### Part 3 — Daily Use
+
+1. Turn on the **server PC**, wait ~30 seconds
+2. Open any browser on a staff device
+3. Go to: **`https://fans-barangay.local`**
+4. Log in and begin
+
+No scripts. No terminal. No IT involvement for daily use.
+
+---
+
 ## Script Reference
 
 | Script | Who runs it | When |
@@ -216,7 +275,7 @@ D:\FANS\.venv\Scripts\Activate.ps1
 # Upgrade pip
 python -m pip install --upgrade pip
 
-# Install dependencies
+# Install dependencies (includes openpyxl for Excel export)
 pip install -r requirements.txt
 ```
 
@@ -287,19 +346,22 @@ To use PostgreSQL:
 
 ### Admin Account Setup
 
-`setup-secure-server.ps1` calls `createsuperuser` interactively. If you need to set the FANS-C in-app admin role separately:
+`setup-secure-server.ps1` calls `create_admin` interactively. If you need to set a role manually:
 
 ```powershell
 python manage.py shell -c "
 from accounts.models import CustomUser
 u = CustomUser.objects.get(username='yourusername')
-u.role = 'admin'
+u.role = 'head_brgy'  # or 'admin_it' or 'staff'
 u.save()
-print('Admin role set for:', u)
+print('Role set for:', u)
 "
 ```
 
-Django's `is_superuser`/`is_staff` (set by `createsuperuser`) and the FANS-C `role` field are separate. Both must be set for full admin access.
+**Active roles:** `head_brgy` (Head Barangay), `admin_it` (IT/Admin), `staff` (Staff).
+The legacy `admin` value still exists in the DB and behaves identically to `admin_it`. Do not assign it to new users — use `admin_it` instead.
+
+Django's `is_superuser`/`is_staff` (set by `createsuperuser`) and the FANS-C `role` field are separate. Both must be set for full access to the Django `/admin/` panel.
 
 ---
 

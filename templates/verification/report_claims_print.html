@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>FANS-C &mdash; Claims Report</title>
+  <style>
+    body { font-family: Arial, sans-serif; font-size: 11pt; margin: 20mm; }
+    h2 { font-size: 14pt; margin-bottom: 4px; }
+    .meta { font-size: 9pt; color: #555; margin-bottom: 12px; }
+    table { width: 100%; border-collapse: collapse; margin-top: 12px; }
+    th { background: #1a2e4a; color: #fff; padding: 6px 8px; text-align: left; font-size: 10pt; }
+    td { padding: 5px 8px; border-bottom: 1px solid #ddd; font-size: 10pt; }
+    tr:nth-child(even) td { background: #f7f7f7; }
+    .badge-claimed { color: #155724; font-weight: bold; }
+    .badge-pending { color: #856404; font-weight: bold; }
+    .badge-rejected { color: #721c24; font-weight: bold; }
+    @media print {
+      .no-print { display: none; }
+      body { margin: 10mm; }
+    }
+  </style>
+</head>
+<body>
+
+<div class="no-print" style="margin-bottom:16px;">
+  <button onclick="window.print()" style="padding:6px 16px;font-size:12pt;cursor:pointer;">
+    Print / Save as PDF
+  </button>
+  <button onclick="window.close()" style="padding:6px 16px;font-size:12pt;margin-left:8px;cursor:pointer;">
+    Close
+  </button>
+</div>
+
+<h2>FANS-C &mdash; Claims Report</h2>
+<div class="meta">
+  Quezon City Barangay Senior Citizen Stipend Verification System
+  {% if date_from or date_to %}
+  &nbsp;|&nbsp; Period:
+  {% if date_from %}from {{ date_from }}{% endif %}
+  {% if date_to %}to {{ date_to }}{% endif %}
+  {% endif %}
+  &nbsp;|&nbsp; Generated: {% now "Y-m-d H:i" %}
+</div>
+
+<table>
+  <thead>
+    <tr>
+      <th>Beneficiary ID</th>
+      <th>Full Name</th>
+      <th>Stipend Event</th>
+      <th>Status</th>
+      <th>Claimant</th>
+      <th>Claimed By</th>
+      <th>Date</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for claim in claims %}
+    <tr>
+      <td>{{ claim.beneficiary.beneficiary_id }}</td>
+      <td>{{ claim.beneficiary.full_name }}</td>
+      <td>{% if claim.stipend_event %}{{ claim.stipend_event.title }}{% else %}(No Event){% endif %}</td>
+      <td>
+        {% if claim.status == 'claimed' %}<span class="badge-claimed">Claimed</span>
+        {% elif claim.status == 'pending_approval' %}<span class="badge-pending">Pending</span>
+        {% elif claim.status == 'rejected' %}<span class="badge-rejected">Rejected</span>
+        {% else %}{{ claim.status }}{% endif %}
+      </td>
+      <td>{{ claim.claimant_type|capfirst }}</td>
+      <td>{% if claim.claimed_by %}{{ claim.claimed_by.get_full_name|default:claim.claimed_by.username }}{% endif %}</td>
+      <td>{{ claim.created_at|date:"Y-m-d H:i" }}</td>
+    </tr>
+    {% empty %}
+    <tr><td colspan="7" style="text-align:center;color:#888;">No records found.</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+<p style="margin-top:18px;font-size:9pt;color:#777;">
+  Total records: {{ claims|length }} &nbsp;&mdash;&nbsp; FANS-C Stipend Verification System
+</p>
+
+</body>
+</html>

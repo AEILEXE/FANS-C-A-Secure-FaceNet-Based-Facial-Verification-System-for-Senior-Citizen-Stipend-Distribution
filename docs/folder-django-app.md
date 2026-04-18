@@ -84,30 +84,45 @@ Django's settings.py is a Python module, which means it can use conditionals, en
 
 ### Purpose
 
-The `accounts/` app manages everything related to user accounts: login, logout, password management, and role-based access control. It defines the custom user model with FANS-C-specific roles (Admin and Staff).
+The `accounts/` app manages user accounts: login, logout, password management, and role-based access control. It defines the custom user model with four FANS-C roles.
 
 ### Why it exists
 
-Django includes a built-in authentication system, but it uses a generic user model without application-specific roles. FANS-C extends this with a `CustomUser` model that adds a `role` field (admin or staff) and uses it to control what each user can see and do.
+Django's built-in user model has no application-specific roles. FANS-C extends it with a `CustomUser` model that adds a `role` field and helper properties used by every view decorator in the system.
+
+### Role system
+
+| Role | DB value | Properties that return True | Intended user |
+|---|---|---|---|
+| Head Barangay | `head_brgy` | `is_admin`, `is_head_barangay` | Barangay captain / operational admin |
+| IT / Admin | `admin_it` | `is_admin`, `is_admin_it` | Technical administrator |
+| Staff | `staff` | `is_staff_member` | Barangay encoder / frontline staff |
+| Admin (legacy) | `admin` | `is_admin`, `is_admin_it` | **Not assignable to new users.** Kept only for existing DB rows. Behaves identically to IT/Admin |
+
+`is_admin` = head_brgy OR admin_it OR admin. Gates all management-level access.
+`is_admin_it` = admin_it OR admin. Gates system-diagnostic, connection, and network pages.
+`is_head_barangay` = head_brgy only. Gates Head-Barangay-exclusive actions (pending claim approval, password reset for admin accounts).
 
 ### Important files inside
 
 **accounts/models.py**
 - Defines `CustomUser` — extends Django's `AbstractUser`
-- Adds `role` field with choices: `admin` or `staff`
-- This model is the authoritative representation of all system users
+- Adds `role` CharField and role-helper properties (`is_admin`, `is_admin_it`, `is_head_barangay`, `is_staff_member`)
 
 **accounts/views.py**
-- Login view: authenticates credentials, creates session, redirects to dashboard
-- Logout view: clears session
-- User management views: create users, change roles, reset passwords (Admin only)
+- Login / logout views
+- `change_password` — any logged-in user can change their own password; session is kept alive after the change
+- `admin_reset_password` — Head Barangay can reset any user's password; IT/Admin can reset Staff accounts only; all resets logged in `AuditLog`
 
 **accounts/forms.py**
-- Login form
-- User creation and update forms with role selection
+- `LoginForm`, `UserCreateForm`, `UserUpdateForm` — role dropdowns show only the three active roles (Head Barangay, IT/Admin, Staff); the legacy `admin` value never appears for new users
+- `PasswordChangeForm` — self-service change (requires current password)
+- `AdminPasswordResetForm` — admin reset (no current password needed); runs Django's full password validator suite
 
 **accounts/urls.py**
-- Maps URLs for login, logout, and user management to their respective views
+- `login/`, `logout/`
+- `password/change/` — self-service change for any logged-in user
+- `password/reset/<user_id>/` — admin reset (Head Barangay / IT/Admin only)
 
 **accounts/admin.py**
 - Registers `CustomUser` in Django's admin interface (`/admin/`)
@@ -232,13 +247,19 @@ Face verification is the primary innovation of FANS-C and requires dedicated log
 
 ### Important files inside
 
+**verification/apps.py**
+- `VerificationConfig(AppConfig)` — registers the app and runs `ready()` on Django startup
+- `ready()` starts a background daemon thread (`fans-facenet-warmup`) that calls `get_facenet_model()` and `_get_mtcnn()` immediately after Django initializes
+- This means the FaceNet model is loaded into memory by the time any staff opens a browser, eliminating the 5-15 second first-request delay that would otherwise occur when TensorFlow builds its computation graph
+- If the model is unavailable (TensorFlow not installed), the warmup logs a clear message and falls back to mock mode
+
 **verification/face_utils.py**
 - The core FaceNet integration module
-- Loads the keras-facenet model (downloaded ~90 MB from Hugging Face on first use, then cached in `~/.keras`)
-- `detect_and_embed(image)` — runs MTCNN face detection, crops the face, passes it through FaceNet, returns a 128-dimensional embedding vector
-- `compare_embeddings(embedding1, embedding2)` — computes cosine similarity between two embeddings
-- `load_model()` — loads the keras-facenet model once at startup; returns a mock model if loading fails (see DEMO_MODE vs. mock model distinction)
-- Face similarity threshold is read from `.env` (`DEMO_THRESHOLD` in demo mode)
+- Loads the keras-facenet model (~90 MB, cached in `~/.keras` after first download) as a module-level singleton — loaded once per process, reused for every request
+- `get_facenet_model()` — lazy-init with global cache; called by `apps.py` at startup and by every embedding request
+- `get_embedding(face_img)` — CLAHE → BGR→RGB → FaceNet → L2-normalize; identical pipeline for registration and verification
+- `compare_with_all_embeddings(live, beneficiary)` — best cosine similarity across primary + all additional templates
+- Face similarity threshold is read from `SystemConfig` (db-backed) respecting `DEMO_MODE`
 
 **verification/liveness.py**
 - Anti-spoofing module
@@ -261,12 +282,25 @@ Face verification is the primary innovation of FANS-C and requires dedicated log
   9. Return the result to the browser
 
 **verification/models.py**
-- `VerificationLog` — records each verification attempt
-- Stores: beneficiary, timestamp, similarity score, liveness score, result (verified/not verified), staff member who performed it
-- Used for audit trails and reporting
+Key models:
+- `StipendEvent` — distribution event with `date` (reference/announcement), `payout_start_date`, `payout_end_date`; `get_active_event_for_date()` returns the event whose payout window contains today; supports multi-day payout periods
+- `VerificationAttempt` — records every face scan attempt (score, liveness, decision, claimant type)
+- `ClaimRecord` — completed or pending payout claim; `STATUS_CLAIMED` = finalized, `STATUS_PENDING_APPROVAL` = awaiting Head Barangay approval (used when no active event exists), `STATUS_REJECTED`
+- `ManualVerificationRequest`, `FaceUpdateRequest`, `SpecialClaimRequest` — admin approval queue items
+- `FaceEmbedding`, `AdditionalFaceEmbedding`, `RepresentativeFaceEmbedding` — encrypted biometric data
+
+**verification/views.py**
+Handles the full verification workflow plus:
+- `report_claims` — filterable claims report; `?export=excel` → Excel download, `?export=print` → print-ready HTML
+- `report_event_summary` — per-event payout totals (claimed / pending / rejected / attempts / fallback)
+- `pending_claim_review` — Head Barangay/IT Admin approves or rejects a claim that was submitted without an active event
+- Pending-claim logic in `verify_submit`: if face passes but no active event, Head Barangay creates `STATUS_CLAIMED` directly; Staff/IT Admin creates `STATUS_PENDING_APPROVAL` logged as `ACTION_CLAIM_PENDING`
 
 **verification/urls.py**
-- Maps URLs for the verification camera interface and the result endpoint
+- Core verification flow, admin queue, stipend events, face updates, registration review, rep face registration
+- `reports/claims/` — Claims Report (HTML + Excel + print)
+- `reports/event-summary/` — Event Summary Report
+- `manual-review/pending-claim/<claim_id>/` — pending claim approval page
 
 **verification/admin.py**
 - Registers `VerificationLog` in the Django admin panel

@@ -7,6 +7,72 @@ Developed as a capstone project for deployment in controlled government environm
 
 ---
 
+## Quick Deployment Guide
+
+> Use this if you are setting up FANS-C for the first time. Follow each step in order.
+
+---
+
+### Part 1 — Server PC Setup (do this once)
+
+> This is the PC that will run the system. All other staff connect to it over the network.
+
+**Before you start, make sure you have:**
+- The FANS-C project folder (e.g., `D:\FANS`)
+- Python 3.11 installed — check "Add Python to PATH" during install
+- `caddy.exe` placed in the `tools\` folder inside the project
+- `mkcert.exe` placed in `tools\mkcert\` inside the project
+- You are logged in as **Administrator**
+
+**Steps:**
+
+1. Open the `D:\FANS` project folder
+2. Right-click `scripts\setup\setup-complete.ps1` → select **Run with PowerShell**
+3. Wait for the script to finish — all steps should show **PASS**
+4. Write down the **Server IP** shown at the end (example: `192.168.1.77`) — you will need it
+
+That's it. The server will now **start automatically every time the PC is turned on.**
+
+---
+
+### Part 2 — Staff PC Setup (do this once per device)
+
+> Do this on every computer or tablet that staff will use to access the system.
+
+**You need:**
+- The `CLIENT-SETUP` folder from the server PC (copy it to a USB drive)
+- The server's IP address (from Part 1, Step 4)
+
+**Steps:**
+
+1. Copy the `CLIENT-SETUP` folder to the staff PC (via USB or network share)
+2. Double-click `CLIENT-SETUP\trust-local-cert.bat` and approve the prompt
+3. Open the file `C:\Windows\System32\drivers\etc\hosts` in Notepad **(as Administrator)**
+4. Add this line at the bottom — replace the IP with your server's actual IP:
+   ```
+   192.168.1.77   fans-barangay.local
+   ```
+5. Save the file
+
+> **Tip:** If your router supports "Local DNS" or "Hostname Mapping", you can configure it there once instead of editing each device's hosts file.
+
+---
+
+### Part 3 — Daily Use (no setup needed)
+
+Once setup is complete, staff do not need to run any scripts or commands.
+
+**Every day:**
+
+1. Turn on the **server PC** and wait about **30 seconds**
+2. On any staff device, open a browser (Chrome, Edge, or Firefox)
+3. Go to: **`https://fans-barangay.local`**
+4. Log in and start processing beneficiaries
+
+Nothing else is required. If the system does not load after 30 seconds, wait another 30 seconds and try again.
+
+---
+
 ## Table of Contents
 
 1. [Key Features](#key-features)
@@ -29,7 +95,12 @@ Developed as a capstone project for deployment in controlled government environm
 - **Self-Healing Watchdog** — A background monitor checks the system every 45 seconds and automatically restarts services if they fail
 - **Health Check Tool** — IT/Admin can run a single script at any time to see the live status of every component
 - **Offline-Safe Design** — The system runs entirely within the barangay's local network; no internet connection is required for normal operation
-- **Role-Based Access** — Separate accounts for IT/Admin and barangay staff with appropriate permissions
+- **Role-Based Access** — Three active roles: Head Barangay (operational admin), IT/Admin (technical admin), Staff (operational)
+- **Multi-Day Payout Windows** — Distribution events can span multiple days with a start and end date
+- **Claims Reporting & Export** — Admins can export claims and event summaries as Excel (.xlsx) or print-ready PDF
+- **Approval Workflow** — Claims submitted outside an active payout event go to the Head Barangay for approval
+- **Password Management** — Users can change their own password; admins can reset other users' passwords (logged)
+- **FaceNet Startup Warmup** — Model is loaded in the background at boot so the first verification is fast
 
 ---
 
@@ -293,6 +364,40 @@ Browser (staff device)
 - **The watchdog** monitors Waitress and Caddy every 45 seconds. If either stops responding, it restarts the failed service automatically — up to 3 attempts per 10-minute window.
 
 Everything runs on one server PC, inside the barangay's local network. No cloud. No internet dependency.
+
+---
+
+## 🔐 Role Summary
+
+| Role | DB Value | What they can do |
+|---|---|---|
+| **Head Barangay** | `head_brgy` | All operational tasks: verify, register, approve claims/manual-reviews, manage users, run reports, reset passwords |
+| **IT / Admin** | `admin_it` | All Head Barangay permissions + system diagnostics, connection info, technical setup pages |
+| **Staff** | `staff` | Register beneficiaries, run verification, submit manual-review or special-claim requests; no user management or reports |
+| ~~Admin (legacy)~~ | `admin` | Kept only for existing DB rows. Behaves like IT/Admin. Not assignable to new users |
+
+> Staff cannot approve pending claims or access reports. Pending claims (submitted without an active event) appear in the Admin Review Queue for Head Barangay to approve.
+
+---
+
+## 📊 Reports & Export
+
+Head Barangay and IT/Admin have access to two report views under **Admin → Claims Report / Event Summary**:
+
+| Report | URL | Export options |
+|---|---|---|
+| Claims Report | `/verification/reports/claims/` | Print / Save as PDF, Excel (.xlsx) |
+| Event Summary | `/verification/reports/event-summary/` | Print / Save as PDF, Excel (.xlsx) |
+
+Reports can be filtered by date range, event, status, and claimant type. All exports are logged in the audit trail.
+
+---
+
+## 🔑 Password Management
+
+- **Change own password** — Available to all users via the user menu (top right) → *Change Password*
+- **Reset another user's password** — Head Barangay can reset any user's password. IT/Admin can reset Staff accounts only. Go to **Admin → User Management** and click the key icon next to the user
+- All password resets are recorded in the audit log with the resetting admin's identity
 
 ---
 
