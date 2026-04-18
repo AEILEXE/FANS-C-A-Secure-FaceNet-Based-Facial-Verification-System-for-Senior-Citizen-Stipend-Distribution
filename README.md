@@ -374,7 +374,7 @@ Everything runs on one server PC, inside the barangay's local network. No cloud.
 | **Head Barangay** | `head_brgy` | All operational tasks: verify, register, approve claims/manual-reviews, manage users, run reports, reset passwords |
 | **IT / Admin** | `admin_it` | All Head Barangay permissions + system diagnostics, connection info, technical setup pages |
 | **Staff** | `staff` | Register beneficiaries, run verification, submit manual-review or special-claim requests; no user management or reports |
-| ~~Admin (legacy)~~ | `admin` | Kept only for existing DB rows. Behaves like IT/Admin. Not assignable to new users |
+| ~~Admin (legacy)~~ | `admin` | **Fully migrated.** Migration `accounts/0006` converted all existing rows to IT/Admin. No longer assignable. Constant retained as safety fallback only. |
 
 > Staff cannot approve pending claims or access reports. Pending claims (submitted without an active event) appear in the Admin Review Queue for Head Barangay to approve.
 
@@ -382,7 +382,9 @@ Everything runs on one server PC, inside the barangay's local network. No cloud.
 
 ## 📊 Reports & Export
 
-Head Barangay and IT/Admin have access to two report views under **Admin → Claims Report / Event Summary**:
+Head Barangay and IT/Admin have access to two report views. They are accessible from two places:
+- **Navbar → Admin → Claims Report / Event Summary**
+- **Dashboard → Quick Actions → Claims Report / Event Summary**
 
 | Report | URL | Export options |
 |---|---|---|
@@ -390,6 +392,10 @@ Head Barangay and IT/Admin have access to two report views under **Admin → Cla
 | Event Summary | `/verification/reports/event-summary/` | Print / Save as PDF, Excel (.xlsx) |
 
 Reports can be filtered by date range, event, status, and claimant type. All exports are logged in the audit trail.
+
+**To export as PDF:** Click **Print / Save as PDF** — this opens a clean print-ready page in a new browser tab. Use the browser's built-in print dialog (Ctrl+P or Cmd+P) and select "Save as PDF" as the printer destination.
+
+**To export as Excel:** Click **Export Excel** — the browser downloads a `.xlsx` file immediately.
 
 ---
 

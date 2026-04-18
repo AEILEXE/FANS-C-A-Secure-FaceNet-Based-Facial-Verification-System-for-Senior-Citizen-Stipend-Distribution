@@ -101,19 +101,7 @@ class UserUpdateForm(forms.ModelForm):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        # Preserve the current legacy role value in the displayed list so the
-        # select doesn't show blank for users who still carry the 'admin' role,
-        # but don't allow assigning it to new or edited users going forward.
-        current_role = self.instance.role if self.instance.pk else None
-        if current_role == CustomUser.ROLE_ADMIN:
-            choices = _ACTIVE_ROLE_CHOICES + [(CustomUser.ROLE_ADMIN, 'Admin (legacy — read-only)')]
-            self.fields['role'].choices = choices
-            self.fields['role'].help_text = (
-                'This user has the legacy Admin role. Reassign to IT / Admin or '
-                'Head Barangay to remove the legacy designation.'
-            )
-        else:
-            self.fields['role'].choices = _ACTIVE_ROLE_CHOICES
+        self.fields['role'].choices = _ACTIVE_ROLE_CHOICES
 
 
 class PasswordChangeForm(_DjPasswordChangeForm):

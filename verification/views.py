@@ -1615,7 +1615,7 @@ def manual_review_list(request):
     pending_no_event_claims = ClaimRecord.objects.filter(
         status=ClaimRecord.STATUS_PENDING_APPROVAL,
         stipend_event__isnull=True,
-    ).select_related('beneficiary', 'claimed_by', 'verification_attempt').order_by('-created_at')
+    ).select_related('beneficiary', 'claimed_by', 'verification_attempt').order_by('-claimed_at')
 
     return render(request, 'verification/manual_review.html', {
         'pending': pending_verifications,
@@ -2351,13 +2351,13 @@ def report_claims(request):
     qs = (
         ClaimRecord.objects
         .select_related('beneficiary', 'stipend_event', 'claimed_by', 'approved_by', 'representative')
-        .order_by('-created_at')
+        .order_by('-claimed_at')
     )
 
     if date_from:
-        qs = qs.filter(created_at__date__gte=date_from)
+        qs = qs.filter(claimed_at__date__gte=date_from)
     if date_to:
-        qs = qs.filter(created_at__date__lte=date_to)
+        qs = qs.filter(claimed_at__date__lte=date_to)
     if event_id:
         qs = qs.filter(stipend_event_id=event_id)
     if status_f:
@@ -2393,7 +2393,7 @@ def report_claims(request):
                 r.representative.full_name if r.representative else '',
                 r.claimed_by.get_full_name() or r.claimed_by.username if r.claimed_by else '',
                 r.approved_by.get_full_name() or r.approved_by.username if r.approved_by else '',
-                r.created_at.astimezone().strftime('%Y-%m-%d %H:%M') if r.created_at else '',
+                r.claimed_at.astimezone().strftime('%Y-%m-%d %H:%M') if r.claimed_at else '',
             ])
 
         AuditLog.log(

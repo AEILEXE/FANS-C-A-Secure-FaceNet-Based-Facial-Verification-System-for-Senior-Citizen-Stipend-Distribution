@@ -127,7 +127,7 @@
             <td class="small">
               {% if claim.approved_by %}{{ claim.approved_by.get_full_name|default:claim.approved_by.username }}{% endif %}
             </td>
-            <td class="small text-nowrap">{{ claim.created_at|date:"Y-m-d H:i" }}</td>
+            <td class="small text-nowrap">{{ claim.claimed_at|date:"Y-m-d H:i" }}</td>
           </tr>
           {% empty %}
           <tr>

@@ -84,7 +84,7 @@ Django's settings.py is a Python module, which means it can use conditionals, en
 
 ### Purpose
 
-The `accounts/` app manages user accounts: login, logout, password management, and role-based access control. It defines the custom user model with four FANS-C roles.
+The `accounts/` app manages user accounts: login, logout, password management, and role-based access control. It defines the custom user model with three active FANS-C roles (Head Barangay, IT/Admin, Staff); the legacy `admin` role has been fully migrated to IT/Admin via database migration `accounts/0006`.
 
 ### Why it exists
 
@@ -97,7 +97,7 @@ Django's built-in user model has no application-specific roles. FANS-C extends i
 | Head Barangay | `head_brgy` | `is_admin`, `is_head_barangay` | Barangay captain / operational admin |
 | IT / Admin | `admin_it` | `is_admin`, `is_admin_it` | Technical administrator |
 | Staff | `staff` | `is_staff_member` | Barangay encoder / frontline staff |
-| Admin (legacy) | `admin` | `is_admin`, `is_admin_it` | **Not assignable to new users.** Kept only for existing DB rows. Behaves identically to IT/Admin |
+| ~~Admin (legacy)~~ | `admin` | `is_admin`, `is_admin_it` | **Fully migrated.** Migration `0006` converted all existing `admin` rows to `admin_it`. Not assignable to new users. Constant kept as safety fallback only. |
 
 `is_admin` = head_brgy OR admin_it OR admin. Gates all management-level access.
 `is_admin_it` = admin_it OR admin. Gates system-diagnostic, connection, and network pages.
@@ -147,7 +147,7 @@ Django's built-in user model has no application-specific roles. FANS-C extends i
 
 - All other apps (`beneficiaries`, `verification`) import `@admin_required` and `@staff_required` from `accounts.decorators` to protect their views
 - `fans/settings.py` sets `AUTH_USER_MODEL = 'accounts.CustomUser'` to use the custom model system-wide
-- The setup script calls `python manage.py createsuperuser` (which creates a Django superuser) and then separately sets the FANS-C `role = 'admin'` via a management command or shell command
+- The setup script calls `python manage.py createsuperuser` (which creates a Django superuser) and then separately sets the FANS-C `role = 'admin_it'` via the `create_admin` management command
 - Both Django's `is_superuser`/`is_staff` flags and the FANS-C `role` field must be set for full admin access
 
 ### Runtime flow
@@ -164,7 +164,7 @@ Django's built-in user model has no application-specific roles. FANS-C extends i
 FANS-C needs role-based access control beyond what Django's built-in permissions system provides out of the box. A custom user model with a `role` field is the standard Django approach for application-level roles. It also allows adding future fields (e.g., assigned barangay, phone number) without a separate profile model.
 
 **What happens if the admin role is not set?**
-A user created with `createsuperuser` gets Django's `is_superuser=True` but the FANS-C `role` field defaults to `staff`. If the role is not explicitly set to `admin`, the user can access the Django admin panel (via `is_superuser`) but cannot access FANS-C admin views (which check the `role` field).
+A user created with `createsuperuser` gets Django's `is_superuser=True` but the FANS-C `role` field defaults to `staff`. If the role is not explicitly set to `admin_it` or `head_brgy`, the user can access the Django admin panel (via `is_superuser`) but cannot access FANS-C admin views (which check the `role` field). The `create_admin` management command handles this automatically.
 
 ---
 

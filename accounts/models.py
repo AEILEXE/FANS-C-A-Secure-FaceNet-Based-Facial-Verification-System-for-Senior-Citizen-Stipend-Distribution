@@ -4,8 +4,11 @@ from django.db import models
 
 class CustomUser(AbstractUser):
     # ── Role constants ────────────────────────────────────────────────────────
-    # ROLE_ADMIN (legacy)  — kept so existing 'admin' rows are never broken.
-    #                        Treated identically to ROLE_ADMIN_IT everywhere.
+    # ROLE_ADMIN (legacy)  — DB value 'admin'; no longer assigned to new users.
+    #                        Migration 0006 converted all existing rows to
+    #                        admin_it. Kept as a constant so is_admin_it remains
+    #                        a safe fallback for any row that somehow still
+    #                        carries the old value (e.g. restored from backup).
     # ROLE_HEAD_BRGY       — Operational admin (Head Barangay / Barangay Captain).
     #                        Non-technical. Sees dashboards, reports, user mgmt.
     #                        Does NOT see LAN IPs, connection diagnostics, or
@@ -15,7 +18,7 @@ class CustomUser(AbstractUser):
     #                        System Connection Info, diagnostics, network setup.
     # ROLE_STAFF           — Operational user. Register, verify, workflow only.
     #                        No user management or system diagnostics.
-    ROLE_ADMIN    = 'admin'      # legacy — behaves as admin_it
+    ROLE_ADMIN    = 'admin'      # legacy constant — no new users assigned this value
     ROLE_HEAD_BRGY = 'head_brgy' # operational admin (non-technical)
     ROLE_ADMIN_IT  = 'admin_it'  # technical administrator
     ROLE_STAFF    = 'staff'
@@ -24,7 +27,6 @@ class CustomUser(AbstractUser):
         (ROLE_HEAD_BRGY, 'Head Barangay'),
         (ROLE_ADMIN_IT,  'IT / Admin'),
         (ROLE_STAFF,     'Staff'),
-        (ROLE_ADMIN,     'Admin (legacy)'),  # kept for backward compatibility
     ]
 
     role = models.CharField(max_length=10, choices=ROLE_CHOICES, default=ROLE_STAFF)

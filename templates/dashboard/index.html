@@ -206,6 +206,14 @@
           <div class="action-icon" style="background:#f1f5f9; color:#374151;"><i class="bi bi-people-fill"></i></div>
           <span>User Management</span>
         </a>
+        <a href="{% url 'verification:report_claims' %}" class="action-btn">
+          <div class="action-icon" style="background:#e0f2fe; color:#0284c7;"><i class="bi bi-file-earmark-bar-graph-fill"></i></div>
+          <span>Claims Report</span>
+        </a>
+        <a href="{% url 'verification:report_event_summary' %}" class="action-btn">
+          <div class="action-icon" style="background:#f0fdf4; color:#15803d;"><i class="bi bi-bar-chart-line-fill"></i></div>
+          <span>Event Summary</span>
+        </a>
         {% endif %}
       </div>
     </div>
