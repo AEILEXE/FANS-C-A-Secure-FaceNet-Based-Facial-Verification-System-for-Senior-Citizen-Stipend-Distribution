@@ -87,7 +87,7 @@ scripts\setup\setup-complete.ps1 (as Administrator)
         |
         |-- Step 8: Register watchdog
                 |-- Registers "FANS-C Watchdog" Task Scheduler task
-                |-- This task runs watchdog.ps1 90 seconds after every boot
+                |-- This task runs watchdog.ps1 150 seconds after every boot
 ```
 
 After setup completes, IT/Admin:
@@ -111,7 +111,7 @@ Server PC turns on
         |       |-- Waits for port 443 to respond
         |       |-- Writes result to logs\fans-startup.log
         |
-        |-- 90 seconds later, Task Scheduler fires: "FANS-C Watchdog"
+        |-- 150 seconds later, Task Scheduler fires: "FANS-C Watchdog"
                 |-- Runs: scripts\admin\watchdog.ps1
                 |-- Begins continuous monitoring loop (every 45 seconds)
 ```
@@ -326,7 +326,7 @@ Django renders HTML responses using templates from the `templates/` folder. Stat
 
 Windows Task Scheduler manages two background tasks:
 - **FANS-C Verification System** — starts Waitress and Caddy at boot
-- **FANS-C Watchdog** — starts the watchdog 90 seconds after boot
+- **FANS-C Watchdog** — starts the watchdog 150 seconds after boot
 
 The watchdog does not use Task Scheduler to restart services. It directly calls PowerShell commands to kill and relaunch Waitress and Caddy processes when it detects a failure.
 
@@ -370,13 +370,13 @@ Real SSL certificates (from Let's Encrypt or a commercial CA) require a publicly
 
 ### Why is the watchdog a separate script and not part of the main startup?
 
-The watchdog needs to continue running after the startup script has finished. If it were part of the startup script, it would block the startup script from completing. As a separate Task Scheduler task, it starts 90 seconds after boot (giving the main startup time to complete) and then runs indefinitely in the background, independent of any other process.
+The watchdog needs to continue running after the startup script has finished. If it were part of the startup script, it would block the startup script from completing. As a separate Task Scheduler task, it starts 150 seconds after boot (giving the main startup time to complete) and then runs indefinitely in the background, independent of any other process.
 
-### Why the 90-second delay before the watchdog starts?
+### Why the 150-second delay before the watchdog starts?
 
 The main startup task (FANS-C Verification System) needs time to:
 1. Activate the Python virtual environment
-2. Start Waitress (Django takes 4-8 seconds to initialize)
+2. Start Waitress (Django takes 4-8 seconds to initialize; FaceNet model download takes up to 90 seconds on first run)
 3. Start Caddy
 
 If the watchdog started immediately at boot, it would see both services as down and immediately attempt a restart, which would conflict with the normal startup already in progress and could result in duplicate processes.

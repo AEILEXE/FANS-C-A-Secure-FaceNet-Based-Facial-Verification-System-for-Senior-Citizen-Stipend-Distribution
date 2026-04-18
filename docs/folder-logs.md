@@ -146,7 +146,7 @@ The health check script (`check-system-health.ps1`) reads the last section of bo
 |---|---|
 | Setup | `logs/` folder is created during setup if it does not exist |
 | Every boot | `start-fans-hidden.ps1` appends a startup block to `fans-startup.log` |
-| 90 seconds after boot | `watchdog.ps1` starts and begins appending to `fans-watchdog.log` every 45 seconds |
+| 150 seconds after boot | `watchdog.ps1` starts and begins appending to `fans-watchdog.log` every 45 seconds |
 | Any failure | Both log files capture the failure event and any recovery attempts |
 | IT/Admin diagnostics | `check-system-health.ps1` reads recent entries from both logs |
 

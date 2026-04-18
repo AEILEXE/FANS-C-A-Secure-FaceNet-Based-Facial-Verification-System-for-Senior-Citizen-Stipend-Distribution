@@ -62,12 +62,33 @@ function Test-PortListening {
     return $false
 }
 
+# -- HTTPS end-to-end probe ---------------------------------------------------
+function Test-HttpsProbe {
+    param([string]$Uri = 'https://fans-barangay.local/', [int]$TimeoutMs = 6000)
+    try {
+        [Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
+        $req         = [System.Net.HttpWebRequest]::Create($Uri)
+        $req.Timeout = $TimeoutMs
+        $req.Method  = 'GET'
+        $resp        = $req.GetResponse()
+        $resp.Close()
+        return $true
+    } catch [System.Net.WebException] {
+        if ($null -ne $_.Exception.Response) { return $true }
+        return $false
+    } catch {
+        return $false
+    } finally {
+        [Net.ServicePointManager]::ServerCertificateValidationCallback = $null
+    }
+}
+
 # -- Hidden process launcher --------------------------------------------------
 function Start-Hidden {
-    param([string]$Exe, [string]$Args, [string]$WorkDir)
+    param([string]$Exe, [string]$CmdArgs, [string]$WorkDir)
     $psi                  = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName         = $Exe
-    $psi.Arguments        = $Args
+    $psi.Arguments        = $CmdArgs
     $psi.WorkingDirectory = $WorkDir
     $psi.CreateNoWindow   = $true
     $psi.UseShellExecute  = $false
@@ -151,15 +172,31 @@ if (-not $caddyExe) {
     Write-Log '      Fix: place caddy.exe in the project tools\ folder.'
 }
 
+# -- STOP STALE INSTANCES (prevents duplicate-process and port conflicts) -----
+$staleWaitress = Get-Process -Name 'waitress-serve' -ErrorAction SilentlyContinue
+if ($staleWaitress) {
+    Write-Log "Stopping $($staleWaitress.Count) stale Waitress process(es) before start..."
+    foreach ($p in $staleWaitress) { try { $p.Kill() } catch { } }
+}
+$staleCaddy = Get-Process -Name 'caddy' -ErrorAction SilentlyContinue
+if ($staleCaddy) {
+    Write-Log "Stopping $($staleCaddy.Count) stale Caddy process(es) before start..."
+    foreach ($p in $staleCaddy) { try { $p.Kill() } catch { } }
+}
+if ($staleWaitress -or $staleCaddy) {
+    Write-Log 'Waiting 3 seconds for ports to release...'
+    Start-Sleep -Seconds 3
+}
+
 # -- START WAITRESS (no window) -----------------------------------------------
 Write-Log "Starting Waitress: $waitressExe"
 
 $wProc = $null
 try {
     $wProc = Start-Hidden `
-        -Exe     $waitressExe `
-        -Args    '--listen=127.0.0.1:8000 fans.wsgi:application' `
-        -WorkDir $projectRoot
+        -Exe      $waitressExe `
+        -CmdArgs  '--listen=127.0.0.1:8000 fans.wsgi:application' `
+        -WorkDir  $projectRoot
     $wProc.Id | Set-Content (Join-Path $projectRoot '.fans-waitress.pid') -Encoding UTF8
     Write-Log "Waitress launched (PID $($wProc.Id)). Waiting 6 seconds for Django to load..."
 } catch {
@@ -178,9 +215,9 @@ if ($caddyExe -and $certAvailable) {
     Write-Log "Starting Caddy: $caddyExe"
     try {
         $cProc = Start-Hidden `
-            -Exe     $caddyExe `
-            -Args    'run --config Caddyfile' `
-            -WorkDir $projectRoot
+            -Exe      $caddyExe `
+            -CmdArgs  'run --config Caddyfile' `
+            -WorkDir  $projectRoot
         $cProc.Id | Set-Content (Join-Path $projectRoot '.fans-caddy.pid') -Encoding UTF8
         Write-Log "Caddy launched (PID $($cProc.Id)). Waiting 8 seconds for HTTPS to bind..."
     } catch {
@@ -251,11 +288,31 @@ if ($cProc) {
 }
 
 # =============================================================================
+# HTTPS END-TO-END PROBE (only if both ports are up)
+# =============================================================================
+$httpsOK = $false
+if ($port8000OK -and $port443OK) {
+    Write-Log 'Verifying HTTPS end-to-end (fans-barangay.local -> Caddy -> Django)...'
+    $httpsOK = Test-HttpsProbe
+    if ($httpsOK) {
+        Write-Log 'CHECK HTTPS end-to-end   : OK -- https://fans-barangay.local responds'
+    } else {
+        Write-Log 'CHECK HTTPS end-to-end   : FAIL -- port 443 open but HTTPS not routing'
+        Write-Log '      Likely cause: fans-barangay.local missing from server hosts file.'
+        Write-Log '      Fix: IT/Admin run scripts\admin\repair-hosts.ps1 (as Admin).'
+    }
+}
+
+# =============================================================================
 # STARTUP STATUS SUMMARY
 # =============================================================================
-if ($port8000OK -and $port443OK) {
-    Write-Log 'STARTUP STATUS: OK -- Waitress (8000) and Caddy (443) are ready'
+if ($port8000OK -and $port443OK -and $httpsOK) {
+    Write-Log 'STARTUP STATUS: OK -- Waitress (8000) and HTTPS (443) verified end-to-end'
     Write-Log '                System is accessible at https://fans-barangay.local'
+} elseif ($port8000OK -and $port443OK -and -not $httpsOK) {
+    Write-Log 'STARTUP STATUS: PARTIAL -- Ports OK but HTTPS end-to-end failed'
+    Write-Log '                Caddy is running but https://fans-barangay.local is not reachable.'
+    Write-Log '                Fix: IT/Admin run scripts\admin\repair-hosts.ps1 (as Admin).'
 } elseif ($port8000OK -and -not $cProc) {
     Write-Log 'STARTUP STATUS: PARTIAL -- Waitress OK, Caddy not started (missing cert or exe)'
     Write-Log '                HTTPS is unavailable. IT/Admin action required.'

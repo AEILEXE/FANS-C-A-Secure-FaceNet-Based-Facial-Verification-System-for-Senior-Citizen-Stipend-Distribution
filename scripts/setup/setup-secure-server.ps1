@@ -64,7 +64,8 @@
 param(
     [switch]$SkipDeps,
     [switch]$SkipAdminCreate,
-    [switch]$SkipStaticFiles
+    [switch]$SkipStaticFiles,
+    [switch]$ForceRegenerateCert
 )
 
 Set-StrictMode -Version Latest
@@ -359,19 +360,37 @@ if (($envRaw -match '(?m)^EMBEDDING_ENCRYPTION_KEY\s*=\s*$') -or
 }
 Write-OK ".env configuration verified."
 
-# -- Step 8: Find mkcert ------------------------------------------------------
-Write-Step "8/12" "Locating mkcert.exe and generating TLS certificate..."
-$mkcertExe = $null
+# -- Step 8: TLS certificate (idempotent -- skips if cert already exists) -----
+Write-Step "8/12" "Checking TLS certificate..."
 
+$stableCert    = Join-Path $projectRoot 'fans-cert.pem'
+$stableCertKey = Join-Path $projectRoot 'fans-cert-key.pem'
+$certsExist    = (Test-Path $stableCert) -and (Test-Path $stableCertKey)
+$mkcertExe     = $null
+$lanIp         = $null
+
+# Always try to locate mkcert -- needed for CAROOT path shown in the summary below
 if (Test-Path $mkcertBundled) {
     $mkcertExe = $mkcertBundled
-    Write-OK "mkcert found (bundled): $mkcertExe"
 } else {
     try {
         $found     = Get-Command mkcert -ErrorAction Stop
         $mkcertExe = $found.Source
-        Write-OK "mkcert found on PATH: $mkcertExe"
-    } catch {
+    } catch { }
+}
+
+if ($certsExist -and -not $ForceRegenerateCert) {
+    Write-OK "Existing TLS certificate found -- skipping regeneration"
+    Write-Host "         fans-cert.pem and fans-cert-key.pem are present" -ForegroundColor DarkGray
+    Write-Host "         Re-run with -ForceRegenerateCert to replace the certificate" -ForegroundColor DarkGray
+} else {
+    if ($ForceRegenerateCert) {
+        Write-Host "         -ForceRegenerateCert specified -- regenerating certificate" -ForegroundColor Yellow
+    } else {
+        Write-Host "         Certificate not found -- generating now" -ForegroundColor DarkGray
+    }
+
+    if (-not $mkcertExe) {
         Write-Fail "mkcert.exe not found."
         Write-Host "         Expected bundled location: $mkcertBundled" -ForegroundColor Yellow
         Write-Host "         Or place mkcert.exe anywhere on your system PATH." -ForegroundColor Yellow
@@ -380,82 +399,80 @@ if (Test-Path $mkcertBundled) {
         Read-Host "  Press Enter to exit"
         exit 1
     }
-}
 
-# Install mkcert local CA
-Write-Host "         Installing mkcert local Certificate Authority ..." -ForegroundColor DarkGray
-Write-Host "         (The rootCA.pem from this CA must be copied to each client device.)" -ForegroundColor DarkGray
-try {
-    & $mkcertExe -install
-    Write-OK "Local CA installed."
-} catch {
-    Write-Warn "mkcert -install reported an error. Continuing..."
-    Write-Host "         $_" -ForegroundColor DarkGray
-}
+    Write-OK "mkcert found: $mkcertExe"
 
-# Detect LAN IP
-Write-Host "         Detecting server LAN IP address ..." -ForegroundColor DarkGray
-$lanIp = $null
-try {
-    $udp = New-Object System.Net.Sockets.UdpClient
-    $udp.Connect('8.8.8.8', 80)
-    $lanIp = $udp.Client.LocalEndPoint.Address.ToString()
-    $udp.Close()
-} catch { }
-
-if (-not $lanIp) {
+    # Install mkcert local CA
+    Write-Host "         Installing mkcert local Certificate Authority ..." -ForegroundColor DarkGray
+    Write-Host "         (The rootCA.pem from this CA must be copied to each client device.)" -ForegroundColor DarkGray
     try {
-        $lanIp = (Get-NetIPAddress -AddressFamily IPv4 |
-                  Where-Object { $_.IPAddress -notmatch '^127\.' -and
-                                 $_.IPAddress -notmatch '^169\.254\.' } |
-                  Select-Object -First 1).IPAddress
+        & $mkcertExe -install
+        Write-OK "Local CA installed."
+    } catch {
+        Write-Warn "mkcert -install reported an error. Continuing..."
+        Write-Host "         $_" -ForegroundColor DarkGray
+    }
+
+    # Detect LAN IP
+    Write-Host "         Detecting server LAN IP address ..." -ForegroundColor DarkGray
+    try {
+        $udp = New-Object System.Net.Sockets.UdpClient
+        $udp.Connect('8.8.8.8', 80)
+        $lanIp = $udp.Client.LocalEndPoint.Address.ToString()
+        $udp.Close()
     } catch { }
+
+    if (-not $lanIp) {
+        try {
+            $lanIp = (Get-NetIPAddress -AddressFamily IPv4 |
+                      Where-Object { $_.IPAddress -notmatch '^127\.' -and
+                                     $_.IPAddress -notmatch '^169\.254\.' } |
+                      Select-Object -First 1).IPAddress
+        } catch { }
+    }
+
+    if ($lanIp) {
+        Write-OK "LAN IP detected: $lanIp"
+    } else {
+        Write-Warn "Could not detect LAN IP. Certificate will cover localhost only."
+        Write-Warn "Connect the server to the network and re-run to add the LAN IP."
+    }
+
+    # Generate certificate
+    $certNames = @('fans-barangay.local', 'localhost', '127.0.0.1')
+    if ($lanIp) { $certNames = @('fans-barangay.local', $lanIp, 'localhost', '127.0.0.1') }
+
+    $sanCount    = $certNames.Count - 1
+    $certFile    = Join-Path $projectRoot "fans-barangay.local+$sanCount.pem"
+    $certKeyFile = Join-Path $projectRoot "fans-barangay.local+$sanCount-key.pem"
+
+    Write-Host "         Generating TLS certificate for fans-barangay.local ..." -ForegroundColor DarkGray
+    try {
+        Push-Location $projectRoot
+        & $mkcertExe @certNames
+        Pop-Location
+    } catch {
+        Write-Fail "mkcert certificate generation failed."
+        Write-Host "         $_" -ForegroundColor DarkGray
+        Read-Host "  Press Enter to exit"
+        exit 1
+    }
+
+    if (-not (Test-Path $certFile)) {
+        Write-Fail "Expected certificate file not found: $certFile"
+        Write-Host "         mkcert may have named it differently. Check the project root folder." -ForegroundColor Yellow
+        Read-Host "  Press Enter to exit"
+        exit 1
+    }
+
+    Write-OK "Certificate : $certFile"
+    Write-OK "Private key : $certKeyFile"
+
+    Copy-Item $certFile    $stableCert    -Force
+    Copy-Item $certKeyFile $stableCertKey -Force
+    Write-OK "Stable cert : $stableCert (used by Caddy)"
+    Write-OK "Stable key  : $stableCertKey"
 }
-
-if ($lanIp) {
-    Write-OK "LAN IP detected: $lanIp"
-} else {
-    Write-Warn "Could not detect LAN IP. Certificate will cover localhost only."
-    Write-Warn "Connect the server to the network and re-run to add the LAN IP."
-}
-
-# Generate certificate
-$certNames = @('fans-barangay.local', 'localhost', '127.0.0.1')
-if ($lanIp) { $certNames = @('fans-barangay.local', $lanIp, 'localhost', '127.0.0.1') }
-
-$sanCount    = $certNames.Count - 1
-$certFile    = Join-Path $projectRoot "fans-barangay.local+$sanCount.pem"
-$certKeyFile = Join-Path $projectRoot "fans-barangay.local+$sanCount-key.pem"
-
-Write-Host "         Generating TLS certificate for fans-barangay.local ..." -ForegroundColor DarkGray
-try {
-    Push-Location $projectRoot
-    & $mkcertExe @certNames
-    Pop-Location
-} catch {
-    Write-Fail "mkcert certificate generation failed."
-    Write-Host "         $_" -ForegroundColor DarkGray
-    Read-Host "  Press Enter to exit"
-    exit 1
-}
-
-if (-not (Test-Path $certFile)) {
-    Write-Fail "Expected certificate file not found: $certFile"
-    Write-Host "         mkcert may have named it differently. Check the project root folder." -ForegroundColor Yellow
-    Read-Host "  Press Enter to exit"
-    exit 1
-}
-
-Write-OK "Certificate : $certFile"
-Write-OK "Private key : $certKeyFile"
-
-# Copy to stable names so Caddyfile never needs updating when cert is regenerated
-$stableCert    = Join-Path $projectRoot 'fans-cert.pem'
-$stableCertKey = Join-Path $projectRoot 'fans-cert-key.pem'
-Copy-Item $certFile    $stableCert    -Force
-Copy-Item $certKeyFile $stableCertKey -Force
-Write-OK "Stable cert : $stableCert (used by Caddy)"
-Write-OK "Stable key  : $stableCertKey"
 
 # -- Step 9: Check Caddyfile --------------------------------------------------
 Write-Step "9/12" "Checking Caddyfile..."
@@ -506,8 +523,10 @@ if ($SkipStaticFiles) {
     }
 }
 
-# -- Step 11: Windows Firewall rule -------------------------------------------
-Write-Step "11/12" "Checking Windows Firewall rule for HTTPS (port 443)..."
+# -- Step 11: Network config (firewall + server hosts file) ------------------
+Write-Step "11/12" "Checking network configuration (firewall + server hosts file)..."
+
+# 11a: Windows Firewall rule
 $fwRuleName = 'FANS-C Caddy HTTPS'
 $existing   = netsh advfirewall firewall show rule name="$fwRuleName" 2>&1
 if ($existing -match 'No rules match') {
@@ -525,27 +544,71 @@ if ($existing -match 'No rules match') {
     Write-OK "Firewall rule already exists."
 }
 
-# -- Step 12: Create admin user (optional, interactive) -----------------------
+# 11b: Server hosts file -- fans-barangay.local must resolve on the server itself
+# Without this entry the browser on the server PC cannot reach https://fans-barangay.local.
+$hostsFile    = 'C:\Windows\System32\drivers\etc\hosts'
+$hostsContent = Get-Content $hostsFile -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
+
+function Add-HostsEntry {
+    param([string]$Ip, [string]$Hostname)
+    $marker  = "# FANS-C"
+    $newLine = "$Ip`t$Hostname`t$marker"
+
+    # Already has a non-commented entry for this hostname
+    if ($script:hostsContent -match "(?m)^[^#\s].*\s+${Hostname}(\s|$)") {
+        Write-OK "Hosts file: $Hostname already resolved (entry found)."
+        return
+    }
+
+    try {
+        Add-Content -Path $hostsFile -Value $newLine -Encoding UTF8
+        Write-OK "Hosts file: added  $Ip  $Hostname"
+        $script:hostsContent += "`n$newLine"
+    } catch {
+        Write-Warn "Could not write to hosts file: $_"
+        Write-Warn "Add manually: $Ip  $Hostname"
+    }
+}
+
+# Map loopback so the browser on the server PC resolves https://fans-barangay.local.
+# Caddy binds all interfaces, so 127.0.0.1:443 reaches it correctly.
+# Client devices use the LAN IP instead (handled by trust-local-cert.bat).
+Add-HostsEntry -Ip '127.0.0.1' -Hostname 'fans-barangay.local'
+
+# -- Step 12: Admin user (skipped automatically if one already exists) --------
+Write-Step "12/12" "Checking for admin user..."
+
 if ($SkipAdminCreate) {
-    Write-Step "12/12" "Skipping admin user creation (-SkipAdminCreate)."
+    Write-OK "Skipping admin user creation (-SkipAdminCreate)."
 } else {
-    Write-Step "12/12" "Creating Django admin user..."
-    Write-Host ""
-    Write-Host "         Django will now prompt for a username, email, and password." -ForegroundColor White
-    Write-Host "         Choose a strong password and store it securely." -ForegroundColor White
-    Write-Host ""
-    $prevEAP              = $ErrorActionPreference
+    $prevEAP = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
-    & $venvPython manage.py createsuperuser
-    $suExitCode           = $LASTEXITCODE
+    $suCheckRaw = & $venvPython manage.py shell --no-color -c `
+        "from django.contrib.auth import get_user_model; U=get_user_model(); print(U.objects.filter(is_superuser=True).count())" `
+        2>&1
     $ErrorActionPreference = $prevEAP
-    if ($suExitCode -ne 0) {
-        Write-Warn "createsuperuser exited with code $suExitCode."
-        Write-Warn "Create the admin account later with:"
-        Write-Warn "  .\.venv\Scripts\Activate.ps1"
-        Write-Warn "  python manage.py createsuperuser"
+    $suCheckStr = (($suCheckRaw | Where-Object { $_ -match '^\d+$' }) -join '').Trim()
+
+    if ($suCheckStr -match '^\d+$' -and [int]$suCheckStr -gt 0) {
+        Write-OK "Admin user already exists ($([int]$suCheckStr) superuser(s)) -- skipping"
+        Write-Host "         To add another admin: scripts\admin\create-admin-user.ps1" -ForegroundColor DarkGray
     } else {
-        Write-OK "Admin user created."
+        Write-Host ""
+        Write-Host "         No admin account found. Creating Django admin user..." -ForegroundColor White
+        Write-Host "         Django will now prompt for username, email, and password." -ForegroundColor White
+        Write-Host "         Choose a strong password and store it securely." -ForegroundColor White
+        Write-Host ""
+        $prevEAP = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        & $venvPython manage.py createsuperuser
+        $suExitCode = $LASTEXITCODE
+        $ErrorActionPreference = $prevEAP
+        if ($suExitCode -ne 0) {
+            Write-Warn "createsuperuser exited with code $suExitCode."
+            Write-Warn "Create the admin account later: scripts\admin\create-admin-user.ps1"
+        } else {
+            Write-OK "Admin user created."
+        }
     }
 }
 

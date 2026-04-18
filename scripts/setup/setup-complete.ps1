@@ -53,7 +53,8 @@
 #>
 
 param(
-    [switch]$SkipDeps
+    [switch]$SkipDeps,
+    [switch]$ForceRegenerateCert
 )
 
 $ErrorActionPreference = 'Stop'
@@ -99,6 +100,26 @@ function Test-PortOpen {
         if ($i -lt ($Retries - 1)) { Start-Sleep -Milliseconds $DelayMs }
     }
     return $false
+}
+
+function Test-HttpsProbe {
+    param([string]$Uri = 'https://fans-barangay.local/', [int]$TimeoutMs = 6000)
+    try {
+        [Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
+        $req         = [System.Net.HttpWebRequest]::Create($Uri)
+        $req.Timeout = $TimeoutMs
+        $req.Method  = 'GET'
+        $resp        = $req.GetResponse()
+        $resp.Close()
+        return $true
+    } catch [System.Net.WebException] {
+        if ($null -ne $_.Exception.Response) { return $true }
+        return $false
+    } catch {
+        return $false
+    } finally {
+        [Net.ServicePointManager]::ServerCertificateValidationCallback = $null
+    }
 }
 
 function Find-CaddyExe {
@@ -179,9 +200,10 @@ if (-not (Test-Path $setupServerScript)) {
     exit 1
 }
 
-$skipDepsArg = if ($SkipDeps) { ' -SkipDeps' } else { '' }
+$skipDepsArg  = if ($SkipDeps)             { ' -SkipDeps' }             else { '' }
+$forceCertArg = if ($ForceRegenerateCert) { ' -ForceRegenerateCert' }  else { '' }
 $proc1 = Start-Process powershell.exe `
-    -ArgumentList "-ExecutionPolicy Bypass -NoLogo -File `"$setupServerScript`"$skipDepsArg" `
+    -ArgumentList "-ExecutionPolicy Bypass -NoLogo -File `"$setupServerScript`"$skipDepsArg$forceCertArg" `
     -Wait -PassThru -NoNewWindow
 
 Write-Host ''
@@ -458,9 +480,25 @@ if ($runVal -notmatch '^[Yy]') {
             Write-Warn 'Run scripts\start\start-fans.bat to see the full Caddy error output.'
         }
 
-        # -- Record result ----------------------------------------------------
+        # -- HTTPS end-to-end probe -------------------------------------------
+        $httpsOK = $false
         if ($port8000OK -and $port443OK) {
-            $results['[7/8] Startup Validation'] = 'PASS -- ports 8000 and 443 responding'
+            Write-Info 'Verifying HTTPS end-to-end (DNS -> Caddy -> Django)...'
+            $httpsOK = Test-HttpsProbe
+            if ($httpsOK) {
+                Write-OK 'HTTPS end-to-end  -- https://fans-barangay.local responds'
+            } else {
+                Write-Fail 'HTTPS end-to-end  -- ports OK but HTTPS not routing to Django'
+                Write-Warn 'Likely cause: fans-barangay.local missing from server hosts file.'
+                Write-Warn 'Fix: run scripts\admin\repair-hosts.ps1 (as Admin) then reboot.'
+            }
+        }
+
+        # -- Record result ----------------------------------------------------
+        if ($port8000OK -and $port443OK -and $httpsOK) {
+            $results['[7/8] Startup Validation'] = 'PASS -- ports 8000 and 443 responding, HTTPS verified end-to-end'
+        } elseif ($port8000OK -and $port443OK -and -not $httpsOK) {
+            $results['[7/8] Startup Validation'] = 'WARN -- ports OK but HTTPS end-to-end failed (run repair-hosts.ps1)'
         } elseif ($port8000OK) {
             $results['[7/8] Startup Validation'] = 'FAIL -- port 8000 OK but port 443 NOT responding'
         } elseif ($port443OK) {
@@ -630,8 +668,13 @@ if ($anyFail) {
     Write-Host '    4. Go to:  https://fans-barangay.local' -ForegroundColor Cyan
     Write-Host '    5. Log in normally' -ForegroundColor White
     Write-Host ''
-    Write-Host '  IT/Admin diagnostic tools:' -ForegroundColor DarkGray
+    Write-Host '  IT/Admin repair and diagnostic tools:' -ForegroundColor DarkGray
+    Write-Host '    scripts\admin\fans-control-center.ps1  -- all-in-one admin tool (recommended)' -ForegroundColor DarkGray
     Write-Host '    scripts\admin\check-system-health.ps1  -- live health status anytime' -ForegroundColor DarkGray
+    Write-Host '    scripts\admin\start-now.ps1            -- start services without rebooting' -ForegroundColor DarkGray
+    Write-Host '    scripts\admin\repair-autostart.ps1     -- fix Task Scheduler auto-start task' -ForegroundColor DarkGray
+    Write-Host '    scripts\admin\repair-watchdog.ps1      -- fix watchdog task' -ForegroundColor DarkGray
+    Write-Host '    scripts\admin\create-admin-user.ps1    -- add a Django admin account' -ForegroundColor DarkGray
     Write-Host '    logs\fans-startup.log                  -- last boot startup result' -ForegroundColor DarkGray
     Write-Host '    logs\fans-watchdog.log                 -- watchdog activity and recovery history' -ForegroundColor DarkGray
 }

@@ -229,11 +229,18 @@ Run with PowerShell to cleanly stop Waitress and Caddy.
 | `scripts\setup\setup-secure-server.ps1` | Lower-level setup: venv, dependencies, certificates, Django configuration | IT/Admin (advanced) |
 | `scripts\setup\setup-autostart.ps1` | Registers the auto-start task in Windows Task Scheduler only | IT/Admin (advanced) |
 | `scripts\setup\Create-Desktop-Shortcut.ps1` | Creates a desktop shortcut for easy manual startup | IT/Admin (optional) |
+| `scripts\start\start-fans-hidden.ps1` | Silent startup launcher — called by Task Scheduler at boot only, never manually | Task Scheduler only |
 | `scripts\start\start-fans-quiet.bat` | Manual daily launcher — starts both services minimized in the background | IT/Admin (manual start) |
 | `scripts\start\start-fans.bat` | Debug launcher — starts both services in visible windows for troubleshooting | IT/Admin (debug only) |
+| `scripts\admin\fans-control-center.ps1` | All-in-one admin menu: start, stop, restart, health check, logs, repair tools | IT/Admin (recommended) |
 | `scripts\admin\check-system-health.ps1` | Live health diagnostic — read-only, checks every component and reports status | IT/Admin (any time) |
-| `scripts\admin\watchdog.ps1` | Self-healing monitor — runs automatically via Task Scheduler, not manually | Task Scheduler only |
+| `scripts\admin\watchdog.ps1` | Self-healing monitor — runs automatically via Task Scheduler 150s after boot, never manually | Task Scheduler only |
+| `scripts\admin\start-now.ps1` | Start services immediately without rebooting or re-running any setup | IT/Admin |
 | `scripts\admin\stop-fans.ps1` | Stops Waitress and Caddy cleanly | IT/Admin |
+| `scripts\admin\repair-autostart.ps1` | Re-register auto-start Task Scheduler task only (targeted fix) | IT/Admin |
+| `scripts\admin\repair-watchdog.ps1` | Re-register watchdog Task Scheduler task only (targeted fix) | IT/Admin |
+| `scripts\admin\repair-hosts.ps1` | Add fans-barangay.local to server hosts file (targeted fix) | IT/Admin |
+| `scripts\admin\create-admin-user.ps1` | Create or add a Django admin account | IT/Admin |
 | `CLIENT-SETUP\trust-local-cert.bat` | Installs the local HTTPS certificate on a client device | IT/Admin (per device, once) |
 
 ---
@@ -250,7 +257,7 @@ Run with PowerShell to cleanly stop Waitress and Caddy.
 
 - **Do not move script files.** Scripts calculate the project root from their own location. Moving them to different folders will break path resolution.
 
-- **The watchdog runs automatically.** Do not run `watchdog.ps1` manually. It is managed by Task Scheduler and starts automatically 90 seconds after each boot. To stop or reset it, use Windows Task Scheduler and look for the task named **FANS-C Watchdog**.
+- **The watchdog runs automatically.** Do not run `watchdog.ps1` manually. It is managed by Task Scheduler and starts automatically 150 seconds after each boot (after the main startup task and FaceNet model load finish). To stop or reset it, use Windows Task Scheduler and look for the task named **FANS-C Watchdog**.
 
 - **Backup your `.env` file.** This file contains the `SECRET_KEY` and `EMBEDDING_ENCRYPTION_KEY`. If it is lost, encrypted face data cannot be read. Store a secure copy of this file off the server.
 

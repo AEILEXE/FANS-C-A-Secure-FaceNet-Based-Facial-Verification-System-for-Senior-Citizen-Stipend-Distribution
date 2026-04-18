@@ -143,6 +143,15 @@ if not defined CADDY_EXE (
 )
 
 :: ============================================================
+:: STOP STALE PROCESSES (prevents duplicate-instance conflicts)
+:: ============================================================
+
+echo  [..] Stopping any existing Waitress or Caddy instances...
+taskkill /F /IM waitress-serve.exe /T >nul 2>&1
+taskkill /F /IM caddy.exe /T >nul 2>&1
+timeout /t 2 /nobreak >nul
+
+:: ============================================================
 :: START SERVICES (MINIMIZED)
 :: ============================================================
 

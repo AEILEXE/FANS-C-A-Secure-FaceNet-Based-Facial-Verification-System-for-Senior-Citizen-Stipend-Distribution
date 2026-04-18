@@ -112,12 +112,18 @@ The system is now **self-healing**: if Waitress or Caddy stops responding during
 | `scripts\setup\setup-autostart.ps1` | IT/Admin | Once (called by setup-complete, or standalone) |
 | `scripts\setup\Create-Desktop-Shortcut.ps1` | IT/Admin | Optional, once |
 | `CLIENT-SETUP\trust-local-cert.bat` | IT/Admin | Once per client device |
-| `scripts\admin\stop-fans.ps1` | IT/Admin | To stop services for maintenance |
-| `scripts\admin\check-system-health.ps1` | IT/Admin | Diagnostics — anytime |
-| `scripts\admin\watchdog.ps1` | Task Scheduler | Called automatically 90s after boot — never run manually |
+| `scripts\start\start-fans-hidden.ps1` | Task Scheduler | Called automatically at boot — never run manually |
 | `scripts\start\start-fans-quiet.bat` | IT/Admin | Manual start (if auto-start not configured) |
 | `scripts\start\start-fans.bat` | IT/Admin | Debug start (visible windows, full output) |
-| `scripts\start\start-fans-hidden.ps1` | Task Scheduler | Called automatically at boot — never run manually |
+| `scripts\admin\fans-control-center.ps1` | IT/Admin | All-in-one admin menu: start/stop/restart, health check, logs, repair, admin user |
+| `scripts\admin\check-system-health.ps1` | IT/Admin | Live health diagnostic — read-only, checks every component |
+| `scripts\admin\watchdog.ps1` | Task Scheduler | Called automatically 150s after boot — never run manually |
+| `scripts\admin\start-now.ps1` | IT/Admin | Start services now without rebooting (no setup re-run) |
+| `scripts\admin\stop-fans.ps1` | IT/Admin | Stop Waitress and Caddy cleanly |
+| `scripts\admin\repair-autostart.ps1` | IT/Admin | Re-register auto-start Task Scheduler task only |
+| `scripts\admin\repair-watchdog.ps1` | IT/Admin | Re-register watchdog Task Scheduler task only |
+| `scripts\admin\repair-hosts.ps1` | IT/Admin | Add fans-barangay.local to server hosts file (targeted fix) |
+| `scripts\admin\create-admin-user.ps1` | IT/Admin | Create or add a Django admin account |
 
 ---
 
@@ -484,12 +490,12 @@ If the watchdog log shows `[ALERT]` entries:
 | Property | Value |
 |---|---|
 | Task name | `FANS-C Watchdog` |
-| Trigger | System startup + 90-second delay |
+| Trigger | System startup + 150-second delay |
 | Account | SYSTEM (no UAC, always elevated) |
 | Window | Hidden (no visible window) |
 | Auto-restart if crashed | Yes (up to 3 times, 2-minute interval) |
 
-The 90-second delay ensures the main startup task (`FANS-C Verification System`) has fully started Waitress and Caddy before the watchdog takes its first reading.
+The 150-second delay ensures the main startup task (`FANS-C Verification System`) has fully started Waitress and Caddy (and the FaceNet model has loaded) before the watchdog takes its first reading.
 
 ---
 

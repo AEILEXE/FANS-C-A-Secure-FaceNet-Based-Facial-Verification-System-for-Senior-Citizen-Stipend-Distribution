@@ -205,7 +205,7 @@ All checks are hard-fail: if any file is missing, the script stops with a clear 
 
 **What it does:** Continuous self-healing monitor. Runs indefinitely, checking Waitress and Caddy every 45 seconds and automatically restarting either service if it stops responding.
 
-**When it is used:** Automatically, 90 seconds after every boot, by the `FANS-C Watchdog` Task Scheduler task. Never run manually.
+**When it is used:** Automatically, 150 seconds after every boot, by the `FANS-C Watchdog` Task Scheduler task. Never run manually.
 
 **Who calls it:** Task Scheduler (SYSTEM account). IT/Admin should not run this manually.
 
@@ -246,12 +246,12 @@ All checks are hard-fail: if any file is missing, the script stops with a clear 
 
 **Task Scheduler configuration:**
 - Task name: `FANS-C Watchdog`
-- Trigger: System startup + 90-second delay
+- Trigger: System startup + 150-second delay
 - Account: SYSTEM
 - Window: Hidden
 - Auto-restart if crashed: Yes (3 times, 2-minute interval)
 
-**Defense note:** The watchdog illustrates a key system design principle: assume failure will happen and build recovery in. The 90-second boot delay, rate limiting, cooldown periods, and ALERT escalation are all deliberate design choices that prevent the watchdog itself from causing problems (e.g., restart storms from a script that is configured wrongly).
+**Defense note:** The watchdog illustrates a key system design principle: assume failure will happen and build recovery in. The 150-second boot delay, rate limiting, cooldown periods, and ALERT escalation are all deliberate design choices that prevent the watchdog itself from causing problems (e.g., restart storms from a script that is configured wrongly).
 
 ---
 
@@ -269,23 +269,105 @@ All checks are hard-fail: if any file is missing, the script stops with a clear 
 
 ---
 
+### fans-control-center.ps1
+
+**What it does:** All-in-one IT/Admin menu. Provides numbered options: Start / Stop / Restart services, Check health (runs check-system-health.ps1), View startup log, View watchdog log, Repair auto-start task, Repair watchdog task, Repair hosts file, Create/add admin user, Open site in browser. Shows live RUNNING / PARTIAL / STOPPED status (including HTTPS end-to-end probe) at the top of every screen.
+
+**When it is used:** Any time IT/Admin needs to manage or diagnose the system. Recommended as the single admin entry point after setup.
+
+**Who calls it:** IT/Admin (must be run as Administrator).
+
+**Runtime phase:** Any time.
+
+**How it connects to the system:** Delegates to the other admin scripts rather than duplicating logic. Provides a guided menu so IT/Admin does not need to remember individual script names or paths.
+
+---
+
+### start-now.ps1
+
+**What it does:** Starts Waitress and Caddy immediately without re-running any setup. Performs pre-flight checks (waitress-serve.exe, .env, fans-cert.pem, caddy.exe), kills stale processes, starts services, waits for ports to respond, then verifies HTTPS end-to-end.
+
+**When it is used:** When IT/Admin needs to start the system without rebooting, without going through the full setup flow.
+
+**Who calls it:** IT/Admin (must be run as Administrator for port 443).
+
+**Runtime phase:** Manual startup.
+
+---
+
+### repair-autostart.ps1
+
+**What it does:** Re-registers the `FANS-C Verification System` Task Scheduler task only. Does not re-run any setup steps, reinstall dependencies, or change any configuration.
+
+**When it is used:** When check-system-health.ps1 shows the auto-start task is missing or broken, or after moving the project folder.
+
+**Who calls it:** IT/Admin (must be run as Administrator).
+
+**Runtime phase:** Repair only.
+
+---
+
+### repair-watchdog.ps1
+
+**What it does:** Re-registers the `FANS-C Watchdog` Task Scheduler task only. Does not affect running services or other configuration.
+
+**When it is used:** When check-system-health.ps1 shows the watchdog task is missing or broken.
+
+**Who calls it:** IT/Admin (must be run as Administrator).
+
+**Runtime phase:** Repair only.
+
+---
+
+### repair-hosts.ps1
+
+**What it does:** Adds `127.0.0.1  fans-barangay.local` to `C:\Windows\System32\drivers\etc\hosts` on the server PC. This is needed for the browser on the server PC to resolve `fans-barangay.local` to the local Caddy instance. Does not restart services or change any other configuration.
+
+**When it is used:** When `https://fans-barangay.local` times out or shows "site not found" from the server PC itself, and check-system-health.ps1 shows the hosts file entry is missing.
+
+**Who calls it:** IT/Admin (must be run as Administrator).
+
+**Runtime phase:** Repair only.
+
+**How it connects to the system:** The server PC uses `127.0.0.1` for `fans-barangay.local` (Caddy listens on all interfaces). Client devices use the server's LAN IP instead (added by `trust-local-cert.bat`). These are different entries on different machines — this repair script only fixes the server PC.
+
+---
+
+### create-admin-user.ps1
+
+**What it does:** Checks how many Django superuser accounts exist, then prompts to create a new one using `manage.py createsuperuser`. Safe to run at any time — will not delete or overwrite existing accounts.
+
+**When it is used:** When a new admin account is needed, or when the first admin was not created during setup.
+
+**Who calls it:** IT/Admin.
+
+**Runtime phase:** Any time after setup.
+
+---
+
 ## How scripts/ connects to the system
 
 ```
 scripts/setup/
-    setup-complete.ps1          → creates everything from scratch
-        setup-secure-server.ps1 → .venv, certs, Django config
-        setup-autostart.ps1     → Task Scheduler auto-start task
+    setup-complete.ps1          -> creates everything from scratch
+        setup-secure-server.ps1 -> .venv, certs, Django config
+        setup-autostart.ps1     -> Task Scheduler auto-start task
 
 scripts/start/
-    start-fans-hidden.ps1       → used by Task Scheduler at boot
-    start-fans-quiet.bat        → used by IT/Admin for manual start
-    start-fans.bat              → used for debugging startup failures
+    start-fans-hidden.ps1       -> used by Task Scheduler at boot
+    start-fans-quiet.bat        -> used by IT/Admin for manual start
+    start-fans.bat              -> used for debugging startup failures
 
 scripts/admin/
-    check-system-health.ps1     → read-only diagnostics, any time
-    watchdog.ps1                → used by Task Scheduler, always running
-    stop-fans.ps1               → clean shutdown for maintenance
+    fans-control-center.ps1     -> recommended all-in-one IT/Admin menu
+    check-system-health.ps1     -> read-only diagnostics, any time
+    watchdog.ps1                -> used by Task Scheduler, always running
+    start-now.ps1               -> manual start without setup re-run
+    stop-fans.ps1               -> clean shutdown for maintenance
+    repair-autostart.ps1        -> fix auto-start task only
+    repair-watchdog.ps1         -> fix watchdog task only
+    repair-hosts.ps1            -> fix server hosts file only
+    create-admin-user.ps1       -> add Django admin account
 ```
 
 ---
@@ -295,7 +377,7 @@ scripts/admin/
 | Phase | Scripts used |
 |---|---|
 | First-time setup | `setup-complete.ps1` (which calls `setup-secure-server.ps1` and `setup-autostart.ps1`) |
-| Every boot (auto) | `start-fans-hidden.ps1` (Task Scheduler), then `watchdog.ps1` (Task Scheduler, 90s delay) |
+| Every boot (auto) | `start-fans-hidden.ps1` (Task Scheduler), then `watchdog.ps1` (Task Scheduler, 150s delay) |
 | Manual start | `start-fans-quiet.bat` |
 | Debugging | `start-fans.bat` |
 | Diagnostics | `check-system-health.ps1` |

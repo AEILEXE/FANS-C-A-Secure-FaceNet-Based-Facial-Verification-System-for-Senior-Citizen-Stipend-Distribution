@@ -4,7 +4,7 @@
     FANS-C Watchdog -- continuous health monitor and self-healing background service.
 
 .DESCRIPTION
-    Started automatically by Windows Task Scheduler 90 seconds after every boot.
+    Started automatically by Windows Task Scheduler 150 seconds after every boot.
     Runs continuously in the background. Checks Waitress and Caddy every 45 seconds
     and attempts automatic recovery if either service stops responding.
 

@@ -74,6 +74,26 @@ function Test-PortOpen {
     }
 }
 
+function Test-HttpsProbe {
+    param([string]$Uri = 'https://fans-barangay.local/', [int]$TimeoutMs = 5000)
+    try {
+        [Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
+        $req         = [System.Net.HttpWebRequest]::Create($Uri)
+        $req.Timeout = $TimeoutMs
+        $req.Method  = 'GET'
+        $resp        = $req.GetResponse()
+        $resp.Close()
+        return $true
+    } catch [System.Net.WebException] {
+        if ($null -ne $_.Exception.Response) { return $true }
+        return $false
+    } catch {
+        return $false
+    } finally {
+        [Net.ServicePointManager]::ServerCertificateValidationCallback = $null
+    }
+}
+
 # -- Banner -------------------------------------------------------------------
 Write-Host ''
 Write-Host '  ================================================================' -ForegroundColor DarkCyan
@@ -149,6 +169,52 @@ if ($caddyRunning -and -not $port443) {
 Write-Host ''
 
 # =============================================================================
+# 4b: HTTPS END-TO-END PROBE
+# =============================================================================
+Write-Host '  -- HTTPS End-to-End (Caddy -> Django) -----------------------' -ForegroundColor DarkCyan
+
+$httpsOK = $false
+if ($port443) {
+    $httpsOK = Test-HttpsProbe
+    Write-Check 'HTTPS end-to-end' $httpsOK `
+        'https://fans-barangay.local responds correctly' `
+        'HTTPS request failed -- Caddy running but not routing to Django'
+
+    if (-not $httpsOK) {
+        $anyFail = $true
+        Write-Warn 'Caddy is running and port 443 is open, but HTTPS is not routing to Django.'
+        Write-Warn 'Most likely cause: fans-barangay.local is not in the server hosts file.'
+        Write-Warn 'Fix: run scripts\admin\repair-hosts.ps1 (as Admin) then retry.'
+    }
+} else {
+    Write-Host "   [SKIP] HTTPS probe skipped -- port 443 is not listening." -ForegroundColor DarkGray
+}
+
+Write-Host ''
+
+# =============================================================================
+# 4c: SERVER HOSTS FILE
+# =============================================================================
+Write-Host '  -- Server Hosts File (fans-barangay.local resolution) -------' -ForegroundColor DarkCyan
+
+$hostsFile = 'C:\Windows\System32\drivers\etc\hosts'
+$hostsContent = Get-Content $hostsFile -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
+
+$hostsEntryOK = $hostsContent -match '(?m)^[^#\s].*\s+fans-barangay\.local(\s|$)'
+Write-Check 'Hosts file entry' $hostsEntryOK `
+    'fans-barangay.local is mapped in the server hosts file' `
+    'fans-barangay.local NOT found -- browser on this PC cannot reach the site'
+
+if (-not $hostsEntryOK) {
+    $anyFail = $true
+    Write-Warn 'Without a hosts file entry, the browser on this PC cannot resolve fans-barangay.local.'
+    Write-Warn 'Fix: run scripts\admin\repair-hosts.ps1 (as Admin)'
+    Write-Warn '     (adds 127.0.0.1  fans-barangay.local automatically)'
+}
+
+Write-Host ''
+
+# =============================================================================
 # 5: TLS CERTIFICATE FILES
 # =============================================================================
 Write-Host '  -- TLS Certificate Files ------------------------------------' -ForegroundColor DarkCyan
@@ -163,7 +229,8 @@ Write-Check 'fans-cert-key.pem' $certKeyOK 'Found' 'MISSING -- Caddy cannot star
 
 if (-not $certOK -or -not $certKeyOK) {
     $anyFail = $true
-    Write-Warn 'Fix: run scripts\setup\setup-complete.ps1 to regenerate the certificate.'
+    Write-Warn 'Fix: run scripts\setup\setup-complete.ps1 -ForceRegenerateCert'
+    Write-Warn '     (regenerates the cert only -- safe to run on existing installs)'
 } else {
     # Show cert file age
     try {
@@ -234,22 +301,34 @@ try {
 
     # Show last run result
     try {
-        $taskInfo = Get-ScheduledTaskInfo -TaskName $taskName -ErrorAction Stop
-        if ($taskInfo.LastRunTime -and $taskInfo.LastRunTime -gt [DateTime]::MinValue) {
-            $lastRun = $taskInfo.LastRunTime.ToString('yyyy-MM-dd HH:mm:ss')
-            Write-Info 'Last run' $lastRun
-        }
-        if ($taskInfo.LastTaskResult -ne $null) {
-            $resultCode = '0x{0:X8}' -f $taskInfo.LastTaskResult
-            $resultText = if ($taskInfo.LastTaskResult -eq 0) { 'Success (0x00000000)' } else { "Code $resultCode" }
-            Write-Info 'Last result' $resultText
+        $taskInfo  = Get-ScheduledTaskInfo -TaskName $taskName -ErrorAction Stop
+        $neverRan  = (-not $taskInfo.LastRunTime) -or
+                     ($taskInfo.LastRunTime -le [DateTime]::MinValue) -or
+                     ($taskInfo.LastRunTime.Year -lt 2000)
+        if ($neverRan) {
+            Write-Warn 'Task is REGISTERED but has NEVER RUN.'
+            Write-Warn '  -> It will fire automatically on next reboot.'
+            Write-Warn '  -> To start now without rebooting: scripts\admin\start-now.ps1'
+            Write-Warn '     or: Task Scheduler -> right-click task -> Run'
+        } else {
+            Write-Info 'Last run' $taskInfo.LastRunTime.ToString('yyyy-MM-dd HH:mm:ss')
+            if ($null -ne $taskInfo.LastTaskResult) {
+                $resultCode = '0x{0:X8}' -f $taskInfo.LastTaskResult
+                if ($taskInfo.LastTaskResult -eq 0) {
+                    Write-Info 'Last result' 'Success (0x00000000)'
+                } else {
+                    Write-Warn "Last result  : Code $resultCode -- task may have failed"
+                    Write-Warn '  -> Check logs\fans-startup.log for error details.'
+                }
+            }
         }
     } catch { }
 
 } catch {
     Write-Check 'Task registered' $false '' 'NOT registered -- auto-start is disabled'
     Write-Warn 'The system will NOT start automatically after a reboot.'
-    Write-Warn 'Fix: run scripts\setup\setup-autostart.ps1 (as Admin) to register it.'
+    Write-Warn 'Fix: run scripts\admin\repair-autostart.ps1 (as Admin)'
+    Write-Warn '     (re-registers the task only -- does not repeat full setup)'
     $anyFail = $true
 }
 
@@ -266,12 +345,18 @@ try {
 
     if (-not $wdTaskOK) {
         Write-Warn "Watchdog task state is '$wdState' (expected: Ready)."
-        Write-Warn 'Re-run scripts\setup\setup-complete.ps1 to re-register it.'
+        Write-Warn 'Fix: run scripts\admin\repair-watchdog.ps1 (as Admin)'
     }
 
     try {
-        $wdInfo = Get-ScheduledTaskInfo -TaskName $watchdogTaskName -ErrorAction Stop
-        if ($wdInfo.LastRunTime -and $wdInfo.LastRunTime -gt [DateTime]::MinValue) {
+        $wdInfo   = Get-ScheduledTaskInfo -TaskName $watchdogTaskName -ErrorAction Stop
+        $wdNeverRan = (-not $wdInfo.LastRunTime) -or
+                      ($wdInfo.LastRunTime -le [DateTime]::MinValue) -or
+                      ($wdInfo.LastRunTime.Year -lt 2000)
+        if ($wdNeverRan) {
+            Write-Warn 'Watchdog registered but has NEVER RUN.'
+            Write-Warn '  -> Will start 150 seconds after next reboot.'
+        } else {
             Write-Info 'Watchdog last run' $wdInfo.LastRunTime.ToString('yyyy-MM-dd HH:mm:ss')
         }
     } catch { }
@@ -421,18 +506,28 @@ if ($anyFail) {
         Write-Host ''
     }
 
-    if (-not $waitressRunning -and -not $caddyRunning) {
-        Write-Host '   Nothing is running:' -ForegroundColor Yellow
-        Write-Host '     Option A (auto-start): reboot the server PC.' -ForegroundColor DarkGray
-        Write-Host '     Option B (manual):     double-click start-fans-quiet.bat.' -ForegroundColor DarkGray
-        Write-Host '     Option C (debug):      run start-fans.bat to see all output.' -ForegroundColor DarkGray
+    if (-not $httpsOK -and $port443) {
+        Write-Host '   HTTPS end-to-end broken (Caddy running but not routing):' -ForegroundColor Yellow
+        Write-Host '     1. Run scripts\admin\repair-hosts.ps1 (as Admin) -- adds hosts file entry.' -ForegroundColor DarkGray
+        Write-Host '     2. If hosts entry exists, check Caddyfile reverse_proxy directive.' -ForegroundColor DarkGray
+        Write-Host '     3. Run scripts\start\start-fans.bat to see Caddy error output.' -ForegroundColor DarkGray
         Write-Host ''
     }
 
-    Write-Host '   Watchdog recovery history:' -ForegroundColor Yellow
-    Write-Host '     See logs\fans-watchdog.log for automatic recovery attempts.' -ForegroundColor DarkGray
-    Write-Host '     If watchdog shows repeated ALERT entries, IT/Admin inspection is required.' -ForegroundColor DarkGray
-    Write-Host '     To reset watchdog after resolving issues: restart "FANS-C Watchdog" in Task Scheduler.' -ForegroundColor DarkGray
+    if (-not $waitressRunning -and -not $caddyRunning) {
+        Write-Host '   Nothing is running:' -ForegroundColor Yellow
+        Write-Host '     Option A (easiest):    run scripts\admin\fans-control-center.ps1 -> [1] Start' -ForegroundColor DarkGray
+        Write-Host '     Option B (start only): run scripts\admin\start-now.ps1' -ForegroundColor DarkGray
+        Write-Host '     Option C (auto-start): reboot the server PC (Task Scheduler will start it).' -ForegroundColor DarkGray
+        Write-Host '     Option D (debug):      run scripts\start\start-fans.bat to see all output.' -ForegroundColor DarkGray
+        Write-Host ''
+    }
+
+    Write-Host '   Repair tools (for IT/Admin):' -ForegroundColor Yellow
+    Write-Host '     scripts\admin\fans-control-center.ps1  -- all-in-one admin menu' -ForegroundColor DarkGray
+    Write-Host '     scripts\admin\repair-autostart.ps1     -- fix auto-start task only' -ForegroundColor DarkGray
+    Write-Host '     scripts\admin\repair-watchdog.ps1      -- fix watchdog task only' -ForegroundColor DarkGray
+    Write-Host '     If watchdog shows repeated ALERT entries, check logs\fans-watchdog.log.' -ForegroundColor DarkGray
 } else {
     Write-Host '   HEALTH: ALL CHECKS PASSED' -ForegroundColor Green
     Write-Host ''

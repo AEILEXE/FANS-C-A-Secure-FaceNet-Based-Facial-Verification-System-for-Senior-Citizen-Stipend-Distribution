@@ -78,12 +78,20 @@ echo  [OK]  Pre-flight checks passed.
 echo.
 
 :: ----------------------------------------------------------
+:: Stop any stale instances before starting (prevents conflicts)
+:: ----------------------------------------------------------
+echo  [..] Stopping any stale Waitress or Caddy instances...
+taskkill /F /IM waitress-serve.exe /T >nul 2>&1
+taskkill /F /IM caddy.exe /T >nul 2>&1
+timeout /t 2 /nobreak >nul
+
+:: ----------------------------------------------------------
 :: Start Waitress (Django app server) in a new window
 :: ----------------------------------------------------------
 echo  [1/2] Starting Waitress (Django WSGI server)...
 echo        This serves the FANS-C application on 127.0.0.1:8000
 echo.
-start "FANS-C Waitress" "%PROJECT_ROOT%\.venv\Scripts\waitress-serve.exe" --host=0.0.0.0 --port=8000 fans.wsgi:application
+start "FANS-C Waitress" "%PROJECT_ROOT%\.venv\Scripts\waitress-serve.exe" --listen=127.0.0.1:8000 fans.wsgi:application
 
 :: Wait a few seconds for Waitress to initialize before Caddy starts
 echo  [..] Waiting 4 seconds for Waitress to initialize...
