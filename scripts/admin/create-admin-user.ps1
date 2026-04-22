@@ -1,18 +1,22 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    FANS-C -- Create or add a Django admin (superuser) account.
-    Safe to run any time: checks if one already exists first.
+    FANS-C -- Create or add a user account with selectable role.
+    Safe to run any time: checks if admin accounts already exist first.
 
 .DESCRIPTION
     Checks how many superuser accounts currently exist, then optionally
-    creates a new one. Will not silently overwrite or delete existing accounts.
+    creates a new account with one of these roles:
+
+      - admin_it   (IT/Admin, Django superuser)
+      - head_brgy  (Head Barangay, normal app user)
+      - staff      (Staff, normal app user)
 
     Use this when:
-      - Setting up the first admin account on a fresh install
-      - Adding an additional admin account (e.g. for a second IT/Admin)
-      - The admin password needs to be reset (use Django admin panel instead
-        for password resets -- this creates a NEW account)
+      - Setting up the first IT/Admin account on a fresh install
+      - Adding another IT/Admin account
+      - Creating a Head Barangay account
+      - Creating a Staff account from PowerShell
 
     Does NOT require Administrator rights.
     Requires the .venv virtual environment to be set up first.
@@ -29,7 +33,7 @@ $venvPython = Join-Path $projectRoot '.venv\Scripts\python.exe'
 
 Write-Host ''
 Write-Host '  ================================================================' -ForegroundColor DarkCyan
-Write-Host '   FANS-C  |  Create / Add Admin User' -ForegroundColor Cyan
+Write-Host '   FANS-C  |  Create / Add User' -ForegroundColor Cyan
 Write-Host '  ================================================================' -ForegroundColor DarkCyan
 Write-Host ''
 
@@ -40,6 +44,20 @@ if (-not (Test-Path $venvPython)) {
     Write-Host ''
     Read-Host '  Press Enter to exit'
     exit 1
+}
+
+function Convert-SecureStringToPlainText {
+    param(
+        [Parameter(Mandatory = $true)]
+        [Security.SecureString] $SecureString
+    )
+    $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($SecureString)
+    try {
+        return [Runtime.InteropServices.Marshal]::PtrToStringAuto($bstr)
+    }
+    finally {
+        [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
+    }
 }
 
 # -- Check existing superusers -------------------------------------------------
@@ -55,7 +73,7 @@ if ($suCheckStr -match '^\d+$') {
     if ($suCount -gt 0) {
         Write-Host "  [OK]  $suCount admin account(s) already exist." -ForegroundColor Green
         Write-Host ''
-        $createMore = Read-Host '  Create an additional admin account? [Y/N]'
+        $createMore = Read-Host '  Create another user account? [Y/N]'
         if ($createMore -notmatch '^[Yy]') {
             Write-Host ''
             Write-Host '  No changes made.' -ForegroundColor DarkGray
@@ -65,28 +83,139 @@ if ($suCheckStr -match '^\d+$') {
             exit 0
         }
     } else {
-        Write-Host '  [INFO] No admin accounts found. Proceeding to create first admin...' -ForegroundColor Yellow
+        Write-Host '  [INFO] No admin accounts found yet.' -ForegroundColor Yellow
     }
 } else {
     Write-Host '  [WARN] Could not check existing admin count. Proceeding anyway.' -ForegroundColor Yellow
 }
 
-# -- Create superuser ----------------------------------------------------------
+# -- Role selection ------------------------------------------------------------
 Write-Host ''
-Write-Host '  Django will now prompt for username, email, and password.' -ForegroundColor White
-Write-Host '  Choose a strong password and store it securely.' -ForegroundColor White
+Write-Host '  Select account role:' -ForegroundColor White
+Write-Host '    1. IT/Admin' -ForegroundColor Cyan
+Write-Host '    2. Head Barangay' -ForegroundColor Cyan
+Write-Host '    3. Staff' -ForegroundColor Cyan
 Write-Host ''
 
-& $venvPython manage.py createsuperuser
-$exitCode = $LASTEXITCODE
+$roleChoice = Read-Host '  Enter choice [1/2/3]'
+
+switch ($roleChoice) {
+    '1' {
+        $selectedRole = 'admin_it'
+        $roleLabel = 'IT/Admin'
+        $isSuperuser = $true
+        $isStaffFlag = $true
+    }
+    '2' {
+        $selectedRole = 'head_brgy'
+        $roleLabel = 'Head Barangay'
+        $isSuperuser = $false
+        $isStaffFlag = $false
+    }
+    '3' {
+        $selectedRole = 'staff'
+        $roleLabel = 'Staff'
+        $isSuperuser = $false
+        $isStaffFlag = $false
+    }
+    default {
+        Write-Host ''
+        Write-Host '  [FAIL] Invalid choice. Please run the script again.' -ForegroundColor Red
+        Write-Host ''
+        Read-Host '  Press Enter to close'
+        exit 1
+    }
+}
+
+# -- Prompt for user details ---------------------------------------------------
+Write-Host ''
+Write-Host "  Creating role: $roleLabel ($selectedRole)" -ForegroundColor Green
+Write-Host ''
+
+$username = Read-Host '  Username'
+if ([string]::IsNullOrWhiteSpace($username)) {
+    Write-Host ''
+    Write-Host '  [FAIL] Username is required.' -ForegroundColor Red
+    Write-Host ''
+    Read-Host '  Press Enter to close'
+    exit 1
+}
+
+$email = Read-Host '  Email (optional)'
+
+$passwordSecure = Read-Host '  Password' -AsSecureString
+$confirmSecure  = Read-Host '  Confirm password' -AsSecureString
+
+$password = Convert-SecureStringToPlainText $passwordSecure
+$confirm  = Convert-SecureStringToPlainText $confirmSecure
+
+if ([string]::IsNullOrWhiteSpace($password)) {
+    Write-Host ''
+    Write-Host '  [FAIL] Password is required.' -ForegroundColor Red
+    Write-Host ''
+    Read-Host '  Press Enter to close'
+    exit 1
+}
+
+if ($password -ne $confirm) {
+    Write-Host ''
+    Write-Host '  [FAIL] Passwords do not match.' -ForegroundColor Red
+    Write-Host ''
+    Read-Host '  Press Enter to close'
+    exit 1
+}
+
+# -- Create user ---------------------------------------------------------------
+Write-Host ''
+Write-Host '  Creating account...' -ForegroundColor DarkGray
+
+$usernamePy = $username.Replace('\', '\\').Replace("'", "\'")
+$emailPy = $email.Replace('\', '\\').Replace("'", "\'")
+$passwordPy = $password.Replace('\', '\\').Replace("'", "\'")
+
+$pythonCode = @"
+from django.contrib.auth import get_user_model
+
+User = get_user_model()
+username = '$usernamePy'
+email = '$emailPy'
+password = '$passwordPy'
+selected_role = '$selectedRole'
+is_superuser = $($isSuperuser.ToString())
+is_staff = $($isStaffFlag.ToString())
+
+if User.objects.filter(username=username).exists():
+    print('ERROR:USERNAME_EXISTS')
+else:
+    user = User.objects.create_user(username=username, email=email, password=password)
+    if hasattr(user, 'role'):
+        user.role = selected_role
+    user.is_superuser = is_superuser
+    user.is_staff = is_staff
+    user.save()
+    print('OK:USER_CREATED')
+"@
+
+$createRaw = & $venvPython manage.py shell --no-color -c $pythonCode 2>&1
+$createOutput = ($createRaw | Out-String).Trim()
 
 Write-Host ''
-if ($exitCode -eq 0) {
-    Write-Host '  [OK]  Admin user created successfully.' -ForegroundColor Green
-    Write-Host '        Log in at: https://fans-barangay.local/admin' -ForegroundColor Cyan
-} else {
-    Write-Host "  [WARN] createsuperuser exited with code $exitCode." -ForegroundColor Yellow
-    Write-Host '         The account may not have been created. Try again.' -ForegroundColor DarkGray
+if ($createOutput -match 'OK:USER_CREATED') {
+    Write-Host "  [OK]  $roleLabel account created successfully." -ForegroundColor Green
+    Write-Host "        Username: $username" -ForegroundColor Cyan
+    if ($selectedRole -eq 'admin_it') {
+        Write-Host '        Admin panel: https://fans-barangay.local/admin' -ForegroundColor Cyan
+    } else {
+        Write-Host '        App login : https://fans-barangay.local/accounts/login/' -ForegroundColor Cyan
+    }
+}
+elseif ($createOutput -match 'ERROR:USERNAME_EXISTS') {
+    Write-Host "  [FAIL] Username '$username' already exists." -ForegroundColor Red
+    Write-Host '         Choose a different username and try again.' -ForegroundColor Yellow
+}
+else {
+    Write-Host '  [WARN] Account creation may have failed. Details:' -ForegroundColor Yellow
+    Write-Host $createOutput -ForegroundColor DarkGray
 }
 
 Write-Host ''

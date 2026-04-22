@@ -75,16 +75,16 @@ $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIden
            ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 if (-not $isAdmin) {
     Write-Host ""
-    Write-Host "  [FAIL] This script must be run as Administrator." -ForegroundColor Red
-    Write-Host "         Use trust-local-cert.bat — it handles this automatically." -ForegroundColor Yellow
-    Write-Host "         Or right-click trust-local-cert.ps1 and choose" -ForegroundColor Yellow
-    Write-Host "         'Run with PowerShell', then click Yes on the UAC prompt." -ForegroundColor Yellow
+    Write-Host " [FAIL] This script must be run as Administrator." -ForegroundColor Red
+    Write-Host "        Use trust-local-cert.bat - it handles this automatically." -ForegroundColor Yellow
+    Write-Host "        Or right-click trust-local-cert.ps1 and choose" -ForegroundColor Yellow
+    Write-Host "        'Run with PowerShell', then click Yes on the UAC prompt." -ForegroundColor Yellow
     Write-Host ""
-    Read-Host "  Press Enter to exit"
+    Read-Host "Press Enter to exit"
     exit 1
 }
-Write-Host "         Administrator rights confirmed." -ForegroundColor Green
 
+    Write-Host "        Administrator rights confirmed." -ForegroundColor Green
 # ── Step 2: Locate and import server root CA ─────────────────────────────────
 Write-Host ""
 Write-Host "  [2/3] Locating server root CA certificate..." -ForegroundColor Cyan

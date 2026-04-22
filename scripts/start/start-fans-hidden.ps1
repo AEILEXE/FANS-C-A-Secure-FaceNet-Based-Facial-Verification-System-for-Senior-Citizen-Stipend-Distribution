@@ -12,7 +12,7 @@
       1. Waits 12 seconds for Windows networking to fully initialize
       2. Verifies required files (.env, waitress-serve.exe, fans-cert.pem, caddy.exe)
       3. Starts Waitress (Django WSGI server) -- no window, port 8000
-      4. Waits 6 seconds for Django to load
+      4. Waits 25 seconds for Django to load
       5. Starts Caddy (HTTPS reverse proxy) -- no window, port 443
       6. Waits 8 seconds for Caddy to bind its port
       7. Verifies port 8000 and port 443 are actually listening
@@ -198,7 +198,7 @@ try {
         -CmdArgs  '--listen=127.0.0.1:8000 fans.wsgi:application' `
         -WorkDir  $projectRoot
     $wProc.Id | Set-Content (Join-Path $projectRoot '.fans-waitress.pid') -Encoding UTF8
-    Write-Log "Waitress launched (PID $($wProc.Id)). Waiting 6 seconds for Django to load..."
+    Write-Log "Waitress launched (PID $($wProc.Id)). Waiting 25 seconds for Django to load..."
 } catch {
     Write-Log "FAIL: Could not launch Waitress: $_"
     Write-Log 'STARTUP FAILED -- Waitress did not start'
@@ -206,7 +206,7 @@ try {
     exit 1
 }
 
-Start-Sleep -Seconds 6
+Start-Sleep -Seconds 25
 
 # -- START CADDY (no window, only if cert exists and caddy found) -------------
 $cProc = $null
@@ -241,7 +241,7 @@ if ($caddyExe -and $certAvailable) {
 Write-Log 'Verifying services are actually listening...'
 
 # -- Check port 8000 (Waitress) -----------------------------------------------
-$port8000OK = Test-PortListening -Port 8000 -Retries 6 -DelayMs 1000
+$port8000OK = Test-PortListening -Port 8000 -Retries 25 -DelayMs 1000
 
 if ($port8000OK) {
     Write-Log 'CHECK port 8000 (Waitress)  : LISTENING -- OK'
